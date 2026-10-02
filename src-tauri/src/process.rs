@@ -1,42 +1,62 @@
-//! dsh process manager: spawn, attach, health-probe, and graceful shutdown.
+//! Owning the dsh child process for the lifetime of the window.
+
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
 
 use crate::config::{Config, LaunchMode};
 use crate::endpoint;
 use crate::error::{Result, ShellError};
 use crate::platform;
-use std::process::Stdio;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use crate::preflight;
 
-/// Owns a dsh child process.
+/// A running (or attached) dsh, plus the URL the WebView must load.
 ///
-/// Explicit shutdown via [`DshProcess::shutdown`] is preferred (graceful term
-/// → 5 s → kill). As a **safety net** [`Drop`] hard-kills the child so a panic
-/// in the shell cannot leak dsh as an orphan — that would violate the core
-/// "close window = kill dsh" contract.
+/// Explicit shutdown via [`DshProcess::shutdown`] is the normal path. [`Drop`]
+/// is the backstop for a panic or an early return: a leaked dsh would keep the
+/// port bound with no window left to close it. The `Command` also carries
+/// `kill_on_drop`, so the child cannot outlive this value even if the mutex is
+/// held when we drop.
 pub struct DshProcess {
     child: Arc<Mutex<Option<Child>>>,
+    pid: Option<u32>,
     url: String,
     config: Config,
 }
 
+impl std::fmt::Debug for DshProcess {
+    /// Hand-written: `Child` is not `Debug`, and the interesting fields are the
+    /// ones a failure message needs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DshProcess")
+            .field("url", &self.url)
+            .field("pid", &self.pid)
+            .field("mode", &self.config.launch_mode)
+            .finish()
+    }
+}
+
 impl Drop for DshProcess {
     fn drop(&mut self) {
-        // Try to grab the child synchronously; if we can't get the lock we
-        // can't help, but kill_on_drop(true) on the command itself is our
-        // last-resort backstop.
+        // Sync path: if the lock is contended we cannot await a graceful
+        // shutdown, but the direct child still dies with the `Child` value.
         if let Ok(mut guard) = self.child.try_lock() {
             if let Some(child) = guard.as_mut() {
                 let _ = child.start_kill();
             }
         }
+        tracing::info!(target: "dsh_shell", "DshProcess dropped; child reaped");
     }
 }
 
 impl DshProcess {
-    /// Build a command to launch `dsh web`. Honors `--no-open` so we control the browser.
+    /// Build the command for `dsh web`.
+    ///
+    /// `--no-open` is not optional: without it dsh also launches the system
+    /// browser, and the user would get two windows for one harness.
     pub fn build_command(config: &Config) -> Command {
         let mut cmd = Command::new(&config.dsh_binary_path);
         cmd.arg("web")
@@ -46,78 +66,95 @@ impl DshProcess {
         if config.preferred_port != 0 {
             cmd.arg("--port").arg(config.preferred_port.to_string());
         }
+        // Repeated rather than variadic: `--trusted-host <authority...>` would
+        // swallow every following flag into its own list.
         for host in &config.trusted_hosts {
             cmd.arg("--trusted-host").arg(host);
         }
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null())
-            .kill_on_drop(true); // Backstop for the Drop impl.
+            .kill_on_drop(true);
         cmd
     }
 
-    /// Spawn a new dsh instance and wait for its endpoint.
+    /// Fork dsh and wait until it can tell us its authenticated URL.
     pub async fn spawn(config: Config) -> Result<Self> {
-        let mut cmd = Self::build_command(&config);
-        let mut child = cmd.spawn().map_err(ShellError::Spawn)?;
+        preflight::check_spawn(&config)?;
 
+        let mut child = Self::build_command(&config).spawn().map_err(ShellError::Spawn)?;
+        let pid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        let url = endpoint::resolve(
+        let resolved = endpoint::resolve(
             &mut child,
             stdout,
             stderr,
             &config.listen_host,
             config.preferred_port,
             Duration::from_secs(config.spawn_timeout_seconds),
-            Duration::from_secs_f64(config.poll_interval_seconds.max(0.05)),
+            Duration::from_secs_f64(config.poll_interval_seconds.clamp(0.05, 5.0)),
         )
-        .await?;
+        .await;
+
+        let url = match resolved {
+            Ok(url) => url,
+            Err(err) => {
+                // A dsh that never became usable is still holding our port.
+                // Nobody is left to close it, so we clean up here.
+                platform::graceful_shutdown(&mut child, pid, platform::default_grace_period())
+                    .await;
+                return Err(err);
+            }
+        };
 
         Ok(Self {
             child: Arc::new(Mutex::new(Some(child))),
+            pid,
             url,
             config,
         })
     }
 
-    /// Attach to an already-running dsh on the loopback. Currently requires
-    /// `preferred_port != 0` (we have nothing else to probe against).
+    /// Attach to an already-running dsh. Forks nothing, so it cannot collide
+    /// with — or damage — a harness the operator already has open.
     pub async fn attach(config: Config) -> Result<Self> {
         if config.preferred_port == 0 {
-            return Err(ShellError::NoAttachTarget);
+            return Err(ShellError::NoAttachTarget(format!(
+                "{}/0 (attach needs a fixed port to probe)",
+                config.listen_host
+            )));
         }
-        let url = format!(
-            "http://{}:{}/",
-            config.listen_host, config.preferred_port
-        );
+
+        let url = format!("http://{}:{}/", config.listen_host, config.preferred_port);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
             .map_err(ShellError::HttpClient)?;
-        let deadline = std::time::Instant::now()
-            + Duration::from_secs(config.spawn_timeout_seconds);
+        let deadline = Instant::now() + Duration::from_secs(config.spawn_timeout_seconds);
+
         loop {
-            match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => break,
-                _ => {}
+            // A 401 counts: that is dsh's auth fence answering, which proves a
+            // harness is listening.
+            if let Ok(response) = client.get(&url).send().await {
+                tracing::info!(target: "dsh_shell", "attached to dsh at {url} ({})", response.status());
+                return Ok(Self {
+                    child: Arc::new(Mutex::new(None)),
+                    pid: None,
+                    url,
+                    config,
+                });
             }
-            if std::time::Instant::now() >= deadline {
-                return Err(ShellError::NoAttachTarget);
+            if Instant::now() >= deadline {
+                return Err(ShellError::NoAttachTarget(url));
             }
-            tokio::time::sleep(Duration::from_secs_f64(
-                config.poll_interval_seconds.max(0.1),
-            ))
-            .await;
+            tokio::time::sleep(Duration::from_secs_f64(config.poll_interval_seconds.clamp(0.1, 5.0)))
+                .await;
         }
-        Ok(Self {
-            child: Arc::new(Mutex::new(None)),
-            url,
-            config,
-        })
     }
 
+    /// The URL the WebView must load, token included.
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -126,32 +163,31 @@ impl DshProcess {
         &self.config
     }
 
-    /// Block until dsh exits, returning its exit status if available.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    /// Block until dsh exits, returning its exit code if it had one.
     pub async fn wait(&self) -> Result<Option<i32>> {
         let mut guard = self.child.lock().await;
         let Some(child) = guard.as_mut() else {
             return Ok(None);
         };
-        match child.wait().await {
-            Ok(status) => Ok(status.code()),
-            Err(e) => Err(ShellError::Io(e)),
-        }
+        child.wait().await.map(|status| status.code()).map_err(ShellError::Io)
     }
 
-    /// Send a polite termination, wait up to `grace`, then hard-kill.
+    /// Terminate dsh, then reap it. Idempotent, and a no-op in attach mode
+    /// (there is nothing of ours to kill).
     pub async fn shutdown(&self) {
         let mut guard = self.child.lock().await;
         let Some(child) = guard.as_mut() else {
-            return; // attach mode: nothing to kill
-        };
-        if platform::is_dead(child) {
             return;
-        }
-        platform::graceful_shutdown(child, platform::default_grace_period()).await;
+        };
+        platform::graceful_shutdown(child, self.pid, platform::default_grace_period()).await;
     }
 }
 
-/// Convenience constructor that picks spawn vs attach from config.
+/// Pick spawn vs attach from the config.
 pub async fn launch(config: Config) -> Result<DshProcess> {
     match config.launch_mode {
         LaunchMode::Spawn => DshProcess::spawn(config).await,
@@ -163,50 +199,52 @@ pub async fn launch(config: Config) -> Result<DshProcess> {
 mod tests {
     use super::*;
 
+    fn args_of(config: &Config) -> Vec<String> {
+        DshProcess::build_command(config)
+            .as_std()
+            .get_args()
+            .filter_map(|arg| arg.to_str().map(str::to_string))
+            .collect()
+    }
+
     #[test]
     fn build_command_omits_port_when_zero() {
-        let c = Config {
+        let config = Config {
             preferred_port: 0,
             ..Config::default()
         };
-        // Build the command and inspect its args.
-        let cmd = DshProcess::build_command(&c);
-        let args: Vec<&str> = cmd.as_std().get_args().filter_map(|s| s.to_str()).collect();
-        assert!(args.contains(&"--no-open"));
-        assert!(!args.contains(&"--port"));
+        assert!(!args_of(&config).contains(&"--port".to_string()));
     }
 
     #[test]
     fn build_command_includes_port_when_nonzero() {
-        let c = Config::default();
-        let cmd = DshProcess::build_command(&c);
-        let args: Vec<String> = cmd
-            .as_std()
-            .get_args()
-            .filter_map(|s| s.to_str().map(|s| s.to_string()))
-            .collect();
-        let port_idx = args
-            .iter()
-            .position(|a| a == "--port")
-            .expect("--port should be present");
-        assert_eq!(args[port_idx + 1], "34247");
+        let args = args_of(&Config::default());
+        let at = args.iter().position(|arg| arg == "--port").expect("--port");
+        assert_eq!(args[at + 1], "3080");
     }
 
     #[test]
-    fn build_command_passes_trusted_hosts() {
-        let c = Config::default();
-        let cmd = DshProcess::build_command(&c);
-        let args: Vec<String> = cmd
+    fn build_command_passes_trusted_hosts_one_flag_each() {
+        let config = Config {
+            trusted_hosts: vec!["a".into(), "b".into(), "c".into()],
+            ..Config::default()
+        };
+        let args = args_of(&config);
+        let flags: Vec<&String> = args.iter().filter(|arg| *arg == "--trusted-host").collect();
+        assert_eq!(flags.len(), 3, "{args:?}");
+        // Variadic parsing would break if a value ever landed after a flag.
+        assert_eq!(args[0], "web");
+        assert!(args.contains(&"--no-open".to_string()));
+    }
+
+    #[test]
+    fn build_command_never_targets_itself() {
+        // A shell that re-executed itself would fork forever.
+        let program = DshProcess::build_command(&Config::default())
             .as_std()
-            .get_args()
-            .filter_map(|s| s.to_str().map(|s| s.to_string()))
-            .collect();
-        let mut i = 0;
-        while let Some(a) = args.get(i) {
-            if a == "--trusted-host" {
-                assert!(args.get(i + 1).is_some());
-            }
-            i += 1;
-        }
+            .get_program()
+            .to_string_lossy()
+            .to_string();
+        assert!(!program.contains("dsh-shell"), "{program}");
     }
 }

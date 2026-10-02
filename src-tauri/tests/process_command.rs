@@ -22,7 +22,7 @@ fn default_command_is_well_formed() {
     assert!(args.contains(&"--host".to_string()));
     assert!(args.contains(&"127.0.0.1".to_string()));
     assert!(args.contains(&"--port".to_string()));
-    assert!(args.contains(&"34247".to_string()));
+    assert!(args.contains(&"3080".to_string()));
     // No `--help`, no debug flags leaked.
     assert!(!args.contains(&"--help".to_string()));
 }

@@ -1,39 +1,59 @@
-//! Shared error types for dsh-shell core.
+//! Shared error surface for dsh-shell core.
+//!
+//! Every variant is one actionable failure mode, because the app runs without a
+//! console: whatever the user sees in the log has to be enough to act on.
 
+use std::time::Duration;
 use thiserror::Error;
 
-/// Top-level error surface. Each variant maps to one actionable failure mode
-/// so callers (CLI, Tauri setup, tests) can react sensibly.
+pub type Result<T> = std::result::Result<T, ShellError>;
+
 #[derive(Debug, Error)]
 pub enum ShellError {
-    /// `dsh` binary failed to start (path wrong, permission denied, …).
+    /// The `dsh` binary could not be started at all (bad path, access denied).
     #[error("failed to spawn dsh: {0}")]
     Spawn(std::io::Error),
 
-    /// `dsh` did not produce a recognizable URL line within the configured timeout.
-    #[error("timed out waiting for dsh to print its URL")]
-    EndpointTimeout,
+    /// dsh exited before printing its URL. `tail` carries the last lines it
+    /// wrote, because the reason is almost always in there.
+    #[error("dsh exited (status {code:?}) before printing an authenticated URL:\n{tail}")]
+    DshExitedBeforeReady { code: Option<i32>, tail: String },
 
-    /// Could not construct an HTTP client for the attach-mode probe.
-    #[error("failed to build http client: {0}")]
+    /// dsh stayed alive but never printed a usable URL line.
+    #[error(
+        "timed out after {waited:?} waiting for dsh at {host}:{port} to print an authenticated URL:\n{tail}"
+    )]
+    EndpointTimeout {
+        host: String,
+        port: u16,
+        waited: Duration,
+        tail: String,
+    },
+
+    /// We are running inside a dsh session. Spawning a nested harness from the
+    /// harness destroys the parent session, so we refuse instead.
+    #[error(
+        "refusing to start a nested dsh: this shell was launched from inside a dsh session ({vars}). \
+         Start dsh-shell from a normal terminal, or set launch_mode = \"attach\"."
+    )]
+    NestedSession { vars: String },
+
+    /// Something already owns the port we were asked to bind.
+    #[error("port {port} on {host} is already in use; another dsh is probably running. \
+         Set launch_mode = \"attach\" to use it, or choose a different preferred_port.")]
+    PortInUse { host: String, port: u16 },
+
+    /// Attach mode was selected but there is nothing to attach to.
+    #[error("no dsh answered on {0}")]
+    NoAttachTarget(String),
+
+    /// The HTTP client used for liveness probing could not be constructed.
+    #[error("failed to build the http probe client: {0}")]
     HttpClient(reqwest::Error),
 
-    /// Attach mode was selected without a port to probe.
-    #[error("attach mode requires preferred_port != 0")]
-    NoAttachTarget,
-
-    /// Generic IO error (waiting on child, etc.).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Regex compilation failed (treated as fatal at startup).
-    #[error("invalid url regex: {0}")]
-    InvalidRegex(regex::Error),
-
-    /// Could not parse the URL `dsh` printed.
-    #[error("could not parse endpoint url: {0}")]
-    InvalidUrl(url::ParseError),
+    #[error("config error: {0}")]
+    Config(#[from] crate::config::ConfigError),
 }
-
-/// Convenience alias used throughout the crate.
-pub type Result<T> = std::result::Result<T, ShellError>;

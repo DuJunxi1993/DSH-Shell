@@ -27,6 +27,10 @@ pub struct Config {
     /// Loopback host passed to `dsh web --host`.
     pub listen_host: String,
     /// Fixed port forwarded to `dsh web --port`. `0` = OS-assigned.
+    ///
+    /// 3080 is dsh's own default (`dsh-web-app`'s webserver row:
+    /// `port: ctx.webStartup.port ?? 3080`), so this matches a normally started
+    /// dsh and makes `attach` mode work out of the box.
     pub preferred_port: u16,
     /// Extra trusted hosts appended to `dsh web --trusted-host`.
     pub trusted_hosts: Vec<String>,
@@ -44,7 +48,7 @@ impl Default for Config {
             dsh_binary_path: default_dsh_binary_path(),
             launch_mode: LaunchMode::Spawn,
             listen_host: "127.0.0.1".to_string(),
-            preferred_port: 34247,
+            preferred_port: 3080,
             trusted_hosts: vec!["127.0.0.1".to_string(), "localhost".to_string()],
             poll_interval_seconds: 0.5,
             spawn_timeout_seconds: 60,
@@ -87,13 +91,19 @@ impl Config {
     }
 }
 
-/// Platform-default dsh binary path. Falls back to the npm-global dsh.cmd on Windows.
+/// Platform-default dsh binary path.
+///
+/// Prefers the npm-global shim that `npm i -g @deepseek-ai/dsh` writes, and
+/// falls back to plain `dsh` on PATH so a non-npm install still works.
 fn default_dsh_binary_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         // %APPDATA%\npm\dsh.cmd is the canonical npm-global install location.
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            return PathBuf::from(appdata).join("npm").join("dsh.cmd");
+            let candidate = PathBuf::from(appdata).join("npm").join("dsh.cmd");
+            if candidate.exists() {
+                return candidate;
+            }
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -136,7 +146,7 @@ mod tests {
     fn load_or_default_when_missing() {
         // Just exercise the missing-file branch; do not write any real config.
         let cfg = Config::load_or_default();
-        // Default port is the SwiftUI default (34247) — proof of 1:1 parity.
-        assert_eq!(cfg.preferred_port, 34247);
+        // dsh's own web default, so attach mode finds a running instance.
+        assert_eq!(cfg.preferred_port, 3080);
     }
 }

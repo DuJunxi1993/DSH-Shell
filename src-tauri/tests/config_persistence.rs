@@ -7,10 +7,11 @@ use dsh_shell_core::config::{Config, LaunchMode};
 use std::path::PathBuf;
 
 #[test]
-fn default_config_matches_swiftui_defaults() {
-    // 1:1 parity with dsh-swiftUI's defaults block.
+fn default_config_matches_dsh_defaults() {
     let c = Config::default();
-    assert_eq!(c.preferred_port, 34247);
+    // dsh's own web default (`dsh-web-app`'s webserver row), so a normally
+    // started dsh is on this port and attach mode finds it.
+    assert_eq!(c.preferred_port, 3080);
     assert_eq!(c.listen_host, "127.0.0.1");
     assert_eq!(c.launch_mode, LaunchMode::Spawn);
     assert!(c.auto_restart_on_crash);

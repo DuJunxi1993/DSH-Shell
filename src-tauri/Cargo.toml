@@ -15,6 +15,15 @@ path = "src/lib.rs"
 name = "dsh-shell"
 path = "src/main.rs"
 
+# Test double for `dsh web`. Never bundled, never launched outside `cargo test`.
+# See AGENTS.md rule 2.
+[[bin]]
+name = "stub-dsh"
+path = "src/bin/stub-dsh.rs"
+test = false
+bench = false
+doc = false
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -45,11 +54,10 @@ parking_lot = "0.12"
 regex = "1"
 url = "2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
-mockall = "0.13"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread", "process"] }
 
@@ -58,4 +66,6 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# `panic = "abort"` is deliberately NOT set. Abort skips every `Drop`, which
+# would strand a live dsh holding the port with no window left to close it —
+# the one outcome this whole app exists to prevent.

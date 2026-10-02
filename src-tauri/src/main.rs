@@ -1,161 +1,215 @@
 //! dsh-shell entry point.
 //!
 //! Flow:
-//! 1. Configure tracing to log to a rolling file under the platform log dir.
-//! 2. Load config (default 34247 / spawn mode).
-//! 3. Launch dsh and capture its endpoint.
-//! 4. Open a Tauri WebView pointed at that endpoint.
-//! 5. On window close, gracefully terminate dsh before exiting.
+//!
+//! 1. Start tracing. A release build has no console, so logs go to a daily
+//!    rolling file under the app data dir.
+//! 2. Show a window with a boot placeholder immediately, so a slow dsh start
+//!    looks like progress rather than a hung app.
+//! 3. Fork dsh off the UI thread and wait for the authenticated URL.
+//! 4. Navigate the window to it.
+//! 5. On exit, terminate dsh *before* the process goes away, and only ever by
+//!    the PID we spawned.
+//!
+//! Step 5 is why `RunEvent::ExitRequested` is used instead of
+//! `WindowEvent::CloseRequested`: the window event handler runs on the event
+//! loop, where blocking on the async runtime to reap a child would deadlock the
+//! very loop that has to service the exit.
 
-// Suppress the console subsystem so double-click on Windows does not spawn a
-// conhost window alongside the GUI. Logs are written to file (see init_tracing).
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use std::time::Duration;
 
-use dsh_shell_core::{config::Config, process};
+use tauri::{RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-fn log_dir() -> std::path::PathBuf {
-    directories::ProjectDirs::from("ai", "deepseek", "dsh-shell")
-        .map(|p| p.data_dir().join("logs"))
-        .unwrap_or_else(|| std::env::temp_dir().join("dsh-shell-logs"))
-}
+use dsh_shell_core::config::Config;
+use dsh_shell_core::error::ShellError;
+use dsh_shell_core::process::{self, DshProcess};
 
-fn init_tracing() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+/// Hard ceiling on the exit path. Shutdown must never be able to wedge the app.
+const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(15);
 
-    // In debug builds we still want console output for `cargo run`. In release
-    // builds (no console subsystem) we write to a file under the log dir.
-    let log_path = log_dir().join("dsh-shell.log");
-    let _ = std::fs::create_dir_all(log_dir());
-
-    #[cfg(all(not(debug_assertions), target_os = "windows"))]
-    {
-        let file_appender = tracing_appender::rolling::daily(log_dir(), "dsh-shell.log");
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_target(true)
-            .with_writer(file_appender)
-            .try_init();
-    }
-
-    #[cfg(not(all(not(debug_assertions), target_os = "windows")))]
-    {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_target(true)
-            .try_init();
-    }
-
-    tracing::info!(
-        target: "dsh_shell",
-        "tracing initialized; log file = {}",
-        log_path.display()
-    );
+struct AppState {
+    dsh: tokio::sync::Mutex<Option<DshProcess>>,
+    shutting_down: AtomicBool,
 }
 
 fn main() {
     init_tracing();
 
-    let config = Config::load_or_default();
-    tracing::info!(
-        target: "dsh_shell",
-        "starting: launch_mode={:?} port={} host={}",
-        config.launch_mode,
-        config.preferred_port,
-        config.listen_host,
-    );
+    let state = Arc::new(AppState {
+        dsh: tokio::sync::Mutex::new(None),
+        shutting_down: AtomicBool::new(false),
+    });
 
-    let dsh = Arc::new(parking_lot::Mutex::new(None::<process::DshProcess>));
+    let app = match build(state.clone()) {
+        Ok(app) => app,
+        Err(err) => {
+            write_crash_log(&format!("failed to start: {err}"));
+            std::process::exit(1);
+        }
+    };
 
-    let dsh_for_setup = dsh.clone();
-    let dsh_for_event = dsh.clone();
+    app.run(move |app_handle, event| {
+        if let RunEvent::ExitRequested { api, .. } = event {
+            // Re-entrant: `exit()` below fires this event again, and that second
+            // pass must fall through so the process can actually leave.
+            if state.shutting_down.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            api.prevent_exit();
 
+            let state = state.clone();
+            let handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let dsh = state.dsh.lock().await.take();
+                if let Some(dsh) = dsh {
+                    if tokio::time::timeout(SHUTDOWN_DEADLINE, dsh.shutdown())
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(target: "dsh_shell", "shutdown deadline reached; exiting anyway");
+                    }
+                }
+                tracing::info!(target: "dsh_shell", "dsh terminated; exiting");
+                handle.exit(0);
+            });
+        }
+    });
+}
+
+fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
+    let setup_state = state;
     tauri::Builder::default()
         .setup(move |app| {
-            // Block the UI thread until dsh is up. This is exactly dsh-swiftUI's
-            // model: no window appears before the endpoint is reachable.
-            let cfg = Config::load_or_default();
-            let runtime = tauri::async_runtime::handle();
-            let dsh_proc = runtime.block_on(async move {
-                let cfg_for_task = cfg.clone();
-                process::launch(cfg_for_task).await
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("DSH Shell")
+                .inner_size(1280.0, 800.0)
+                .min_inner_size(800.0, 600.0)
+                .resizable(true)
+                .center()
+                // Runs before any page script, on every navigation, so it cannot
+                // be lost to a race with the SPA booting.
+                .initialization_script(include_str!("../../platform_adapt.js"))
+                .build()?;
+
+            let state = setup_state.clone();
+            tauri::async_runtime::spawn(async move {
+                let config = Config::load_or_default();
+                tracing::info!(
+                    target: "dsh_shell",
+                    "starting: mode={:?} port={} host={} binary={}",
+                    config.launch_mode,
+                    config.preferred_port,
+                    config.listen_host,
+                    config.dsh_binary_path.display(),
+                );
+
+                match process::launch(config).await {
+                    Ok(dsh) => point_at_dsh(window, state, dsh).await,
+                    Err(err) => report_failure(&window, &err),
+                }
             });
 
-            match dsh_proc {
-                Ok(proc) => {
-                    let url = proc.url().to_string();
-                    tracing::info!(target: "dsh_shell", "dsh up at {}", url);
-
-                    let parsed_url = url::Url::parse(&url)
-                        .map_err(|e| format!("invalid endpoint url {}: {}", url, e))?;
-                    let win = WebviewWindowBuilder::new(
-                        app,
-                        "main",
-                        WebviewUrl::External(parsed_url),
-                    )
-                    .title(format!(
-                        "DSH Shell — dsh @ {}",
-                        proc.config().listen_host
-                    ))
-                    .inner_size(1280.0, 800.0)
-                    .min_inner_size(800.0, 600.0)
-                    .resizable(true)
-                    .build()?;
-
-                    *dsh_for_setup.lock() = Some(proc);
-
-                    // Inject platform CSS after page load so DSH SPA adapts to OS chrome.
-                    let css = include_str!("../../platform_adapt.css");
-                    win.eval(css)?;
-
-                    Ok(())
-                }
-                Err(e) => {
-                    tracing::error!(target: "dsh_shell", "failed to start dsh: {}", e);
-                    // Also dump to the crash log so a non-console release can
-                    // surface the failure to whoever runs the binary.
-                    let path = std::env::temp_dir().join("dsh-shell-crash.log");
-                    let _ = std::fs::write(
-                        &path,
-                        format!("[dsh-shell] failed to start dsh: {}\n", e),
-                    );
-                    Err(Box::new(e) as Box<dyn std::error::Error>)
-                }
-            }
+            Ok(())
         })
-        .on_window_event(move |_window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
-                // Synchronous-feeling shutdown: block_on the async kill + wait.
-                let guard = dsh_for_event.lock();
-                if let Some(proc) = guard.as_ref() {
-                    let runtime = tauri::async_runtime::handle();
-                    runtime.block_on(async move {
-                        proc.shutdown().await;
-                    });
-                }
-                tracing::info!(target: "dsh_shell", "window closed; dsh terminated; exiting");
-            }
-        })
-        .run(tauri::generate_context!())
-        .map_err(|e| {
-            // Last-resort crash log so users (and our manual-checklist operator)
-            // can recover the failure mode even in release builds with no
-            // console subsystem. The path is intentionally short and outside
-            // the AppData tree, so it's visible without shell tricks.
-            let path = std::env::temp_dir().join("dsh-shell-crash.log");
-            let msg = format!(
-                "[dsh-shell crash] {}\n  binary: {}\n  cwd: {}\n",
-                e,
-                std::env::args().next().unwrap_or_default(),
-                std::env::current_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "<unknown>".to_string()),
-            );
-            let _ = std::fs::write(&path, msg);
-            e
-        })
-        .expect("failed to start dsh-shell");
+        .build(tauri::generate_context!())
+}
+
+async fn point_at_dsh(window: WebviewWindow, state: Arc<AppState>, dsh: DshProcess) {
+    let url = dsh.url().to_string();
+    tracing::info!(target: "dsh_shell", "dsh ready (pid {:?}) at {url}", dsh.pid());
+
+    let parsed = match tauri::Url::parse(&url) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            report_failure(&window, &ShellError::EndpointTimeout {
+                host: String::from("<unparsable>"),
+                port: 0,
+                waited: Duration::ZERO,
+                tail: format!("dsh printed an unparsable URL: {url}: {err}"),
+            });
+            return;
+        }
+    };
+
+    // Store before navigating: from here on, the exit path owns a child that must
+    // be reaped.
+    *state.dsh.lock().await = Some(dsh);
+
+    if let Err(err) = window.navigate(parsed) {
+        tracing::error!(target: "dsh_shell", "could not navigate the window: {err}");
+        return;
+    }
+    let _ = window.set_title("DSH Shell — dsh");
+}
+
+/// Surface a startup failure in the window itself. A release build has no
+/// console, so a silent exit here is indistinguishable from a hung app.
+fn report_failure(window: &WebviewWindow, err: &ShellError) {
+    tracing::error!(target: "dsh_shell", "startup failed: {err}");
+    write_crash_log(&format!("startup failed: {err}"));
+
+    let message = serde_json::to_string(&err.to_string()).unwrap_or_else(|_| "\"unknown\"".into());
+    let script = format!(
+        "document.getElementById('status') && (document.getElementById('status').textContent = 'Failed to start dsh');
+         document.getElementById('detail') && (document.getElementById('detail').textContent = {message});
+         document.body && document.body.classList.add('failed');"
+    );
+    let _ = window.eval(&script);
+}
+
+fn log_dir() -> std::path::PathBuf {
+    directories::ProjectDirs::from("ai", "deepseek", "dsh-shell")
+        .map(|dirs| dirs.data_dir().join("logs"))
+        .unwrap_or_else(|| std::env::temp_dir().join("dsh-shell-logs"))
+}
+
+fn write_crash_log(message: &str) {
+    let dir = log_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("crash.log");
+    let _ = std::fs::write(
+        &path,
+        format!(
+            "[{message}]\n  binary: {}\n  cwd: {}\n",
+            std::env::args().next().unwrap_or_default(),
+            std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default(),
+        ),
+    );
+}
+
+fn init_tracing() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dsh_shell=debug"));
+
+    let dir = log_dir();
+    let _ = std::fs::create_dir_all(&dir);
+
+    // The daily file is the diagnostic channel in every build: a release binary
+    // has no console, and `cargo run` is not the only way this thing breaks.
+    let writer = tracing_appender::rolling::daily(&dir, "dsh-shell.log");
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_ansi(false)
+        .with_writer(writer);
+
+    // `EnvFilter` used as a layer filters every layer below it.
+    let subscriber = tracing_subscriber::registry().with(filter).with(file_layer);
+
+    // Console output only where there is a console to read it.
+    #[cfg(debug_assertions)]
+    let _ = subscriber
+        .with(tracing_subscriber::fmt::layer().with_target(true))
+        .try_init();
+
+    #[cfg(not(debug_assertions))]
+    let _ = subscriber.try_init();
+
+    tracing::info!(target: "dsh_shell", "logging to {}", dir.display());
 }

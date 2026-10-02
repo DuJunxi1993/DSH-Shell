@@ -1,18 +1,22 @@
-//! dsh-shell core library: platform-agnostic façade.
+//! dsh-shell core: a pure shell around the dsh web UI.
 //!
 //! Public surface:
-//! - [`config`]: settings.json schema + load/save
-//! - [`endpoint`]: URL-line + port-probe resolution
-//! - [`process`]: spawn/attach/wait/shutdown for dsh
-//! - [`platform`]: OS-specific graceful-shutdown helpers
-//! - [`error`]: shared error types
+//!
+//! - [`config`]: settings schema, load/save, defaults
+//! - [`endpoint`]: dsh's stdout → the authenticated WebView URL
+//! - [`preflight`]: the checks that keep us from nesting or double-binding
+//! - [`process`]: spawn / attach / wait / shutdown
+//! - [`platform`]: OS-specific termination
+//! - [`error`]: the shared error surface
 
 pub mod config;
 pub mod endpoint;
 pub mod error;
 pub mod platform;
+pub mod preflight;
 pub mod process;
 
 pub use config::{Config, LaunchMode};
 pub use error::{Result, ShellError};
+pub use preflight::{inside_harness_session, port_is_free};
 pub use process::{launch, DshProcess};
