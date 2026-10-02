@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <title>DSH Shell</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0e0e10;
+        color: #e0e0e0;
+        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+        overflow: hidden;
+      }
+      #loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+      }
+      .spinner {
+        width: 32px;
+        height: 32px;
+        border: 3px solid rgba(255,255,255,0.15);
+        border-top-color: #6ee7b7;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      p { margin-top: 16px; opacity: 0.7; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div id="loading">
+      <div class="spinner"></div>
+      <p>Waiting for dsh&hellip;</p>
+    </div>
+    <script>
+      // The actual DSH WebView is loaded as an external URL via tauri.conf.json.
+      // This index.html is only the placeholder during boot before dsh is ready.
+    </script>
+  </body>
+</html>

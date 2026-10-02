@@ -1,0 +1,61 @@
+[package]
+name = "dsh-shell"
+version = "0.1.0"
+description = "A native desktop shell for the DeepSeek Harness (dsh) web UI"
+authors = ["DuJunxi1993"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "dsh_shell_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dsh-shell"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 2.x
+tauri = { version = "2", features = [] }
+
+# Async runtime (bundled with Tauri, but explicit for clarity)
+tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros", "rt-multi-thread"] }
+
+# HTTP probing for fallback URL discovery
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# Config / IO
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+directories = "5"
+thiserror = "1"
+
+# Utilities
+once_cell = "1"
+parking_lot = "0.12"
+regex = "1"
+url = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+mockall = "0.13"
+tempfile = "3"
+tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread", "process"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
