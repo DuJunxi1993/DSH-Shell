@@ -14,15 +14,19 @@ A native desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai
 
 Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
 
-| | |
+| Area | |
 |---|---|
 | Endpoint resolution (stdout URL line, token, port check) | verified, incl. against real dsh |
 | `spawn` mode: fork `dsh web`, wait for the authenticated URL | verified |
 | `attach` mode: adopt an already-running dsh, never kill it | verified |
 | Shutdown: window close → dsh tree gone → port freed | verified |
+| No console window while dsh starts or while we reap it | verified (zero visible console windows over a full run) |
+| File drag-and-drop onto the page | `disable_drag_drop_handler()`; needs your eyes on a real drop |
+| Frameless window with an injected title bar | injected, laid out and IPC-verified; visual polish to confirm |
+| Page zoom 50–100% in 10% steps, persisted | verified (a click stepped 100 → 90 and wrote the setting) |
 | Anti-nest guard (refuses to run inside a harness session) | verified |
 | Port-ownership guard (points at `attach` instead of dying) | verified |
-| `cargo test` — 38 hermetic tests against `stub-dsh` | green |
+| `cargo test` — 49 hermetic tests against `stub-dsh` | green |
 | `cargo clippy --all-targets -- -D warnings` | clean |
 | `cargo build --release` | clean |
 | `.msi` + `.nsis` bundles | built |
@@ -67,7 +71,8 @@ it; the defaults below apply when it is missing.
   "trusted_hosts": ["127.0.0.1", "localhost"],
   "poll_interval_seconds": 0.5,
   "spawn_timeout_seconds": 120,
-  "auto_restart_on_crash": true
+  "auto_restart_on_crash": true,
+  "zoom_percent": 100
 }
 ```
 
@@ -79,8 +84,9 @@ it; the defaults below apply when it is missing.
 | `preferred_port` | Passed to `dsh web --port`. `0` lets the OS choose. 3080 is dsh's own default. |
 | `trusted_hosts` | Repeated as `--trusted-host <host>`; they feed dsh's `/api` browser-trust fence. |
 | `poll_interval_seconds` | How often the liveness probe asks the port. |
-| `spawn_timeout_seconds` | How long to wait for dsh's URL line. dsh's Loader can take a while on a cold start, so this is generous. |
+| `spawn_timeout_seconds` | How long to wait for dsh's URL line. dsh's Loader can take that long on a cold profile, so this is generous. |
 | `auto_restart_on_crash` | Accepted for schema compatibility. The shell does not restart dsh: a restart loop would fight the "close the window, dsh dies" contract. |
+| `zoom_percent` | Page zoom, 50–100 in steps of 10. Normalised on read, so a hand-edited 57 behaves like 60. Carries a serde default, so a settings file written before this field existed still loads. |
 
 ## How the endpoint is found
 
@@ -171,6 +177,38 @@ touch the real harness.
 
 `RUST_LOG=debug` adds dsh's own chatter. Debug builds also print to the console.
 
+## Window chrome
+
+The window is frameless. The title bar is a 32px strip of DOM injected into
+whatever page is loaded, so the dsh sidebar can reach the very top of the window
+and only the three buttons sit on top of the content. The dsh app's own top
+area stays visible through the drag strip, and the button cluster sits in a
+surface colour read from the page's own CSS variables, so it follows the dsh
+light/dark theme.
+
+- **Drag** the strip, or double-click it to maximize.
+- **− / +** and the percentage step the page zoom, 50–100% in 10% steps, and the
+  choice is remembered. `Ctrl+Alt+↑` / `Ctrl+Alt+↓` do the same. Chromium's own
+  `Ctrl+=` zoom is disabled so the percentage cannot drift from the real zoom.
+- The bar keeps its 32 physical pixels at every zoom level, so the buttons stay
+  usable at 50%.
+
+Two things make this work at all, and both are non-obvious:
+
+- The injection cannot go through Tauri's `initialization_script`, because dsh
+  serves its own Content-Security-Policy and a WebView2 document-created script
+  is subject to it. The real page gets the chrome from Rust via `eval` on page
+  load; our own boot page gets it from the initialization script. The script is
+  idempotent, so running it in both places is free — and necessary, because a
+  frameless window with no title bar during startup has no close button.
+- The title bar's buttons and the zoom command reach Rust over IPC, and the ACL
+  is enforced against the webview's *current URL*. `capabilities/chrome.json`
+  therefore grants exactly four window commands plus our two commands, and only
+  for `http://127.0.0.1:*` and `http://localhost:*`. No fs, shell, clipboard or
+  path access. If the chrome ever fails to install — a future dsh release could
+  break the injection — the log says so, because a frameless window with no close
+  button is a trap.
+
 ## Manual verification
 
 ```powershell
@@ -179,15 +217,22 @@ cd D:\Development\DSH-Shell\src-tauri
 cargo run
 ```
 
-1. A window appears immediately showing "Starting dsh…".
-2. Within a few seconds the title becomes "DSH Shell — dsh" and the dsh UI
-   loads. It is a real UI, not a 401 page.
-3. Close the window. Within ~1s dsh is gone and the port is free:
+1. A window appears immediately showing "Starting dsh…", with a title bar.
+2. Within a few seconds the dsh UI loads and the sidebar reaches the very top of
+   the window. It is a real UI, not a 401 page.
+3. Drag the title bar: the window moves. Drag the window border: it resizes.
+4. Drag a file from Explorer onto the page: it lands in the chat composer.
+5. Click −/+, or press `Ctrl+Alt+↓`: the page scales and the percentage changes.
+   The title bar does not change size. Restart: the zoom is remembered.
+6. Close the window with the ✕. Within ~1s dsh is gone and the port is free:
    ```powershell
    Get-NetTCPConnection -State Listen -LocalPort 3080
    ```
 
-If a step fails, the log has the reason and dsh's own output with it.
+If a step fails, the log has the reason and dsh's own output with it. For a
+chrome problem specifically, `RUST_LOG=debug` prints the measured bounding box
+of every part of the title bar, which distinguishes "element missing" from
+"element there but not painted".
 
 ## Architecture
 

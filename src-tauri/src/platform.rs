@@ -19,6 +19,48 @@ use tokio::process::Child;
 #[cfg(windows)]
 const TASKKILL: &str = "taskkill";
 
+/// `CREATE_NO_WINDOW` (winuser.h).
+///
+/// A GUI-subsystem parent has no console of its own, so every console child we
+/// spawn otherwise gets a brand-new console *window* — the black rectangle that
+/// flashes on startup, and again for `taskkill` on shutdown. It is invisible to
+/// whether the binary is the one in `target\release` or the one an installer put
+/// in Program Files: the cause is the child spawn flags, not the packaging.
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Hide the console of a child process we spawn.
+///
+/// Apply to every Windows child, not just dsh. `taskkill` is a console
+/// application too.
+#[cfg(windows)]
+pub fn hide_child_console(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    command.creation_flags(CREATE_NO_WINDOW)
+}
+
+/// The blocking twin, for the `Drop` path, which cannot await.
+#[cfg(windows)]
+pub fn hide_child_console_sync(
+    command: &mut std::process::Command,
+) -> &mut std::process::Command {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(CREATE_NO_WINDOW)
+}
+
+/// No-op off Windows: a child there inherits the parent's terminal instead of
+/// opening a window of its own.
+#[cfg(not(windows))]
+pub fn hide_child_console(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    command
+}
+
+#[cfg(not(windows))]
+pub fn hide_child_console_sync(
+    command: &mut std::process::Command,
+) -> &mut std::process::Command {
+    command
+}
+
 /// How long to wait for a polite exit before escalating.
 pub fn default_grace_period() -> Duration {
     Duration::from_secs(5)
@@ -39,12 +81,14 @@ pub fn is_dead(child: &Child) -> bool {
 /// already on its way out.
 #[cfg(windows)]
 pub fn terminate_tree_sync(pid: u32) {
-    let _ = std::process::Command::new(TASKKILL)
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let _ = hide_child_console_sync(
+        std::process::Command::new(TASKKILL)
+            .args(["/PID", &pid.to_string(), "/T", "/F"]),
+    )
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status();
 }
 
 #[cfg(unix)]
@@ -96,13 +140,15 @@ async fn terminate_tree(pid: u32) -> bool {
 
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        Command::new(TASKKILL)
-            // PID-scoped on purpose. Never /IM, never a name pattern.
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status(),
+        hide_child_console(
+            Command::new(TASKKILL)
+                // PID-scoped on purpose. Never /IM, never a name pattern.
+                .args(["/PID", &pid.to_string(), "/T", "/F"]),
+        )
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status(),
     )
     .await;
 

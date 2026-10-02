@@ -1,5 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<!--
+  data-dsh-shell-placeholder marks this as the shell's own boot page. The injected
+  chrome uses it to make room for the title bar here and *only* here: the dsh page
+  itself must reach the top edge of the window.
+-->
+<html lang="en" data-dsh-shell-placeholder>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,6 +12,11 @@
     <style>
       :root {
         color-scheme: dark;
+        /* The injected chrome reads these two to match the surface and
+           foreground of whichever page it is in. The dsh web app defines them
+           for its own theme; this page has to declare its own. */
+        --dsw-alias-bg-base: #0e0e10;
+        --dsw-alias-label-primary: #e6e6e6;
       }
       html, body {
         margin: 0;

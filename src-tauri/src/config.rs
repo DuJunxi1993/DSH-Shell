@@ -16,6 +16,40 @@ pub enum LaunchMode {
     Attach,
 }
 
+/// Zoom ladder. Kept as constants rather than baked into the UI so raising the
+/// ceiling later is a one-line change, not a redesign of the control.
+pub const ZOOM_MIN: u8 = 50;
+pub const ZOOM_MAX: u8 = 100;
+pub const ZOOM_STEP: u8 = 10;
+pub const ZOOM_DEFAULT: u8 = 100;
+
+fn default_zoom_percent() -> u8 {
+    ZOOM_DEFAULT
+}
+
+/// Snap an arbitrary value onto the supported zoom ladder.
+///
+/// Anything below the floor or above the ceiling is clamped rather than
+/// rejected, because the value can arrive from a hand-edited settings file.
+pub fn normalize_zoom(value: u8) -> u8 {
+    if value < ZOOM_MIN {
+        return ZOOM_MIN;
+    }
+    if value > ZOOM_MAX {
+        return ZOOM_MAX;
+    }
+    // Snap to the nearest rung so a hand-written 57 behaves like 60.
+    let offset = value - ZOOM_MIN;
+    let steps = ZOOM_MAX - ZOOM_MIN;
+    let snapped = ZOOM_MIN + (offset + ZOOM_STEP / 2) / ZOOM_STEP * ZOOM_STEP;
+    snapped.min(steps + ZOOM_MIN)
+}
+
+/// The scale factor to hand the webview: 50 → 0.5.
+pub fn zoom_scale(percent: u8) -> f64 {
+    f64::from(normalize_zoom(percent)) / 100.0
+}
+
 /// Top-level configuration. Persisted as JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +74,15 @@ pub struct Config {
     pub spawn_timeout_seconds: u64,
     /// Whether to restart dsh on unexpected child exit.
     pub auto_restart_on_crash: bool,
+    /// WebView page zoom, in percent. See [`normalize_zoom`].
+    ///
+    /// `#[serde(default)]` is load-bearing, not decoration: this struct uses
+    /// `deny_unknown_fields` and every other field is required, so a new
+    /// required field would make an existing settings file fail to parse — and
+    /// [`Config::load_or_default`] would then quietly discard the user's port
+    /// and launch mode along with it.
+    #[serde(default = "default_zoom_percent")]
+    pub zoom_percent: u8,
 }
 
 impl Default for Config {
@@ -53,6 +96,7 @@ impl Default for Config {
             poll_interval_seconds: 0.5,
             spawn_timeout_seconds: 60,
             auto_restart_on_crash: true,
+            zoom_percent: ZOOM_DEFAULT,
         }
     }
 }
@@ -66,9 +110,23 @@ impl Config {
     }
 
     /// Load from the default location, or return `Config::default()` if missing.
+    ///
+    /// A malformed file falls back to the defaults, which is the friendlier
+    /// behaviour at runtime but destroys whatever the user had configured — so
+    /// it is logged loudly rather than swallowed.
     pub fn load_or_default() -> Self {
         match Self::config_path() {
-            Ok(path) if path.exists() => Self::load_from(&path).unwrap_or_default(),
+            Ok(path) if path.exists() => match Self::load_from(&path) {
+                Ok(config) => config,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "dsh_shell",
+                        "ignoring {}: {err}; falling back to defaults",
+                        path.display()
+                    );
+                    Self::default()
+                }
+            },
             _ => Self::default(),
         }
     }
@@ -148,5 +206,40 @@ mod tests {
         let cfg = Config::load_or_default();
         // dsh's own web default, so attach mode finds a running instance.
         assert_eq!(cfg.preferred_port, 3080);
+    }
+
+    #[test]
+    fn zoom_clamps_to_the_ladder() {
+        assert_eq!(normalize_zoom(0), ZOOM_MIN);
+        assert_eq!(normalize_zoom(49), ZOOM_MIN);
+        assert_eq!(normalize_zoom(50), 50);
+        assert_eq!(normalize_zoom(100), ZOOM_MAX);
+        assert_eq!(normalize_zoom(200), ZOOM_MAX);
+        assert_eq!(normalize_zoom(255), ZOOM_MAX);
+    }
+
+    #[test]
+    fn zoom_snaps_to_the_nearest_step() {
+        // A hand-edited 57 should behave like 60, not like some untested value.
+        assert_eq!(normalize_zoom(54), 50);
+        assert_eq!(normalize_zoom(55), 60);
+        assert_eq!(normalize_zoom(57), 60);
+        assert_eq!(normalize_zoom(95), 100);
+    }
+
+    #[test]
+    fn zoom_ladder_is_evenly_divisible() {
+        // A ladder that does not divide evenly would make the top or bottom rung
+        // unreachable, which is a silently broken control.
+        assert_eq!((ZOOM_MAX - ZOOM_MIN) % ZOOM_STEP, 0);
+        assert_eq!(ZOOM_MIN % ZOOM_STEP, 0);
+        assert_eq!(ZOOM_MAX % ZOOM_STEP, 0);
+    }
+
+    #[test]
+    fn zoom_scale_matches_percent() {
+        assert!((zoom_scale(50) - 0.5).abs() < f64::EPSILON);
+        assert!((zoom_scale(100) - 1.0).abs() < f64::EPSILON);
+        assert!((zoom_scale(70) - 0.7).abs() < f64::EPSILON);
     }
 }

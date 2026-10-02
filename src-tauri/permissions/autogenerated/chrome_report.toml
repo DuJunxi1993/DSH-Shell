@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chrome-report"
+description = "Enables the chrome_report command without any pre-configured scope."
+commands.allow = ["chrome_report"]
+
+[[permission]]
+identifier = "deny-chrome-report"
+description = "Denies the chrome_report command without any pre-configured scope."
+commands.deny = ["chrome_report"]

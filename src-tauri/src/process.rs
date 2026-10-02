@@ -81,6 +81,9 @@ impl DshProcess {
             .stderr(Stdio::piped())
             .stdin(Stdio::null())
             .kill_on_drop(true);
+        // Without this a console window flashes open for the whole life of dsh,
+        // because a GUI-subsystem parent has no console for the child to share.
+        platform::hide_child_console(&mut cmd);
         cmd
     }
 
