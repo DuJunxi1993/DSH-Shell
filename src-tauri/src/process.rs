@@ -41,14 +41,20 @@ impl std::fmt::Debug for DshProcess {
 
 impl Drop for DshProcess {
     fn drop(&mut self) {
-        // Sync path: if the lock is contended we cannot await a graceful
-        // shutdown, but the direct child still dies with the `Child` value.
+        // The tree kill is what actually matters. `start_kill` on the direct
+        // child is not enough: dsh.cmd runs as cmd.exe, so by the time we are
+        // dropping, cmd.exe may already be gone and node — a grandchild — is
+        // still holding the port. Killing a dead child is a no-op, which is how
+        // a dsh survived a panicking shell.
+        if let Some(pid) = self.pid {
+            platform::terminate_tree_sync(pid);
+        }
         if let Ok(mut guard) = self.child.try_lock() {
             if let Some(child) = guard.as_mut() {
                 let _ = child.start_kill();
             }
         }
-        tracing::info!(target: "dsh_shell", "DshProcess dropped; child reaped");
+        tracing::info!(target: "dsh_shell", "DshProcess dropped; child tree reaped");
     }
 }
 

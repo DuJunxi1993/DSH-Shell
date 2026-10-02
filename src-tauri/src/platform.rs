@@ -29,6 +29,32 @@ pub fn is_dead(child: &Child) -> bool {
     child.id().is_none()
 }
 
+/// Synchronous tree termination, for the `Drop` backstop.
+///
+/// `Drop` cannot await, and that is exactly when it is needed: the observed
+/// failure is a dsh that outlived the shell because its `cmd.exe` parent had
+/// already exited, leaving `start_kill` aimed at a dead process while node kept
+/// the port bound. `terminate_tree` is async, so this is the same PID-scoped
+/// call run blocking — acceptable because it only runs while the process is
+/// already on its way out.
+#[cfg(windows)]
+pub fn terminate_tree_sync(pid: u32) {
+    let _ = std::process::Command::new(TASKKILL)
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+#[cfg(unix)]
+pub fn terminate_tree_sync(pid: u32) {
+    // SIGKILL: we are already unwinding, so there is no grace period to honour.
+    unsafe {
+        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
 /// Terminate the child and everything below it, then reap it.
 pub async fn graceful_shutdown(child: &mut Child, pid: Option<u32>, grace: Duration) {
     if let Some(pid) = pid {
