@@ -22,8 +22,9 @@ Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
 | Shutdown: window close → dsh tree gone → port freed | verified |
 | No console window while dsh starts or while we reap it | verified (zero visible console windows over a full run) |
 | File drag-and-drop onto the page | `disable_drag_drop_handler()`; needs your eyes on a real drop |
-| Frameless window with an injected title bar | injected, laid out and IPC-verified; visual polish to confirm |
-| Page zoom 50–100% in 10% steps, persisted | verified (a click stepped 100 → 90 and wrote the setting) |
+| Frameless window with an injected title bar | injected, geometry asserted against the live DOM |
+| Content column inset so nothing is occluded | verified: `inset centerCol by 32px`, sidebar left at full height |
+| Page zoom 50–100% in 10% steps, persisted | verified: bar measures 32 logical px at 100% *and* at 50% |
 | Anti-nest guard (refuses to run inside a harness session) | verified |
 | Port-ownership guard (points at `attach` instead of dying) | verified |
 | `cargo test` — 49 hermetic tests against `stub-dsh` | green |
@@ -190,8 +191,15 @@ light/dark theme.
 - **− / +** and the percentage step the page zoom, 50–100% in 10% steps, and the
   choice is remembered. `Ctrl+Alt+↑` / `Ctrl+Alt+↓` do the same. Chromium's own
   `Ctrl+=` zoom is disabled so the percentage cannot drift from the real zoom.
-- The bar keeps its 32 physical pixels at every zoom level, so the buttons stay
-  usable at 50%.
+- The bar keeps its 32 logical pixels at every zoom level, so the buttons stay
+  usable at 50%. This is asserted, not eyeballed: the chrome reports its measured
+  geometry back to the shell, which compares it against the constants in
+  `chrome.rs` and logs a warning on any mismatch.
+- The **content area is inset by the bar height** so the dsh app's own top-right
+  controls — including the right-hand dock panel — are never underneath the
+  buttons. The sidebar keeps its full height and still reaches the top edge.
+- Hover highlights every button; the close button's is a light red, and hover
+  backgrounds are rounded to match the window.
 
 Two things make this work at all, and both are non-obvious:
 

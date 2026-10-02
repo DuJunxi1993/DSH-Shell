@@ -4,11 +4,13 @@
 //!
 //! - [`config`]: settings schema, load/save, defaults
 //! - [`endpoint`]: dsh's stdout → the authenticated WebView URL
+//! - [`chrome`]: injected window-chrome geometry and the zoom compensation
 //! - [`preflight`]: the checks that keep us from nesting or double-binding
 //! - [`process`]: spawn / attach / wait / shutdown
 //! - [`platform`]: OS-specific termination
 //! - [`error`]: the shared error surface
 
+pub mod chrome;
 pub mod config;
 pub mod endpoint;
 pub mod error;

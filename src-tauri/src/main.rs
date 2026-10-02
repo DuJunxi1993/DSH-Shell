@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+use dsh_shell_core::chrome;
 use dsh_shell_core::config::{self, Config};
 use dsh_shell_core::error::ShellError;
 use dsh_shell_core::process::{self, DshProcess};
@@ -110,15 +111,12 @@ fn main() {
 
 const MAIN_WINDOW: &str = "main";
 
-/// The chrome script plus the value it needs before its first line runs.
+/// The chrome script, with its geometry and the current zoom baked in.
 ///
 /// `initialization_script` is re-run on every navigation, so this covers both
 /// the local boot placeholder and the remote dsh origin.
 fn chrome_script(zoom_percent: u8) -> String {
-    format!(
-        "window.__DSH_SHELL_ZOOM__ = {zoom_percent};\n{}",
-        include_str!("../../platform_adapt.js")
-    )
+    chrome::script(zoom_percent)
 }
 
 /// Step the page zoom by one rung and persist the choice.
@@ -175,38 +173,85 @@ fn persist_zoom(percent: u8) {
 /// A one-line log turns that into a diagnosable event.
 #[tauri::command]
 fn chrome_report(report: ChromeReport) {
-    if report.installed && report.still_present {
-        tracing::info!(
-            target: "dsh_shell",
-            "chrome installed: origin={} height={}px zoom={} placeholder={} ready={:?}",
-            report.origin,
-            report.height_css_px,
-            report.zoom,
-            report.placeholder,
-            report.ready_state
-        );
-        // The layout boxes are what you want when the chrome is present but
-        // invisible: they distinguish "element is missing" from "element is
-        // there but not painted", which a screenshot cannot.
-        tracing::debug!(
-            target: "dsh_shell",
-            "chrome layout: computed_zoom={:?} dsh_root_children={} {}",
-            report.computed_zoom,
-            report.dsh_root_children,
-            report.boxes
-        );
-    } else {
+    if !report.installed || !report.still_present {
         tracing::warn!(
             target: "dsh_shell",
             "chrome FAILED to install (installed={}, still_present={}, ready_state={:?}, \
-             origin={}, dsh_root_children={}) — this window has no title bar and no way to close it",
+             origin={}) — this window has no title bar and no way to close it. {}",
             report.installed,
             report.still_present,
             report.ready_state,
             report.origin,
             report.boxes
         );
+        return;
     }
+
+    // The invariant, checked against the constants that live here rather than
+    // in the script. The page multiplies its measurements by the zoom, so these
+    // must come back as the design lengths. They did not once: dividing the
+    // lengths *and* counter-scaling the clusters applied the correction twice,
+    // so at 50% zoom the window buttons rendered at 92 logical pixels instead
+    // of 46, which is what "the menu bar grows when I zoom out" was.
+    let expected = [
+        ("bar height", report.measured_bar_h, chrome::BAR_H),
+        ("zoom control", report.measured_zoom_w, chrome::ZOOM_W),
+        (
+            "window buttons",
+            report.measured_win_w,
+            chrome::window_cluster_width(),
+        ),
+        // The footprint the avoidance actually reserves, which is the sum of
+        // the two clusters and so is the one number that has to be right for
+        // the page to clear the chrome.
+        (
+            "reserved width",
+            report.measured_zoom_w + report.measured_win_w,
+            chrome::reserved_width(),
+        ),
+    ];
+    let wrong: Vec<String> = expected
+        .iter()
+        .filter(|(_, measured, want)| (measured - want).abs() > 0.5)
+        .map(|(name, measured, want)| {
+            format!("{name} measured {}px, expected {}px", round1(*measured), round1(*want))
+        })
+        .collect();
+
+    if wrong.is_empty() {
+        tracing::info!(
+            target: "dsh_shell",
+            "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} avoidance: {}",
+            report.origin,
+            round1(report.measured_bar_h),
+            round1(report.measured_zoom_w + report.measured_win_w),
+            report.zoom,
+            report.placeholder,
+            report.avoid
+        );
+    } else {
+        tracing::warn!(
+            target: "dsh_shell",
+            "chrome geometry is WRONG: {}. The 1/zoom correction must be applied exactly \
+             once, in chrome::css_len. {}",
+            wrong.join("; "),
+            report.boxes
+        );
+    }
+
+    // The layout boxes are what you want when the chrome is present but
+    // invisible: they distinguish "element is missing" from "element is there
+    // but not painted", which a screenshot cannot.
+    tracing::debug!(
+        target: "dsh_shell",
+        "chrome layout: color={} {}",
+        report.color,
+        report.boxes
+    );
+}
+
+fn round1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
 }
 
 #[derive(serde::Deserialize)]
@@ -215,17 +260,23 @@ struct ChromeReport {
     /// Whether the bar was still in the document a moment after install, which
     /// is how a SPA that rewrites `<body>` shows up.
     still_present: bool,
-    height_css_px: f64,
+    /// Bar height multiplied by the page zoom, i.e. in logical pixels. Compared
+    /// against [`chrome::BAR_H`].
+    measured_bar_h: f64,
+    /// Zoom-control cluster width, multiplied by the page zoom. Compared
+    /// against [`chrome::ZOOM_W`].
+    measured_zoom_w: f64,
+    /// Window-button cluster width, multiplied by the page zoom. Compared
+    /// against [`chrome::window_cluster_width`].
+    measured_win_w: f64,
     zoom: f64,
-    /// `--dsh-shell-zoom` as the browser resolved it. Kept in the debug log
-    /// because a mismatch means another stylesheet is redefining the variable,
-    /// which would silently rescale the bar.
-    computed_zoom: String,
     placeholder: bool,
     ready_state: String,
     origin: String,
-    dsh_root_children: i64,
     boxes: String,
+    /// What the reserved-corner avoidance did, or why it did nothing.
+    avoid: String,
+    color: String,
 }
 
 /// A throw inside the injected script. Logged verbatim: it is the only record of

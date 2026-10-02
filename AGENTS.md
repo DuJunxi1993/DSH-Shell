@@ -146,17 +146,64 @@ obvious and the Tauri docs do not put them together.
 5. **A frameless window keeps edge resizing.** Wry attaches a manual hit-test
    handler for undecorated windows, so dragging the border still resizes. The
    chrome leaves the top few pixels of its drag strip free for that hit test.
+6. **Apply the 1/zoom correction exactly once.** The page zoom multiplies every
+   CSS length in the document, so a design length `D` that must render as `D`
+   logical pixels needs `D / zoom` — that is `chrome::css_len`, and it is the
+   only place the division may live. Dividing the lengths *and* counter-scaling
+   the clusters with a transform applied it twice, so at 50% zoom the window
+   buttons rendered at 92 logical pixels instead of 46: "the menu bar grows when
+   I zoom out". `chrome::css_len` is unit-tested and `chrome_report` re-checks
+   the live DOM against the constants, so this cannot fail silently again.
+
+## The dsh page has no hook to grab on
+
+dsh's app shell cannot be addressed directly, and any change to the page layout
+has to be geometric:
+
+- No stable selector. No semantic `id` on the shell, and CSS-Modules class
+  names are hashed per build (`pI_x6G_centerCol` in one release, something else
+  in the next). Only `#root` survives.
+- No ARIA landmarks: no `banner`, `main`, `complementary` or `toolbar` anywhere
+  in the bundle, so accessibility cannot be used as an anchor either.
+- Hit-testing is not a substitute. `elementsFromPoint` skips anything under a
+  `pointer-events: none` overlay, and app headers routinely have one, so the row
+  being covered is invisible to it exactly when it matters.
+
+What does work, and what `platform_adapt.js` relies on: the shell is the widest
+left-anchored column that is not the full window width, and the content column is
+its sibling reaching the right edge. Insetting that content column by the bar
+height clears the chrome for *anything* the app puts in the corner, now and after
+a dsh upgrade. Note that the right-hand dock panel (`P3OORG_panel` in one
+release) is a sibling of the content column and shares its right edge, so it is
+covered by the same inset — which is what the user wanted, since that panel holds
+the buttons that were being hidden.
+
+Do not add a per-row padding fallback. It was tried: it padded list items and
+conversation bubbles, which breaks the layout rather than protecting it.
 
 ## Chrome self-diagnosis
 
-`platform_adapt.js` reports its own layout to the `chrome_report` command: origin,
-height, and the bounding box of every element. The reason this exists is that a
+`platform_adapt.js` reports to the `chrome_report` command: the measured bar
+height and cluster widths multiplied back through the zoom, what the content
+inset did, and the layout box of every part of the chrome. This exists because a
 frameless window with a missing or invisible title bar is a trap, and a
 screenshot cannot tell "element missing" from "element present but not painted".
+
+Two reasons this is worth having, learned the hard way:
+
+- The first two reports always land while dsh is still on its boot screen
+  (`_boot_*`, a centred wordmark and spinner), before any session header exists.
+  The report is re-sent whenever the inset result changes, or the log only ever
+  describes the page before it was interesting.
+- "Nothing matched" on its own is useless. The rejection reasons and the measured
+  column rects travel into the log, which is how the sidebar was found to have
+  been misidentified as the 1024px-wide app shell.
+
 Check the log before touching the CSS:
 
 ```powershell
 Select-String -Path "$env:APPDATA\deepseek\dsh-shell\data\logs\dsh-shell.log.*" -Pattern "chrome"
 ```
+
 
 
