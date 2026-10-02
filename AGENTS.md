@@ -38,6 +38,17 @@ cargo clippy --all-targets -- -D warnings
 cargo build --release
 ```
 
+The one test that does touch the real harness is `tests/live_dsh.rs`. It is
+`#[ignore]`d *and* gated on `DSH_SHELL_LIVE_TEST=1`:
+
+```powershell
+$env:DSH_SHELL_LIVE_TEST = "1"
+cargo test --test live_dsh -- --ignored --nocapture   # ~5 s, leaves nothing behind
+```
+
+Confirm no dsh is running first (rule 3), and remember that a stray dsh
+attaching to the shared `bili` proxy will change the result.
+
 `cargo-tauri` 2.11.4 is already installed, so the Node toolchain is not
 required for anything:
 
@@ -79,9 +90,27 @@ Rules that follow from reading dsh's source (`dsh-web-app`, `dsh-client-connecti
 - The `?token=` query is **mandatory**. `authorizeIndex` answers `401` to any
   request that has neither a valid token query nor a `dsh-auth-` cookie, so a
   tokenless URL from a port probe can never load the SPA. Never accept one.
+- A request that *has* the token always gets `303` + `Location: ./` + a
+  `dsh-auth-` cookie. The index is served only on the **clean** URL with that
+  cookie. A test that keeps `?token=` in the URL will loop on 303s and think it
+  is broken.
 - The token is per-process. A URL captured from an *earlier* dsh is worthless.
 - `dsh` also prints `bili: attaching to running proxy at http://127.0.0.1:18787`
   on **stderr**. That is an internal HTTP proxy, not the UI. A loose
   "any loopback URL" regex will happily point the WebView at it — which is
   exactly the bug this repo shipped with. Match the `dsh web:` prefix and
   require the port to be the one we asked for.
+- `bili` is a **machine-wide** proxy. A second dsh *attaches* to an existing one
+  instead of failing, so a dsh left behind by an interrupted run silently
+  changes how the next boot behaves. Check for strays before believing a live
+  test failure.
+
+## Killing the child
+
+`dsh_binary_path` is a `.cmd` shim, so on Windows we spawn `cmd.exe` and the
+harness is a **grandchild** `node.exe`. `start_kill` on the direct child kills
+`cmd.exe` alone, leaving node holding the port — observed in practice, not
+theoretical. Terminate the tree by PID, in both the async path and `Drop`
+(which cannot await, so it shells out to `taskkill /PID <pid> /T /F`
+synchronously). Never by name.
+

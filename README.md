@@ -1,141 +1,198 @@
-# dsh-shell (Tauri)
+# dsh-shell
 
-A native desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) web UI.
+A native desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+(`dsh`) web UI: a real window instead of a browser tab, and real ownership of the
+`dsh` process behind it.
 
-This is the Tauri 2.x port of [dsh-swiftUI](https://github.com/DuJunxi1993/dsh-swiftUI). It mirrors the macOS SwiftUI shell design 1:1 — same lifecycle model, same config schema, same "pure shell" principle — but targets **Windows** first (via WebView2), with macOS and Linux also buildable from the same Rust core.
+![dsh-shell running the dsh web UI](docs/screenshot.png)
 
-> **Pure shell.** dsh-shell does not modify dsh, does not bundle dsh, and does not write any dsh client plugin. It talks to dsh the same way a browser does: a single HTTP/WebSocket origin on `127.0.0.1`.
+> **Pure shell.** dsh-shell does not modify dsh, does not bundle dsh, and does
+> not write a dsh client plugin. It talks to dsh exactly the way a browser does:
+> one HTTP origin on `127.0.0.1`.
 
 ## Status
 
-| Stage | State |
+Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
+
+| | |
 |---|---|
-| Rust core: `process` / `endpoint` / `config` / `platform` / `error` | ✅ |
-| `spawn` mode (fork `dsh web`, capture URL, port-probe fallback) | ✅ |
-| `attach` mode (probe loopback for an already-running dsh) | ✅ |
-| Graceful shutdown (`start_kill` → 5 s → `kill` → `wait`) | ✅ |
-| Tauri 2.x window + WebView2 load of dsh URL | ✅ |
-| Platform CSS injection (Windows / macOS / Linux) | ✅ |
-| Anti-nest self-protection (kill-loop guard) | ✅ (env-gated, off unless `DSH_SHELL_CHILD=1` is already set in the parent environment) |
-| Unit tests for core (URL regex, command builder, config round-trip) | ✅ |
-| `cargo build --release` clean (0 warning / 0 error) | ✅ |
-| `cargo test` clean (19/19 unit + integration) | ✅ |
-| `cargo clippy -- -D warnings` clean | ✅ |
-| `.msi` / `.nsis` bundle | ⏳ Run `npm run build` |
-| App icon (placeholder teal "D"), transparent titlebar, status badge | ⏳ Roadmap only |
+| Endpoint resolution (stdout URL line, token, port check) | verified, incl. against real dsh |
+| `spawn` mode: fork `dsh web`, wait for the authenticated URL | verified |
+| `attach` mode: adopt an already-running dsh, never kill it | verified |
+| Shutdown: window close → dsh tree gone → port freed | verified |
+| Anti-nest guard (refuses to run inside a harness session) | verified |
+| Port-ownership guard (points at `attach` instead of dying) | verified |
+| `cargo test` — 38 hermetic tests against `stub-dsh` | green |
+| `cargo clippy --all-targets -- -D warnings` | clean |
+| `cargo build --release` | clean |
+| `.msi` + `.nsis` bundles | built |
+| macOS / Linux | core compiles; not exercised |
 
 ## Requirements
 
-- **Windows 10+ with WebView2 Runtime** (preinstalled on Windows 11)
-- **Rust 1.77+** (`rustup update stable`)
-- **Node.js 18+** (only needed for `npm run build` to package)
-- A working **dsh** install — `dsh --version` should print a version.
+- **Windows 10+ with the WebView2 Runtime** (preinstalled on Windows 11)
+- **Rust 1.78+** — a `.cmd` shim is spawned as `cmd.exe`, which older toolchains
+  refuse to do. Current stable is fine.
+- A working **dsh**: `dsh --version` prints a version.
   ```powershell
   npm install -g @deepseek-ai/dsh
   ```
 
-## Building
+Node is *not* required: `cargo-tauri` does the packaging.
+
+## Build
 
 ```powershell
-cd D:\Development\DSH-Shell
-npm install                  # one-time
-npm run build                # produces .msi / .nsis in src-tauri\target\release\bundle
+cd D:\Development\DSH-Shell\src-tauri
+cargo test                 # hermetic; never starts a real dsh
+cargo clippy --all-targets -- -D warnings
+cargo tauri build          # -> target\release\bundle\{msi,nsis}
 ```
 
-For dev:
-
-```powershell
-npm run dev
-```
+For a quick run, `cargo run` is enough. There is deliberately **no dev server**:
+the window is created in `setup()` with a URL that only exists at runtime, so
+`tauri dev` (which wants a `devUrl`) has nothing to load.
 
 ## Configuration
 
-Settings live at `%APPDATA%\deepseek\dsh-shell\config\settings.json`. Defaults:
+`%APPDATA%\deepseek\dsh-shell\config\settings.json`. Written only if you create
+it; the defaults below apply when it is missing.
 
 ```json
 {
   "dsh_binary_path": "C:\\Users\\<you>\\AppData\\Roaming\\npm\\dsh.cmd",
   "launch_mode": "spawn",
   "listen_host": "127.0.0.1",
-  "preferred_port": 34247,
+  "preferred_port": 3080,
   "trusted_hosts": ["127.0.0.1", "localhost"],
   "poll_interval_seconds": 0.5,
-  "spawn_timeout_seconds": 60,
+  "spawn_timeout_seconds": 120,
   "auto_restart_on_crash": true
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `dsh_binary_path` | Absolute path to the `dsh` executable. |
-| `launch_mode` | `spawn` → fork `dsh web` ourselves; `attach` → only connect to an already-running instance. |
-| `listen_host` | Loopback host passed to `dsh web --host`. `0.0.0.0` is **not** supported (mirrors dsh's own policy). |
-| `preferred_port` | Fixed port forwarded to `dsh web --port`. `0` → OS-assigned (URL-line-only startup). |
-| `trusted_hosts` | Hosts appended to `dsh web --trusted-host` (repeatable). |
-| `spawn_timeout_seconds` | How long to wait for the `dsh web:` URL line on stdout before probing the fixed port as a fallback. |
-| `auto_restart_on_crash` | Reserved for future use; current binary exits on crash to keep shutdown semantics simple. |
+| `dsh_binary_path` | Absolute path to dsh. Defaults to the npm-global `dsh.cmd` if present, else plain `dsh` on `PATH`. |
+| `launch_mode` | `spawn` → fork `dsh web` ourselves. `attach` → adopt an instance that is already running, and never kill it. |
+| `listen_host` | Loopback only. dsh refuses `0.0.0.0` and so does the config. |
+| `preferred_port` | Passed to `dsh web --port`. `0` lets the OS choose. 3080 is dsh's own default. |
+| `trusted_hosts` | Repeated as `--trusted-host <host>`; they feed dsh's `/api` browser-trust fence. |
+| `poll_interval_seconds` | How often the liveness probe asks the port. |
+| `spawn_timeout_seconds` | How long to wait for dsh's URL line. dsh's Loader can take a while on a cold start, so this is generous. |
+| `auto_restart_on_crash` | Accepted for schema compatibility. The shell does not restart dsh: a restart loop would fight the "close the window, dsh dies" contract. |
 
-The shell forwards no working directory to `dsh web` — the dsh SPA picks its own workspace inside the browser UI.
+## How the endpoint is found
+
+This is the part worth reading, because getting it wrong is invisible: the app
+starts, logs a URL, and shows you a blank window.
+
+dsh prints exactly one useful line, on **stdout**, and only after its plugin
+Loader has fully settled — which is seconds *after* the socket is bound:
+
+```
+dsh web: http://127.0.0.1:3080/?token=<launchToken>
+```
+
+Three facts from dsh's own source shape the implementation:
+
+1. **`?token=` is mandatory.** `dsh-client-connection`'s `authorizeIndex` serves
+   the SPA only for a request carrying a valid `?token=` query (which it trades
+   for a `dsh-auth-` cookie and a 303 to `./`) or that cookie. A tokenless URL
+   from a port probe gets a 401 and a white window. So "the port answers, let's
+   use it" can never work, and the port probe is a log line, not a fallback.
+2. **stderr contains loopback URLs that are not the UI.** dsh logs
+   `bili: attaching to running proxy at http://127.0.0.1:18787` — its internal
+   HTTP proxy. An earlier version of this shell scanned both streams with one
+   loose loopback regex and returned that proxy port. Only the `dsh web:` line
+   is a URL source now, and the port must be the one we asked for.
+3. **The token is per-process.** A URL captured from an earlier dsh is
+   worthless, so it is resolved once, against the child we just spawned.
+
+dsh's own output is mirrored into the log with a 40-line tail attached to every
+error, because a release build has no console and a silent exit is
+indistinguishable from a hang.
 
 ## Lifecycle
 
 ```
-+-----------+   fork    +----------+    http   +-----------+
-| DSHShell  | --------▶ | dsh web  | --------▶ | WebView2  |
-| (Tauri)   |           | (child)  |           | + DSH SPA |
-+-----------+           +----------+           +-----------+
-       │                      │
-       │  window close        │  crash
-       ▼                      ▼
-   shutdownBlocking      window stays blank,
-   SIGTERM-equivalent    user closes app,
-   → 5s → SIGKILL        shell reaps child
++--------------------+   fork    +-----------+    http    +----------------+
+|  DSH Shell (Tauri) | --------> |  dsh web  | ---------> | WebView2 + SPA |
+|  placeholder -> dsh|           | cmd.exe + |             |                |
+|                    |           | node      |             |                |
++--------------------+           +-----------+             +----------------+
+         |                            |
+         | window closed              | dsh dies
+         v                            v
+   terminate the tree by PID      port 3080 released
+   (taskkill /PID <n> /T)
 ```
 
-- On launch the app forks `dsh web`, captures the `dsh web: http://127.0.0.1:NNNN/` line, and points the WebView at it.
-- On window close the `WindowEvent::CloseRequested` handler synchronously terminates dsh before the window is destroyed.
+The tree kill is not optional on Windows. `dsh_binary_path` is a `.cmd` shim, so
+what we spawn is `cmd.exe` and the harness is a **grandchild** `node.exe`.
+Terminating the direct child kills `cmd.exe` alone: node survives holding the
+port, the window is gone, and nothing will ever reap it. This is not
+hypothetical — the first live run of this shell left exactly that behind, which
+is why `Drop` kills the tree too, synchronously, because `Drop` cannot await.
 
-## Diagnostics
+Closing the window runs `RunEvent::ExitRequested` with `prevent_exit`, shuts dsh
+down on the async runtime, then exits. It does *not* use
+`WindowEvent::CloseRequested`: blocking the event loop there deadlocks the very
+loop that has to service the exit. `panic = "abort"` is also deliberately not
+set — abort skips every `Drop`, which is the one way to strand a live dsh.
+
+## Safety rails
+
+The failure that shapes this repo: an earlier agent working here killed the
+harness it was running inside, most likely with a name-based kill
+(`taskkill /IM node.exe`). So:
+
+- **dsh-shell only ever kills PIDs it spawned itself**, from `child.id()`.
+- **It refuses to start inside a harness session.** dsh injects
+  `DSH_SESSION_ID` / `DSH_PROFILE` / `DSH_WEB_URL` into every model-facing
+  shell call, and scrubs ambient `DSH_*` first, so those variables are a
+  reliable signal. A second harness started from inside a session contends for
+  the same ports, proxy and session store, and the damage lands on the outer
+  session.
+- **It refuses to start when the port is already owned**, and tells you to use
+  `attach` instead.
+- **Tests never start a real dsh.** They drive `stub-dsh`, a test double that
+  reproduces the URL line, the 401 fence and the decoy proxy banner.
+
+`AGENTS.md` has the full rules, including how to run the one test that does
+touch the real harness.
+
+## Logs
+
+```
+%APPDATA%\deepseek\dsh-shell\data\logs\dsh-shell.log.<date>   daily, all builds
+%APPDATA%\deepseek\dsh-shell\data\logs\crash.log              startup failures
+```
+
+`RUST_LOG=debug` adds dsh's own chatter. Debug builds also print to the console.
+
+## Manual verification
 
 ```powershell
 $env:RUST_LOG = "info,dsh_shell=debug"
-npm run dev
+cd D:\Development\DSH-Shell\src-tauri
+cargo run
 ```
 
-Logs flow through the `tracing` crate to stderr.
+1. A window appears immediately showing "Starting dsh…".
+2. Within a few seconds the title becomes "DSH Shell — dsh" and the dsh UI
+   loads. It is a real UI, not a 401 page.
+3. Close the window. Within ~1s dsh is gone and the port is free:
+   ```powershell
+   Get-NetTCPConnection -State Listen -LocalPort 3080
+   ```
 
-## Anti-nest protection
-
-`DshProcess::spawn` refuses to fork `dsh` when the environment variable `DSH_SHELL_CHILD=1` is already set. This guard is **passive** — it does not set the variable on its own — and only fires if a parent `dsh` instance explicitly propagated that variable when spawning us. In normal use the variable is unset and the guard is a no-op. The guard exists so a future dsh feature (e.g. a child-shell escape hatch) cannot accidentally trigger a kill cascade.
-
-## Roadmap
-
-See [`ROADMAP.md`](ROADMAP.md).
-
-## Manual verification checklist
-
-The agent that built this shell cannot run `cargo tauri dev` or `cargo run` itself (it would be detected as nested), so the human operator must verify on a clean shell. Run from an **elevated PowerShell** that does **not** have `DSH_SHELL_CHILD` set:
-
-```powershell
-$env:DSH_SHELL_CHILD = $null   # ensure clean env
-Set-Location D:\Development\DSH-Shell\src-tauri
-cargo test --release           # 19/19 must be green
-cargo clippy --release --all-targets -- -D warnings
-cargo build --release
-.\target\release\dsh-shell.exe # opens WebView2 window pointed at dsh
-```
-
-Expected behavior:
-
-1. A WebView2 window titled "DSH Shell — dsh @ 127.0.0.1" appears.
-2. The dsh SPA loads (the token URL is consumed in-process via cookie).
-4. Within 1 s of closing the window, `dsh` exits and port 34247 is freed (verify with `Get-NetTCPConnection -LocalPort 34247`).
-
-If any step fails, capture stderr (`2> err.log`) and file an issue with the log attached.
+If a step fails, the log has the reason and dsh's own output with it.
 
 ## Architecture
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and
+[`AGENTS.md`](AGENTS.md) for the working rules.
 
 ## License
 

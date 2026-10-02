@@ -4,11 +4,11 @@
   "private": true,
   "description": "A native desktop shell for the DeepSeek Harness (dsh) web UI.",
   "scripts": {
-    "tauri": "tauri",
-    "dev": "tauri dev",
-    "build": "tauri build"
+    "dev": "cargo run --manifest-path src-tauri/Cargo.toml",
+    "build": "cargo tauri build",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "icon": "python scripts/make-icon.py && cargo tauri icon src-tauri/icons/dsh-shell.png"
   },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0"
-  }
+  "//": "There is no dev server: the window is created in setup() with a URL that only exists at runtime, so `tauri dev` would only ever show the placeholder. cargo-run is the dev loop, and cargo-tauri does the bundling - Node is not required."
 }
