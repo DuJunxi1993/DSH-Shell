@@ -519,20 +519,32 @@
    * stayed level with the bar, so whatever is still sitting in the strip
    * afterwards gets a `margin-top` of its own.
    */
-  function insetColumn(column, label) {
+  /* Push a column's content below the bar, and below the content column's own
+   * top row.
+   *
+   * `padding-top` on the column moves everything in normal flow and leaves the
+   * bottom edge where it was, with `border-box`. But the bar height alone is not
+   * enough: the content column's header row sits at roughly the same depth as the
+   * dock's own top row, so a dock inset by exactly one bar height ended up level
+   * with the content header instead of below it. `extraTop` is the depth the
+   * neighbouring column's top row actually occupies, so the dock clears the row
+   * rather than the bar.
+   *
+   * Only normal-flow content is moved by the padding. Anything positioned -
+   * `absolute`, `fixed`, `sticky` - ignores a parent's padding, which is how the
+   * dock's own tab strip stayed level with the bar. Those are left for
+   * `clearCorner` to push out, so exactly one place displaces elements and they
+   * cannot be displaced twice.
+   */
+  function insetColumn(column, label, extraTop) {
     var barCss = cssPx(BAR_H);
+    var pad = barCss + (extraTop || 0);
     column.style.boxSizing = "border-box";
-    column.style.paddingTop = barCss + "px";
+    column.style.paddingTop = pad + "px";
     column.setAttribute(INSET_FLAG, "1");
-
-    /* Only normal-flow content is moved by the padding. Anything positioned -
-       `absolute`, `fixed`, `sticky` - ignores a parent's padding, which is how the
-       dock's own top row stayed level with the bar. Those are left for
-       `clearCorner` to push out, so there is exactly one place that displaces
-       elements and they cannot be displaced twice. */
     return "inset " + label + " " + describe(column) +
       " (position:" + positionOf(column) + ", padding-top " +
-      Math.round(cssPx(BAR_H)) + "px)";
+      Math.round(pad) + "px)";
   }
 
   /* --- the content area's top row ------------------------------------------
@@ -587,56 +599,72 @@
       return "no top row found in the content column";
     }
     var rect = best.getBoundingClientRect();
+    /* The gutter exists only while this row's right end actually reaches the
+       reserved corner. That single condition is what makes both dock states come
+       out right without branching on "is the dock open":
+       dock closed -> the row ends at the window edge and needs the gutter; dock
+       open -> the dock holds the corner, the row stops short of it, and the
+       gutter comes *off*. Leaving a stale gutter on is what opened a gap
+       between the row's controls and the dock. */
     if (rect.right <= viewportW - reservedCss) {
+      best.style.boxSizing = "";
+      best.style.paddingRight = "";
+      best.removeAttribute(INSET_FLAG);
       return "top row " + describe(best) + " ends at " + Math.round(rect.right) +
-        ", clear of the reserved corner (starts at " +
-        Math.round(viewportW - reservedCss) + "): no shift needed";
+        ", corner held by the dock (starts at " +
+        Math.round(viewportW - reservedCss) + "): gutter released";
     }
     var gutter = reservedCss + cssPx(GUTTER_EXTRA);
     best.style.boxSizing = "border-box";
     best.style.paddingRight = gutter + "px";
-    /* Measured, not assumed: the row's text is found by its own line boxes and
-       then placed so it clears the window top by TOP_ROW_MIN_GAP while still
-       sitting inside the bar's band. When the text cannot be measured - the
-       blank state has none - the row is left where it is rather than guessed
-       at, because lifting by half the bar was what put the text too close to
-       the frame. */
-    var lift = 0;
-    var range = document.createRange();
-    range.selectNodeContents(best);
-    var boxes = range.getClientRects();
-    var textTop = Infinity;
-    var textBottom = -Infinity;
-    for (var b = 0; b < boxes.length; b++) {
-      if (boxes[b].height > 0 && boxes[b].width > 0) {
-        textTop = Math.min(textTop, boxes[b].top);
-        textBottom = Math.max(textBottom, boxes[b].bottom);
-      }
-    }
-    var measured = isFinite(textTop);
-    if (measured) {
-      /* Wanted: the text's top at TOP_ROW_MIN_GAP, and no higher than the bar's
-         bottom, so the row still reads as reaching the top of the window. */
-      var wanted = cssPx(TOP_ROW_MIN_GAP);
-      var ceiling = cssPx(BAR_H) - (textBottom - textTop) * 0.5;
-      lift = wanted - textTop;
-      if (textTop + lift < wanted) {
-        lift = wanted - textTop;
-      }
-      if (textTop + lift > ceiling) {
-        lift = Math.max(0, ceiling - textTop);
-      }
-    }
-    best.style.transform = lift ? "translateY(" + lift + "px)" : "";
+    best.style.transform = shiftTopRow(best);
     best.setAttribute(INSET_FLAG, "1");
     return "top row " + describe(best) + " shifted left " +
-      Math.round(gutter) + "px, moved " + (lift >= 0 ? "down " : "up ") +
-      Math.abs(Math.round(lift)) + "px; " +
-      (measured
-        ? "text " + Math.round(textTop) + ".." + Math.round(textBottom) +
-          "px, centre " + Math.round((textTop + textBottom) / 2)
-        : "no text in this row; left in place") +
-      " (bar 0.." + Math.round(cssPx(BAR_H)) + "px, wanted text top >= " +
+      Math.round(gutter) + "px; " + describeShift(best);
+  }
+
+  /* Where the row's text actually is.
+   *
+   * The row is much taller than the bar and renders its text at the top of
+   * itself, so the row's box says nothing about the text's position. Lifting the
+   * row by half the bar - a guess - is what put the text against the window
+   * frame, so the text is found by its own line boxes instead.
+   */
+  function measureRowText(row) {
+    var range = document.createRange();
+    range.selectNodeContents(row);
+    var boxes = range.getClientRects();
+    var top = Infinity;
+    var bottom = -Infinity;
+    for (var b = 0; b < boxes.length; b++) {
+      if (boxes[b].height > 0 && boxes[b].width > 0) {
+        top = Math.min(top, boxes[b].top);
+        bottom = Math.max(bottom, boxes[b].bottom);
+      }
+    }
+    return isFinite(top) ? { top: top, bottom: bottom } : null;
+  }
+
+  /* Places the row's text a clear distance below the window top, still inside
+     the bar's band so the content area reads as reaching the top of the window.
+     Returns "" when there is nothing to move, which is the blank state. */
+  function shiftTopRow(row) {
+    var text = measureRowText(row);
+    if (!text) {
+      return "";
+    }
+    var shift = cssPx(TOP_ROW_MIN_GAP) - text.top;
+    return shift ? "translateY(" + shift + "px)" : "";
+  }
+
+  function describeShift(row) {
+    var text = measureRowText(row);
+    if (!text) {
+      return "no text in this row; left in place (bar 0.." +
+        Math.round(cssPx(BAR_H)) + "px)";
+    }
+    return "text " + Math.round(text.top) + ".." + Math.round(text.bottom) +
+      "px (bar 0.." + Math.round(cssPx(BAR_H)) + "px, wanted text top >= " +
       Math.round(cssPx(TOP_ROW_MIN_GAP)) + "px)";
   }
 
@@ -652,23 +680,67 @@
     var reservedCss = cssPx(RESERVED_W);
     var applied = ["layout: " + found.notes.join(" | ")];
 
-    /* The dock, collapsed or expanded, hugs the right edge under our buttons, so
-       it comes down by a row. It keeps its total height: `border-box` plus a
-       top padding moves its content down and leaves the bottom edge where it
-       was. */
-    for (var i = 0; i < found.dock.length; i++) {
-      applied.push(insetColumn(found.dock[i], "dock"));
-    }
-
+    /* The content column's top row is measured first, because it decides how far
+       the dock has to come down. The two are not independent: the row sits at
+       roughly the same depth as the dock's own header, so insetting the dock by
+       one bar height left it level with the row rather than below it. */
+    var rowDepth = 0;
     if (found.content) {
       var gutter = gutterTopRow(found.content, reservedCss);
       if (gutter) {
         applied.push(gutter);
       }
+      rowDepth = topRowDepth(found.content);
+    }
+
+    /* The dock, collapsed or expanded, hugs the right edge under our buttons, so
+       it comes down - past the bar, and past the row the content column puts
+       there. `border-box` keeps its total height, so the bottom edge does not
+       move. */
+    for (var i = 0; i < found.dock.length; i++) {
+      applied.push(insetColumn(found.dock[i], "dock", Math.max(0, rowDepth)));
     }
 
     applied.push(clearCorner(found));
     return applied.join(" | ");
+  }
+
+  /* How deep the content column's top row reaches, measured from the window top.
+   * This is the depth the dock's own header has to clear. */
+  function topRowDepth(content) {
+    var viewportH = document.documentElement.clientHeight;
+    var barCss = cssPx(BAR_H);
+    var contentWidth = content.getBoundingClientRect().width;
+    var best = null;
+    var nodes;
+    try {
+      nodes = content.querySelectorAll("*");
+    } catch (error) {
+      return 0;
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.closest("[" + INSET_FLAG + "]") || el.closest("#" + ROOT_ID)) {
+        continue;
+      }
+      var r = el.getBoundingClientRect();
+      if (r.top < -2 || r.top > barCss * 1.5) {
+        continue;
+      }
+      if (r.height > barCss * 4 || r.width < contentWidth * 0.5) {
+        continue;
+      }
+      if (!best || r.top < best.getBoundingClientRect().top) {
+        best = el;
+      }
+    }
+    if (!best) {
+      return 0;
+    }
+    /* Its full height, so the dock clears the row rather than only its text. */
+    var row = best.getBoundingClientRect();
+    var depth = row.bottom - row.top;
+    return Math.min(depth, viewportH * 0.2);
   }
 
   function install() {
