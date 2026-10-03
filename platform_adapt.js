@@ -804,11 +804,15 @@
       return "";
     }
     var shift = anchor.centre - (target.top + target.bottom) / 2;
-    /* Clear the drag strip, not the whole bar. The status line occupies the rest
-       of the bar but is click-through, so a row poking into that part is still
-       fully clickable - and the page keeps more of its height. */
-    if (target.top + shift < cssPx(GRAB_H)) {
-      shift = cssPx(GRAB_H) - target.top;
+    /* Clear the whole bar, not just the drag strip.
+     *
+     * The strip is only two thirds of the bar, so nothing here is about clicks -
+     * that was why the strip was narrowed. This floor is about the *status line*,
+     * which does occupy the full band with text. A row allowed into that band
+     * puts two lines of text on top of each other, which is worse than the 8px
+     * the narrower strip gave back. */
+    if (target.top + shift < cssPx(BAR_H)) {
+      shift = cssPx(BAR_H) - target.top;
     }
     return shift ? "translateY(" + shift + "px)" : "";
   }
@@ -822,7 +826,8 @@
     return "row " + Math.round(target.top) + ".." + Math.round(target.bottom) +
       "px, centre " + Math.round((target.top + target.bottom) / 2) +
       " (anchor " + Math.round(anchor.centre) + "px from " + anchor.from +
-      ", grab 0.." + Math.round(cssPx(GRAB_H)) + "px, from " + target.from + ")";
+      ", bar 0.." + Math.round(cssPx(BAR_H)) + "px, grab 0.." +
+      Math.round(cssPx(GRAB_H)) + "px, from " + target.from + ")";
   }
 
   function applyCornerAvoidance() {
