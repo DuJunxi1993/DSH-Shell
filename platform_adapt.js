@@ -71,13 +71,20 @@
      flush against the frame, but on a frameless window the buttons sit on the
      page and read as glued to the edge without it. The drag strip keeps the full
      bar height so grabbing the very top still moves the window. */
-  var BUTTON_GAP = 3;
+  var BUTTON_GAP = 4;
 
-  /* Minimum clearance between the top of the window and the row's text. The
-     bar is transparent, so nothing occludes the row; this is purely about the
-     text not looking glued to the frame, and it is applied as a downward nudge
-     rather than by lifting, so it can only ever help. */
-  var TOP_ROW_MIN_GAP = 8;
+  /* Minimum clearance between the top of the window and the content row's text.
+     The bar is transparent, so nothing occludes the row; this is purely about
+     the text not looking glued to the frame, and it is applied as a downward
+     nudge rather than by lifting, so it can only ever help. The button row sits
+     4px down, so this must exceed that or the content would look higher than the
+     chrome. */
+  var TOP_ROW_MIN_GAP = 14;
+
+  /* Extra clearance for the dock on top of the content row's depth, so its own
+     header reads as a separate band rather than sitting just under the window
+     buttons. */
+  var DOCK_EXTRA = 10;
 
   var STYLE_ID = "dsh-shell-chrome-style";
   var ROOT_ID = "dsh-shell-chrome";
@@ -568,6 +575,17 @@
       return "no top row found in the content column";
     }
     var rect = best.getBoundingClientRect();
+    /* Vertical placement is independent of the horizontal gutter, so it is
+       applied first and unconditionally. Doing it only on the gutter path meant
+       that opening the dock - which releases the gutter - also dropped the row
+       back against the window frame, which is the one place the content's top
+       padding is actually visible. */
+    best.style.transform = shiftTopRow(best);
+    /* The marker means "we own this element's geometry" whether or not a gutter
+       is currently applied, so it is found again on the next pass and its
+       transform is cleared by `clearApplied` rather than left behind. */
+    best.setAttribute(INSET_FLAG, "top-row");
+
     /* The gutter exists only while this row's right end actually reaches the
        reserved corner. That single condition is what makes both dock states come
        out right without branching on "is the dock open":
@@ -578,18 +596,14 @@
     if (rect.right <= viewportW - reservedCss) {
       best.style.boxSizing = "";
       best.style.paddingRight = "";
-      best.removeAttribute(INSET_FLAG);
       return "top row " + describe(best) + " ends at " + Math.round(rect.right) +
         ", corner held by the dock (starts at " +
-        Math.round(viewportW - reservedCss) + "): gutter released";
+        Math.round(viewportW - reservedCss) + "): gutter released; " +
+        describeShift(best);
     }
     var gutter = reservedCss + cssPx(GUTTER_EXTRA);
     best.style.boxSizing = "border-box";
     best.style.paddingRight = gutter + "px";
-    best.style.transform = shiftTopRow(best);
-    /* A distinct marker value so `findContentTopRow` can find this same element
-       again: the generic one would make the row skip itself on a later pass. */
-    best.setAttribute(INSET_FLAG, "top-row");
     return "top row " + describe(best) + " shifted left " +
       Math.round(gutter) + "px; " + describeShift(best);
   }
@@ -642,6 +656,8 @@
   function applyCornerAvoidance() {
     /* Replace, never accumulate. */
     clearApplied();
+    var gaps = "gaps: row>=" + Math.round(cssPx(TOP_ROW_MIN_GAP)) + "px dock+="
+      Math.round(cssPx(DOCK_EXTRA)) + "px bar=" + Math.round(cssPx(BAR_H)) + "px";
 
     var found = findRightColumns();
     if (!found.content && !found.dock.length) {
@@ -649,7 +665,7 @@
     }
 
     var reservedCss = cssPx(RESERVED_W);
-    var applied = ["layout: " + found.notes.join(" | ")];
+    var applied = [gaps, "layout: " + found.notes.join(" | ")];
 
     /* The content column's top row is found once and shared: the gutter decides
        whether it reaches the reserved corner, and its depth decides how far the
@@ -663,14 +679,14 @@
       }
     }
 
-    /* The dock clears the row, not the bar. The row is already lifted into the
-       bar's band, so the bar's height alone leaves the dock level with it -
-       which is how the dock's tabs ended up beside the content header and under
-       the window buttons. */
+    /* The dock clears the content row, not the bar. The row is already placed
+       inside the bar's band, so clearing only the bar left the dock level with
+       it - which is how the dock's tabs ended up beside the content header and
+       under the window buttons. `DOCK_EXTRA` on top so the dock's own header
+       reads as its own band rather than crowding the chrome. */
     var dockPad = 0;
     if (row) {
-      var rowBox = row.getBoundingClientRect();
-      dockPad = rowBox.bottom;
+      dockPad = row.getBoundingClientRect().bottom + cssPx(DOCK_EXTRA);
     }
     for (var i = 0; i < found.dock.length; i++) {
       applied.push(insetColumn(found.dock[i], "dock", dockPad));
