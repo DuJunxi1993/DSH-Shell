@@ -60,12 +60,10 @@
      be excluded or it takes the content area's slot. */
   var MIN_COLUMN_W = 40;
 
-  /* Extra room on top of the reserved width when shifting a row left.
-     Shifting by exactly the reserved width leaves the row's right edge *on* the
-     boundary, and a sub-pixel difference in layout, or the cluster's own shadow,
-     is then enough to clip the last control. A small margin makes the clearance
-     positive rather than zero. */
-  var GUTTER_EXTRA = 12;
+  /* Clearance for the content row's right-hand buttons, beyond the width our own
+     buttons occupy, so the page's controls are visibly separated from the
+     chrome rather than butting against it. */
+  var GUTTER_EXTRA = 16;
 
   /* Gap between the top of the window and the button row. Native captions are
      flush against the frame, but on a frameless window the buttons sit on the
@@ -73,19 +71,10 @@
      bar height so grabbing the very top still moves the window. */
   var BUTTON_GAP = 4;
 
-  /* Minimum clearance between the top of the window and the content row's text.
-     The bar is transparent, so nothing occludes the row; this is purely about
-     the text not looking glued to the frame, and it is applied as a downward
-     nudge rather than by lifting, so it can only ever help. The button row sits
-     4px down, so this must exceed that or the content would look higher than the
-     chrome. */
-  var TOP_ROW_MIN_GAP = 14;
-
-  /* Clearance for the dock below the chrome, on top of the bar's own height.
-     The bar is all the dock's header has to clear, and it is enough: basing this
-     on the content row's full depth instead put the dock 84px down and left a
-     chasm above it. */
-  var DOCK_EXTRA = 20;
+  /* Depth the dock's own header sits at, measured from the window top. The bar
+     is all it has to clear - basing this on the content row's depth instead put
+     the dock 84px down and left a chasm, and 44px still read as empty. */
+  var DOCK_TOP = 28;
 
   var STYLE_ID = "dsh-shell-chrome-style";
   var ROOT_ID = "dsh-shell-chrome";
@@ -676,34 +665,57 @@
     return isFinite(top) ? { top: top, bottom: bottom } : null;
   }
 
-  /* Places the row's text a clear distance below the window top, still inside
-     the bar's band so the content area reads as reaching the top of the window.
-     Returns "" when there is nothing to move, which is the blank state. */
+  /* Vertical centre of our own button row, which is what the page's row has to
+     line up with. */
+  function chromeButtonCentre() {
+    return cssPx(BUTTON_GAP) + (cssPx(BAR_H) - cssPx(BUTTON_GAP)) / 2;
+  }
+
+  /* Places the content row so its text sits on the same line as our window
+     buttons, rather than a fixed distance below the frame.
+   *
+   * The row's own box says nothing useful here: it is much taller than the bar
+   * and renders its text at the top of itself, so aligning the row's *top* to a
+   * fixed gap put the text's centre several pixels below the button row - which
+   * is why the page's buttons looked lower than the chrome. Aligning the text's
+     centre is what makes the two rows read as one.
+   */
   function shiftTopRow(row) {
     var text = measureRowText(row);
     if (!text) {
       return "";
     }
-    var shift = cssPx(TOP_ROW_MIN_GAP) - text.top;
+    var centre = (text.top + text.bottom) / 2;
+    var shift = chromeButtonCentre() - centre;
+    /* The same top gap the window buttons get, and no more. Centring the row
+       can otherwise leave its content a pixel or two higher than the buttons -
+       2px against their 4px in the run this was measured from - so the two
+       rows read as misaligned even though their centres match. */
+    if (text.top + shift < cssPx(BUTTON_GAP)) {
+      shift = cssPx(BUTTON_GAP) - text.top;
+    }
     return shift ? "translateY(" + shift + "px)" : "";
   }
 
   function describeShift(row) {
     var text = measureRowText(row);
     if (!text) {
-      return "no text in this row; left in place (bar 0.." +
-        Math.round(cssPx(BAR_H)) + "px)";
+      return "no text in this row; left in place (chrome centre " +
+        Math.round(chromeButtonCentre()) + "px)";
     }
     return "text " + Math.round(text.top) + ".." + Math.round(text.bottom) +
-      "px (bar 0.." + Math.round(cssPx(BAR_H)) + "px, wanted text top >= " +
-      Math.round(cssPx(TOP_ROW_MIN_GAP)) + "px)";
+      "px, centre " + Math.round((text.top + text.bottom) / 2) +
+      " (chrome centre " + Math.round(chromeButtonCentre()) +
+      "px, bar 0.." + Math.round(cssPx(BAR_H)) + "px)";
   }
 
   function applyCornerAvoidance() {
     /* Replace, never accumulate. */
     clearApplied();
-    var gaps = "gaps: row>=" + Math.round(cssPx(TOP_ROW_MIN_GAP)) + "px dock+="
-      Math.round(cssPx(DOCK_EXTRA)) + "px bar=" + Math.round(cssPx(BAR_H)) + "px";
+    var gaps = "gaps: gutter+=" + Math.round(cssPx(GUTTER_EXTRA)) +
+      "px dock=" + Math.round(cssPx(DOCK_TOP)) +
+      "px bar=" + Math.round(cssPx(BAR_H)) +
+      "px chrome_centre=" + Math.round(chromeButtonCentre()) + "px";
 
     var found = findRightColumns();
     if (!found.content && !found.dock.length) {
@@ -729,7 +741,7 @@
        bar because that is where the window buttons are; it does not have to
        clear the content row, which is a separate column entirely, and using its
        depth as the basis dropped the dock 84px down for no gain. */
-    var dockPad = cssPx(BAR_H) + cssPx(DOCK_EXTRA);
+    var dockPad = cssPx(DOCK_TOP);
     for (var i = 0; i < found.dock.length; i++) {
       applied.push(insetColumn(found.dock[i], "dock", dockPad));
     }
