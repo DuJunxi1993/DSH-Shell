@@ -519,26 +519,23 @@
    * stayed level with the bar, so whatever is still sitting in the strip
    * afterwards gets a `margin-top` of its own.
    */
-  /* Push a column's content below the bar, and below the content column's own
+  /* Push a column's content below the bar, or below the content column's own
    * top row.
    *
-   * `padding-top` on the column moves everything in normal flow and leaves the
-   * bottom edge where it was, with `border-box`. But the bar height alone is not
-   * enough: the content column's header row sits at roughly the same depth as the
-   * dock's own top row, so a dock inset by exactly one bar height ended up level
-   * with the content header instead of below it. `extraTop` is the depth the
-   * neighbouring column's top row actually occupies, so the dock clears the row
-   * rather than the bar.
+   * `clearTo` is the depth to clear, measured from the window top. It is the
+   * neighbouring column's top row's bottom edge, because that row is already
+   * lifted into the bar's band - clearing only the bar left the dock level with
+   * the row, which is how its tabs ended up under the window buttons. With no
+   * row to clear, the bar's height is the fallback.
    *
-   * Only normal-flow content is moved by the padding. Anything positioned -
-   * `absolute`, `fixed`, `sticky` - ignores a parent's padding, which is how the
-   * dock's own tab strip stayed level with the bar. Those are left for
-   * `clearCorner` to push out, so exactly one place displaces elements and they
-   * cannot be displaced twice.
+   * `border-box` keeps the column's total height, so its bottom edge does not
+   * move. Only normal-flow content is moved by the padding: anything positioned
+   * ignores a parent's padding, which is how the dock's own tab strip stayed
+   * level with the bar. Those are left to `clearCorner`, so exactly one place
+   * displaces elements and none is displaced twice.
    */
-  function insetColumn(column, label, extraTop) {
-    var barCss = cssPx(BAR_H);
-    var pad = barCss + (extraTop || 0);
+  function insetColumn(column, label, clearTo) {
+    var pad = clearTo > 0 ? clearTo : cssPx(BAR_H);
     column.style.boxSizing = "border-box";
     column.style.paddingTop = pad + "px";
     column.setAttribute(INSET_FLAG, "1");
@@ -565,36 +562,8 @@
    *   and needs the gutter; with the dock open the dock holds the corner and the
    *   row stops well short of it, so it is left alone.
    */
-  function gutterTopRow(content, reservedCss) {
+  function gutterTopRow(best, reservedCss) {
     var viewportW = document.documentElement.clientWidth;
-    var barCss = cssPx(BAR_H);
-    var contentWidth = content.getBoundingClientRect().width;
-    var best = null;
-    var nodes;
-    try {
-      nodes = content.querySelectorAll("*");
-    } catch (error) {
-      return null;
-    }
-    for (var i = 0; i < nodes.length; i++) {
-      var el = nodes[i];
-      if (el.closest("[" + INSET_FLAG + "]") || el.closest("#" + ROOT_ID)) {
-        continue;
-      }
-      var r = el.getBoundingClientRect();
-      /* Topmost wins, and never something scrolled out of sight: an earlier
-         version preferred the largest element and picked a list item 2500px
-         above the viewport. */
-      if (r.top < -2 || r.top > barCss * 1.5) {
-        continue;
-      }
-      if (r.height > barCss * 4 || r.width < contentWidth * 0.5) {
-        continue;
-      }
-      if (!best || r.top < best.getBoundingClientRect().top) {
-        best = el;
-      }
-    }
     if (!best) {
       return "no top row found in the content column";
     }
@@ -618,7 +587,9 @@
     best.style.boxSizing = "border-box";
     best.style.paddingRight = gutter + "px";
     best.style.transform = shiftTopRow(best);
-    best.setAttribute(INSET_FLAG, "1");
+    /* A distinct marker value so `findContentTopRow` can find this same element
+       again: the generic one would make the row skip itself on a later pass. */
+    best.setAttribute(INSET_FLAG, "top-row");
     return "top row " + describe(best) + " shifted left " +
       Math.round(gutter) + "px; " + describeShift(best);
   }
@@ -680,35 +651,43 @@
     var reservedCss = cssPx(RESERVED_W);
     var applied = ["layout: " + found.notes.join(" | ")];
 
-    /* The content column's top row is measured first, because it decides how far
-       the dock has to come down. The two are not independent: the row sits at
-       roughly the same depth as the dock's own header, so insetting the dock by
-       one bar height left it level with the row rather than below it. */
-    var rowDepth = 0;
+    /* The content column's top row is found once and shared: the gutter decides
+       whether it reaches the reserved corner, and its depth decides how far the
+       dock has to come down. Measuring it twice is what broke the dock: the
+       second scan skipped the row, because the first pass had just marked it. */
+    var row = found.content ? findContentTopRow(found.content) : null;
     if (found.content) {
-      var gutter = gutterTopRow(found.content, reservedCss);
+      var gutter = gutterTopRow(row, reservedCss);
       if (gutter) {
         applied.push(gutter);
       }
-      rowDepth = topRowDepth(found.content);
     }
 
-    /* The dock, collapsed or expanded, hugs the right edge under our buttons, so
-       it comes down - past the bar, and past the row the content column puts
-       there. `border-box` keeps its total height, so the bottom edge does not
-       move. */
+    /* The dock clears the row, not the bar. The row is already lifted into the
+       bar's band, so the bar's height alone leaves the dock level with it -
+       which is how the dock's tabs ended up beside the content header and under
+       the window buttons. */
+    var dockPad = 0;
+    if (row) {
+      var rowBox = row.getBoundingClientRect();
+      dockPad = rowBox.bottom;
+    }
     for (var i = 0; i < found.dock.length; i++) {
-      applied.push(insetColumn(found.dock[i], "dock", Math.max(0, rowDepth)));
+      applied.push(insetColumn(found.dock[i], "dock", dockPad));
     }
 
     applied.push(clearCorner(found));
     return applied.join(" | ");
   }
 
-  /* How deep the content column's top row reaches, measured from the window top.
-   * This is the depth the dock's own header has to clear. */
-  function topRowDepth(content) {
-    var viewportH = document.documentElement.clientHeight;
+  /* The content column's top row: the wide, short element at the very top.
+   *
+   * Found once and shared. It used to be re-found for the dock's depth, and that
+   * re-scan skipped it - by then it carried the inset marker `gutterTopRow` had
+   * just put on it, so the dock was given one bar height instead of the depth
+   * the row actually occupies, and ended up level with it.
+   */
+  function findContentTopRow(content) {
     var barCss = cssPx(BAR_H);
     var contentWidth = content.getBoundingClientRect().width;
     var best = null;
@@ -716,31 +695,31 @@
     try {
       nodes = content.querySelectorAll("*");
     } catch (error) {
-      return 0;
+      return null;
     }
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
-      if (el.closest("[" + INSET_FLAG + "]") || el.closest("#" + ROOT_ID)) {
+      if (el.closest("#" + ROOT_ID)) {
         continue;
       }
       var r = el.getBoundingClientRect();
+      /* Topmost wins, and never something scrolled out of sight: an earlier
+         version preferred the largest element and picked a list item 2500px
+         above the viewport. */
       if (r.top < -2 || r.top > barCss * 1.5) {
         continue;
       }
       if (r.height > barCss * 4 || r.width < contentWidth * 0.5) {
         continue;
       }
+      if (el.closest("[" + INSET_FLAG + "]") && el.getAttribute(INSET_FLAG) !== "top-row") {
+        continue;
+      }
       if (!best || r.top < best.getBoundingClientRect().top) {
         best = el;
       }
     }
-    if (!best) {
-      return 0;
-    }
-    /* Its full height, so the dock clears the row rather than only its text. */
-    var row = best.getBoundingClientRect();
-    var depth = row.bottom - row.top;
-    return Math.min(depth, viewportH * 0.2);
+    return best;
   }
 
   function install() {
