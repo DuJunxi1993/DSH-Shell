@@ -24,6 +24,7 @@ Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
 | Second launch raises the running window instead of starting a rival | verified: the second process exits |
 | External `http(s)` links open in the default browser | verified for the rule; the click needs your eyes |
 | Toast when dsh fails to start or dies on its own | verified against real dsh |
+| A dsh plugin's notifications work (dsh-notification) | `Notification.permission` reaches `granted`; the toast itself needs your eyes |
 | No console window while dsh starts or while we reap it | verified (zero visible console windows over a full run) |
 | File drag-and-drop onto the page | `disable_drag_drop_handler()`; needs your eyes on a real drop |
 | Frameless window with an injected title bar | injected, geometry asserted against the live DOM |

@@ -181,8 +181,34 @@ obvious and the Tauri docs do not put them together.
    split is now explicit: `boot.json` for the local placeholder, `chrome.json`
    for loopback remote, `default.json` reduced to `core:default`. An app command
    additionally needs the `allow-<name>` permission from `build.rs`; the
-   notification plugin needs none, because Rust-side `show()` does not consult
-   the ACL — only the JS command does.
+   notification plugin's Rust-side `show()` needs none, because it does not
+   consult the ACL — only its JS commands do, which is fact 10.
+10. **The page's `Notification` is not the browser's, and the ACL is the real
+    gate.** `tauri-plugin-notification` injects `init-iife.js` into every page,
+    and it *replaces* `window.Notification` with a shim that forwards to
+    `plugin:notification|notify`, `|request_permission` and
+    `|is_permission_granted` over IPC. Three consequences, each of which cost a
+    build-and-measure cycle:
+    - WebView2's notification permission is a dead end here. Microsoft's docs are
+      true — WebView2 shows no prompt for it and the host must answer
+      `PermissionRequested` via `on_permission_request` — but *nothing in the page
+      ever reaches WebView2's API*, because the shim shadowed it. The hook can
+      never fire. Do not add it back on the grounds that it "should" work.
+    - What actually refuses is the ACL. The dsh origin needs
+      `notification:allow-notify`, `notification:allow-request-permission` and
+      `notification:allow-is-permission-granted`; without them every call is
+      rejected with `notification.request_permission not allowed`, which the page
+      cannot show you.
+    - On Windows the shim still starts each document at `"denied"` even with the
+      ACL granted: its init short-circuits (`|| __TEMPLATE_windows__`) and never
+      asks, so something has to call `requestPermission()`. The injected script
+      does that once per load on the dsh origin. `desktop.rs::request_permission`
+      answers `Granted` unconditionally, so this is a no-op gate, not a prompt.
+    A persisted WebView2 decision is a red herring too: `Preferences` under
+    `%LOCALAPPDATA%\ai.deepseek.dsh-shell\EBWebView` holds a `setting: 2` (block)
+    for the origin from before the ACL was granted, and it is irrelevant once the
+    shim is in play. `chrome_report`'s `notifications=` field is how to tell
+    "granted" from "silently refused".
 
 ## The dsh page has no hook to grab on
 

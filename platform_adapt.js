@@ -1316,6 +1316,21 @@
       }
     };
 
+    /* What the page sees for `Notification.permission`.
+     *
+     * Worth reporting because a plugin that shows system notifications is dead
+     * unless this is "granted", and the failure is silent: dsh-notification, for
+     * one, checks this itself and returns a message nobody ever sees. The value
+     * is the notification plugin's shim rather than the browser's, so it really
+     * reports whether the ACL allowed the call. Measured the way the plugin
+     * measures it, so this is what the plugin would decide on. */
+    function notificationState() {
+      if (typeof Notification === "undefined") {
+        return "absent";
+      }
+      return Notification.permission;
+    }
+
     /* Tell Rust what happened. The chrome lives in a document we do not own, so
        this is how a broken injection becomes a log line instead of a frameless
        window with no close button. */
@@ -1336,6 +1351,7 @@
           placeholder: document.documentElement.hasAttribute("data-dsh-shell-placeholder"),
           ready_state: document.readyState,
           origin: location.origin,
+          notifications: notificationState(),
           boxes: "bar=" + describe(node) +
             " grab=" + describe(grab) +
             " status=" + describe(status) +
@@ -1355,6 +1371,38 @@
     setTimeout(function () {
       report(!!document.getElementById(ROOT_ID));
     }, 1500);
+
+    /* Make the page's Notification permission usable.
+     *
+     * The page's `Notification` is not the browser's: the notification plugin
+     * replaces `window.Notification` with a shim that forwards to Rust, so what
+     * this reads and asks is Tauri's, not WebView2's. On desktop the Rust side
+     * answers `granted` unconditionally, so the only thing that can refuse is the
+     * ACL - and a refusal is silent here, which is how a plugin like
+     * dsh-notification ends up doing nothing at all.
+     *
+     * Asked once per load, because the shim starts every document at "denied" on
+     * Windows and something has to ask. The dsh origin only: the boot placeholder
+     * has no notifications to show, and asking there would just be noise. */
+    if (
+      typeof Notification !== "undefined" &&
+      location.hostname !== "tauri.localhost" &&
+      Notification.permission !== "granted"
+    ) {
+      try {
+        Notification.requestPermission().then(function (result) {
+          /* Re-report so the result lands in the log next to the rest of the
+             chrome diagnostics, whether it is "granted" or "denied". */
+          report(!!document.getElementById(ROOT_ID));
+        });
+      } catch (error) {
+        /* The page's console is not ours to read, so a refusal has to come back
+           the same way the rest of the chrome's failures do. */
+        invoke("chrome_error", {
+          message: "Notification.requestPermission threw: " + error
+        }).catch(function () {});
+      }
+    }
   }
 
   function paintZoom(value) {

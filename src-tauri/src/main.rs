@@ -330,20 +330,23 @@ fn chrome_report(report: ChromeReport) {
     if wrong.is_empty() {
         tracing::info!(
             target: "dsh_shell",
-            "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} avoidance: {}",
+            "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} \
+             notifications={} avoidance: {}",
             report.origin,
             round1(report.measured_bar_h),
             round1(report.measured_win_w),
             report.zoom,
             report.placeholder,
+            report.notifications,
             report.avoid
         );
     } else {
         tracing::warn!(
             target: "dsh_shell",
             "chrome geometry is WRONG: {}. The 1/zoom correction must be applied exactly \
-             once, in chrome::css_len. {}",
+             once, in chrome::css_len. notifications={} {}",
             wrong.join("; "),
+            report.notifications,
             report.boxes
         );
     }
@@ -374,6 +377,15 @@ struct ChromeReport {
     placeholder: bool,
     ready_state: String,
     origin: String,
+    /// The page's `Notification.permission`, or `"absent"` when it is not there
+    /// at all.
+    ///
+    /// The page's `Notification` is the notification plugin's shim rather than
+    /// the browser's, and it forwards to this app over IPC, so this is really
+    /// "did the ACL allow it". It matters because the refusal is invisible: a
+    /// plugin that shows system notifications, dsh-notification included, checks
+    /// this itself and gives up silently.
+    notifications: String,
     boxes: String,
     /// What the reserved-corner avoidance did, or why it did nothing.
     avoid: String,

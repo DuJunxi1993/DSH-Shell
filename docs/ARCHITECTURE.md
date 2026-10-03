@@ -106,6 +106,38 @@ the shell *does* do is notice a dsh that dies on its own, via
 `wait()`, which holds the child lock for dsh's whole life and would make
 `shutdown()` unreachable from any other task.
 
+## Notifications, and the shim nobody expects
+
+The shell raises two toasts of its own, from Rust: a failed startup and a dsh
+that dies on its own. Both go through `tauri-plugin-notification`'s
+`NotificationExt`, which does not consult the ACL.
+
+A dsh plugin that shows notifications goes through a different door entirely, and
+the difference is not obvious. `tauri-plugin-notification` injects
+`init-iife.js` into every page, and that script **replaces
+`window.Notification`** with a shim forwarding to `plugin:notification|notify`,
+`|request_permission` and `|is_permission_granted`. So when a plugin calls
+`new Notification(...)`, it is not talking to WebView2 — it is talking to Rust
+over IPC, and what refuses it is the **ACL**, not the browser.
+
+That matters because the obvious reading is a trap. Microsoft's WebView2 docs are
+correct that WebView2 shows no permission prompt for notifications and that the
+host has to answer `PermissionRequested`, and Tauri does expose
+`on_permission_request` for exactly that. It is still useless here: the shim has
+shadowed the API, so no request ever reaches WebView2. The fix is a capability,
+not a host hook.
+
+Two further wrinkles, both of which make the failure silent:
+
+- On Windows the shim starts every document at `"denied"` and never asks, because
+  its init short-circuits on `__TEMPLATE_windows__`. Granting the ACL is not
+  enough; something has to call `requestPermission()`. The injected script does
+  that once per load on the dsh origin, and `desktop.rs::request_permission`
+  answers `Granted` unconditionally, so it is a no-op gate rather than a prompt.
+- Nothing in the page can report the refusal — the rejected promise is swallowed.
+  `chrome_report`'s `notifications=` field is the way to tell "granted" from
+  "silently refused", and it is why the diagnostic exists.
+
 ## Endpoint resolution
 
 `endpoint::resolve` runs two line readers over dsh's stdout and stderr and one
