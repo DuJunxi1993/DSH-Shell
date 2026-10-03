@@ -4,8 +4,15 @@
 
 A Tauri 2.x desktop shell for the DeepSeek Harness (`dsh`) web UI. It forks
 `dsh web`, captures the authenticated URL it prints, and points a WebView2
-window at it. The core contract is: **close the window → dsh dies → the port
-is freed.** Nothing else in this repo matters more.
+window at it. The core contract is: **the app exits → dsh dies → the port is
+freed.** Nothing else in this repo matters more.
+
+"Exits" is deliberately not "the window closes". The title bar is our own DOM, so
+the ✕ in it hides to the tray and dsh keeps running; `Alt+F4` and the tray's
+退出（关闭 dsh）are the two real exits. Both run the shutdown path, and both are
+covered by tests. A dsh left behind by the *first* run of this shell is what
+produced the orphaned port this rule exists to prevent — do not reintroduce a
+third way out that skips the tree kill.
 
 ## Hard safety rules
 
@@ -71,8 +78,10 @@ ever show a blank page. Use `cargo run` for a debug build.
 | `src/process.rs` | `DshProcess`: spawn / attach / shutdown / tree kill |
 | `src/preflight.rs` | anti-nest + port-ownership checks run before spawning |
 | `src/platform.rs` | OS-specific kill primitives |
+| `src/navigate.rs` | which URLs the webview may show; external ones go to the browser |
+| `src/chrome.rs` | injected-chrome geometry and the zoom compensation |
 | `src/error.rs` | `ShellError` |
-| `src/main.rs` | Tauri entry, window creation, exit handling |
+| `src/main.rs` | Tauri entry, window creation, tray, exit handling |
 | `src/bin/stub-dsh.rs` | test double for `dsh web` (never shipped) |
 | `tests/` | integration tests, all against `stub-dsh` |
 
@@ -154,6 +163,26 @@ obvious and the Tauri docs do not put them together.
    buttons rendered at 92 logical pixels instead of 46: "the menu bar grows when
    I zoom out". `chrome::css_len` is unit-tested and `chrome_report` re-checks
    the live DOM against the constants, so this cannot fail silently again.
+7. **The injected script's own fallbacks are a second copy of every constant.**
+   `platform_adapt.js` reads `window.__DSH_SHELL__`, but each value also has a
+   literal fallback for the case where the script runs without it. Those literals
+   drifted (a 28px bar against a 24px constant) and the chrome looked right only
+   because the injected value always won. Two tests in `chrome.rs` now hold the
+   two sides together, and the zoom ladder is injected from `config.rs` instead
+   of being restated in the script.
+8. **A synthetic click from another process never reaches the webview.**
+   `mouse_event` from PowerShell is refused by the foreground lock, so
+   minimize/maximize/✕ cannot be verified that way — the button appears dead
+   while it is fine. Use `PostMessage(WM_SYSCOMMAND, SC_CLOSE)` for the real
+   close path, and ask the user for anything that needs a click.
+9. **The capabilities are per origin, and the remote one is not optional.**
+   The chrome is DOM inside dsh's page, so `capabilities/chrome.json` must list
+   the commands the title bar invokes or the buttons silently do nothing. The
+   split is now explicit: `boot.json` for the local placeholder, `chrome.json`
+   for loopback remote, `default.json` reduced to `core:default`. An app command
+   additionally needs the `allow-<name>` permission from `build.rs`; the
+   notification plugin needs none, because Rust-side `show()` does not consult
+   the ACL — only the JS command does.
 
 ## The dsh page has no hook to grab on
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated 2026-10-02, against dsh `0.2.0-rc.2`.
+Last updated 2026-10-03, against dsh `0.2.0-rc.2`.
 
 ## Shipped, verified
 
@@ -11,15 +11,22 @@ Last updated 2026-10-02, against dsh `0.2.0-rc.2`.
 | dsh's own output mirrored to the log, tail attached to every error | `endpoint::OutputTail` |
 | `spawn` mode, `attach` mode, adopted instances never killed | `tests/lifecycle.rs` |
 | Process-tree termination by PID, including the `Drop` backstop | `tests/lifecycle.rs`, `tests/live_dsh.rs` |
+| The startup race that orphaned dsh on a fast close | `starting_pid` cleared only after ownership transfers |
 | Nested-session and port-ownership guards | `src/preflight.rs`, `tests/lifecycle.rs` |
 | Single window created in `setup`, navigated to dsh | `src/main.rs` |
+| Tray icon: show/hide, zoom reset, and the real exit | `build_tray`; ✕ hides, `Alt+F4` and 退出 kill dsh |
+| A second launch raises the running window instead of starting a rival | `tauri-plugin-single-instance` |
+| External links open in the default browser, never in the shell | `navigate.rs` + `on_navigation`, `on_new_window` |
+| Toasts when dsh fails to start or exits on its own | `poll_exit` + `tauri-plugin-notification` |
+| Per-origin capabilities: boot page, dsh origin, and a minimal default | `capabilities/boot.json`, `chrome.json`, `default.json` |
 | Boot placeholder and in-window failure reporting | `src/index.html` |
 | `initialization_script` platform adaptation | `platform_adapt.js` |
+| One copy of the chrome geometry and the zoom ladder | `chrome::script` + two tests binding the JS fallbacks |
 | Exit-time shutdown on the async runtime, with a deadline | `src/main.rs` |
 | Daily rolling logs in debug and release | `%APPDATA%\deepseek\dsh-shell\data\logs` |
 | Multi-resolution icon (16/24/32/48/64/256) + reproducible generator | `scripts/make-icon.py` |
 | `.msi` and `.nsis` bundles | `cargo tauri build` |
-| 38 hermetic tests, clippy clean, release build clean | `cargo test`, `cargo clippy` |
+| 65 hermetic tests, clippy clean, release build clean | `cargo test`, `cargo clippy` |
 
 ## Next
 
@@ -28,17 +35,18 @@ Ordered by what a user would notice.
 1. **A settings UI.** `settings.json` is hand-edited today. The obvious minimum
    is a tray/menu entry that opens the file; a real panel wants `tauri-plugin-`
    dialog + a saved-and-relaunched config change.
-2. **Crash-loop backoff.** `auto_restart_on_crash` is accepted and ignored. It is
-   deliberately inert: restarting dsh behind a window the user is looking at
-   fights the "close the window, dsh dies" contract. It becomes safe once there
-   is a visible status affordance saying "reconnecting", which is also what makes
-   a mid-session dsh crash tolerable at all.
+2. **Crash-loop backoff.** `auto_restart_on_crash` is accepted and still ignored,
+   but the reason it was safe to leave inert is gone: the ✕ no longer ends the
+   session, so a dsh that dies can be restarted behind a window the user is
+   looking at. It needs a visible "reconnecting" state first — the toast exists,
+   the persistent state does not — and the port has to be confirmed free before
+   the respawn rather than after it.
 3. **Adopt a running dsh automatically.** If the port is in use, offer
    `attach` in the failure message instead of only naming it. The guard already
    detects the condition; the offer is UI.
-4. **A visible connection state.** The window title is the only signal today.
-   A subtle badge for "starting / ready / reloading" would cover the cold-start
-   window and any future reload.
+4. **A visible connection state.** The status bar carries origin, session and
+   zoom, and the title is the only other signal. A badge for "starting / ready /
+   lost" would cover the cold-start window, and it is what item 2 needs.
 5. **Code signing.** Unsigned bundles trigger SmartScreen. Out of scope until
    there is a distribution channel.
 

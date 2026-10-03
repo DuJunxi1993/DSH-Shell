@@ -239,12 +239,7 @@ async fn zoom_step(
     delta: i16,
 ) -> CommandResult<u8> {
     let current = state.zoom_percent.load(Ordering::Relaxed);
-    let target = i32::from(current) + i32::from(delta);
-    let next = u8::try_from(target)
-        .ok()
-        .map(config::normalize_zoom)
-        .unwrap_or(config::ZOOM_DEFAULT);
-    apply_zoom(&window, &state, next)
+    apply_zoom(&window, &state, config::next_zoom(current, delta))
 }
 
 /// `Ctrl+0`: back to 100%.

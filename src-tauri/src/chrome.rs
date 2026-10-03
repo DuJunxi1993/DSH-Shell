@@ -26,6 +26,8 @@
 //! the only adjustment that can be made to the page itself is the inset the
 //! script applies to whatever column it finds in the reserved corner.
 
+use crate::config::{ZOOM_MAX, ZOOM_MIN, ZOOM_STEP};
+
 /// Design height of the whole bar, in logical pixels.
 pub const BAR_H: f64 = 24.0;
 /// Design width of one window button.
@@ -66,10 +68,16 @@ pub fn css_len(design_px: f64, zoom: f64) -> f64 {
 /// Not a `const fn`: the include is fine either way, but keeping this next to
 /// the constants makes it obvious that the script is generated, not a static
 /// asset.
+///
+/// The zoom ladder is injected from [`crate::config`] rather than repeated in the
+/// script, because the key handler needs the step size to ask for and the clamp
+/// needs both ends. A ladder kept in two places is a ladder that disagrees with
+/// itself the first time either one is edited.
 pub fn script(zoom_percent: u8) -> String {
     format!(
         "window.__DSH_SHELL__ = {{ zoom: {zoom_percent}, barH: {BAR_H}, winW: {WIN_W}, \
-         grabH: {GRAB_H}, resizeBorder: {RESIZE_BORDER}, cornerR: {CORNER_R} }};\n{}",
+         grabH: {GRAB_H}, resizeBorder: {RESIZE_BORDER}, cornerR: {CORNER_R}, \
+         zoomMin: {ZOOM_MIN}, zoomMax: {ZOOM_MAX}, zoomStep: {ZOOM_STEP} }};\n{}",
         include_str!("../../platform_adapt.js")
     )
 }
@@ -95,6 +103,70 @@ mod tests {
     use super::*;
 
     const ZOOMS: [f64; 6] = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+
+    /// A JS number literal for a design length, the way Rust prints it: `24.0`
+    /// becomes `24`, and the script's fallbacks are written that way.
+    fn js_number(value: f64) -> String {
+        format!("{value}")
+    }
+
+    #[test]
+    fn the_script_carries_every_constant() {
+        // If a value is injected but not read, or read but not injected, the
+        // script silently runs on its fallback - which is how the bar ended up
+        // 28px tall in the page while the Rust constant said 24.
+        let js = script(100);
+        for (name, value) in [
+            ("barH", js_number(BAR_H)),
+            ("winW", js_number(WIN_W)),
+            ("grabH", js_number(GRAB_H)),
+            ("resizeBorder", js_number(RESIZE_BORDER)),
+            ("cornerR", js_number(CORNER_R)),
+            ("zoomMin", js_number(f64::from(ZOOM_MIN))),
+            ("zoomMax", js_number(f64::from(ZOOM_MAX))),
+            ("zoomStep", js_number(f64::from(ZOOM_STEP))),
+        ] {
+            assert!(
+                js.contains(&format!("{name}: {value}")),
+                "{name} is not injected as {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_scripts_fallbacks_agree_with_those_constants() {
+        // The script keeps a fallback for each injected value, for the case where
+        // it is evaluated without its config. A fallback that disagrees with the
+        // constant is a silently wrong chrome, so the two are checked here rather
+        // than by eye - the fallbacks are already how a tuned value got lost once.
+        let js = script(100);
+        for (name, value) in [
+            ("barH", js_number(BAR_H)),
+            ("winW", js_number(WIN_W)),
+            ("resizeBorder", js_number(RESIZE_BORDER)),
+            ("cornerR", js_number(CORNER_R)),
+        ] {
+            assert!(
+                js.contains(&format!("num(CFG.{name}, {value})")),
+                "the script's fallback for {name} is not {value}"
+            );
+        }
+        // Derived in both places, so it must stay derived in both.
+        assert!(
+            js.contains("num(CFG.grabH, BAR_H * 2 / 3)"),
+            "grabH's fallback should be derived from BAR_H, not spelled out"
+        );
+        for (name, value) in [
+            ("zoomMin", ZOOM_MIN),
+            ("zoomMax", ZOOM_MAX),
+            ("zoomStep", ZOOM_STEP),
+        ] {
+            assert!(
+                js.contains(&format!("num(CFG.{name}, {value})")),
+                "the script's fallback for {name} is not {value}"
+            );
+        }
+    }
 
     #[test]
     fn css_len_round_trips_at_every_zoom_step() {

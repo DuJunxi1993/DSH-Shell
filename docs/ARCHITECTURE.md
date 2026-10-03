@@ -61,6 +61,51 @@ before any page script on every navigation, so it cannot lose a race with the SP
 booting. (It was previously `platform_adapt.css` — a file containing a
 JavaScript IIFE, `eval`'d into a document that had not been parsed yet.)
 
+It is also injected from `on_page_load`, because `initialization_script` does not
+reach a remote origin: dsh serves its own CSP, and a document-created injection
+is subject to it. Both copies are the same generated script, and it is idempotent.
+
+### Where the window is allowed to go
+
+`on_navigation` allows exactly two origins: the app's own, which serves the
+placeholder, and the dsh origin, recorded in `AppState::dsh_origin` the moment the
+URL is resolved. Everything else goes to the default browser through the opener
+plugin — a link, or a server-side redirect off dsh's origin, would otherwise
+replace the contents of the window with someone else's website, with no title bar,
+no tray and no way back. `on_new_window` denies every second webview for the same
+reason, and only passes an *external* URL on: a dsh URL sent to the browser would
+have no token, and the index answers 401 without one.
+
+The rule itself is `navigate::is_internal`, which is free of Tauri so it can be
+tested directly — a false *deny* is a blank window, which is the failure that
+matters. `navigate::is_openable` is the second half: only `http(s)` is ever handed
+to the OS, because anything else is a way to make it launch something with this
+process's identity.
+
+## The tray, and the three exits
+
+The title bar is our own DOM, so there is no native caption and the ✕ in it cannot
+be the only way out. It hides the window instead. The tray icon — left click to
+toggle, right click for 显示/隐藏, 缩放复位 100% and 退出（关闭 dsh）— is what
+makes that reversible.
+
+`Alt+F4` and the tray's 退出 are the two real exits, and both go through
+`ExitRequested`, which is the only place the shutdown path runs. Keeping one
+non-hidden exit is deliberate: requiring the tray for *every* exit would mean a
+window that can be hidden into a state the user has to know about.
+
+A second launch is not a second window. `tauri-plugin-single-instance` makes the
+new process exit and hands the argv to the running one, which raises its window.
+Without it, two shells race for the port and the loser dies with "address already
+in use" — which is a confusing way to learn that the app is already running.
+
+`auto_restart_on_crash` is deliberately still inert, and `auto_restart_on_crash`
+is not the only such field: the config is accepted for schema compatibility. What
+the shell *does* do is notice a dsh that dies on its own, via
+`DshProcess::poll_exit` once a second, and say so with a toast. It cannot use
+`wait()`, which holds the child lock for dsh's whole life and would make
+`shutdown()` unreachable from any other task.
+
 ## Endpoint resolution
 
 `endpoint::resolve` runs two line readers over dsh's stdout and stderr and one
@@ -143,6 +188,25 @@ this application exists to prevent. This is why the release profile does not set
 Everything here is scoped to a PID captured from `child.id()`. Nothing in this
 repository kills by name. See `AGENTS.md` rule 1 for why that is not negotiable.
 
+### The gap between spawning and owning
+
+`Drop` can only run for a `DshProcess` that exists, and it does not exist between
+`Command::spawn` and the return of `launch` — which is several seconds, because
+`launch` waits for dsh's URL line. Closing the window in that window leaves
+nothing to drop, and the dsh survives holding the port. That is observed, not
+theoretical.
+
+`AppState::starting_pid` is the record that closes it, and its lifetime is the
+subtle part: it is cleared by `point_at_dsh`, *after* the `DshProcess` is stored,
+and not when `launch` returns. Clearing it at the return opens a second gap of
+the same kind, one that is easy to miss because the code looks correct — the exit
+path finds neither a `DshProcess` nor a PID, concludes there is nothing to reap,
+and exits. The invariant is: while we own, or are about to own, a dsh, its PID is
+recorded.
+
+The exit path logs which of the three it took, because "no dsh running at exit" and
+"terminated recorded pid" look identical from outside the process.
+
 ## Testing
 
 `tests/` drives `stub-dsh` (`src/bin/stub-dsh.rs`), a std-only test double that
@@ -160,3 +224,23 @@ A hazard it documents: dsh keeps a machine-wide HTTP proxy (`bili`, port 18787)
 and a second dsh *attaches* to an existing one instead of failing. A dsh left
 behind by an interrupted run therefore silently changes how the next boot
 behaves, so confirm none is running before believing a live-test failure.
+
+### What the automated tests cannot reach
+
+Three things are verified by hand, and the log is what makes them diagnosable:
+
+- **The ✕, the tray menu, and any link click.** A synthetic click from another
+  process does not reach the webview — `mouse_event` is refused by the foreground
+  lock — so a button that works looks dead under test. Minimize, maximize and
+  close were all "broken" this way before the bridge bug behind them was found.
+- **The real close path** is testable, but only via `WM_SYSCOMMAND`/`SC_CLOSE`
+  aimed at the *visible* window. The process owns several top-level windows, and
+  posting to the wrong one does nothing at all.
+- **A real dsh session.** The layout geometry can only be judged with a session
+  open and the dock expanded, which no script here can arrange.
+
+So `chrome_report` exists: the page measures its own bar, clusters, insets and
+content columns and sends the numbers back. It reports twice on purpose, because
+the first two reports land on dsh's boot screen before any session header exists,
+and "nothing matched" is only useful next to the rejection reasons and the
+measured column rectangles.

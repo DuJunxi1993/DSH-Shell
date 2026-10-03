@@ -19,7 +19,11 @@ Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
 | Endpoint resolution (stdout URL line, token, port check) | verified, incl. against real dsh |
 | `spawn` mode: fork `dsh web`, wait for the authenticated URL | verified |
 | `attach` mode: adopt an already-running dsh, never kill it | verified |
-| Shutdown: window close → dsh tree gone → port freed | verified |
+| Exit: window close → dsh tree gone → port freed | verified |
+| Hide to tray: ✕ hides, dsh keeps running, tray menu exits | ✕ needs your click; the other two verified |
+| Second launch raises the running window instead of starting a rival | verified: the second process exits |
+| External `http(s)` links open in the default browser | verified for the rule; the click needs your eyes |
+| Toast when dsh fails to start or dies on its own | verified against real dsh |
 | No console window while dsh starts or while we reap it | verified (zero visible console windows over a full run) |
 | File drag-and-drop onto the page | `disable_drag_drop_handler()`; needs your eyes on a real drop |
 | Frameless window with an injected title bar | injected, geometry asserted against the live DOM |
@@ -27,7 +31,7 @@ Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
 | Page zoom 50–100% in 10% steps, persisted | verified: bar measures 32 logical px at 100% *and* at 50% |
 | Anti-nest guard (refuses to run inside a harness session) | verified |
 | Port-ownership guard (points at `attach` instead of dying) | verified |
-| `cargo test` — 49 hermetic tests against `stub-dsh` | green |
+| `cargo test` → 65 hermetic tests against `stub-dsh` | green |
 | `cargo clippy --all-targets -- -D warnings` | clean |
 | `cargo build --release` | clean |
 | `.msi` + `.nsis` bundles | built |
@@ -128,12 +132,25 @@ indistinguishable from a hang.
 |  placeholder -> dsh|           | cmd.exe + |             |                |
 |                    |           | node      |             |                |
 +--------------------+           +-----------+             +----------------+
-         |                            |
-         | window closed              | dsh dies
-         v                            v
-   terminate the tree by PID      port 3080 released
-   (taskkill /PID <n> /T)
+     |    ^                            |
+     |    |                            |
+     |  tray / 2nd launch              | dsh dies on its own
+     v    |                            v
+  window hidden              toast; the port is released
+  dsh keeps running
+     |
+     | Alt+F4, or tray -> 退出（关闭 dsh）
+     v
+terminate the tree by PID
+(taskkill /PID <n> /T)  ->  port freed
 ```
+
+**Three different exits, and they are not interchangeable.** The window has no
+native caption — the title bar is our own DOM — so the ✕ in it *hides* rather than
+closes: dsh stays up and keeps the port, and the tray is the way back. `Alt+F4`
+still closes the window for real, so there is always an exit that does not require
+finding the tray icon, and the tray's 退出 does the same. Only those two run the
+shutdown path below.
 
 The tree kill is not optional on Windows. `dsh_binary_path` is a `.cmd` shim, so
 what we spawn is `cmd.exe` and the harness is a **grandchild** `node.exe`.
@@ -141,6 +158,12 @@ Terminating the direct child kills `cmd.exe` alone: node survives holding the
 port, the window is gone, and nothing will ever reap it. This is not
 hypothetical — the first live run of this shell left exactly that behind, which
 is why `Drop` kills the tree too, synchronously, because `Drop` cannot await.
+
+The same reasoning closes a second window: a dsh that has been spawned but is not
+yet owned by the exit path — during startup, and in the gap between `launch`
+returning and the child being stored — has its PID recorded for exactly that
+reason. The record is cleared only once the `DshProcess` owns the child, because
+clearing it any earlier re-opens the same leak.
 
 Closing the window runs `RunEvent::ExitRequested` with `prevent_exit`, shuts dsh
 down on the async runtime, then exits. It does *not* use

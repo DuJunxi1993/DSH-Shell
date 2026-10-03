@@ -45,6 +45,20 @@ pub fn normalize_zoom(value: u8) -> u8 {
     snapped.min(steps + ZOOM_MIN)
 }
 
+/// The rung one `delta` away from `current`, clamped to the ladder.
+///
+/// `delta` is signed and comes from the page, so this cannot assume a keyboard's
+/// worth of movement. Everything outside the ladder clamps to the nearest end -
+/// including a delta that would take the sum below zero, which is why the sum is
+/// done in `i32`. An earlier version returned the *default* when the sum
+/// underflowed, so one oversized `Ctrl+-` from the page could jump the zoom to
+/// 100% instead of leaving it at the floor.
+pub fn next_zoom(current: u8, delta: i16) -> u8 {
+    let target = i32::from(normalize_zoom(current)) + i32::from(delta);
+    let clamped = target.clamp(i32::from(ZOOM_MIN), i32::from(ZOOM_MAX));
+    normalize_zoom(clamped as u8)
+}
+
 /// The scale factor to hand the webview: 50 → 0.5.
 pub fn zoom_scale(percent: u8) -> f64 {
     f64::from(normalize_zoom(percent)) / 100.0
@@ -234,6 +248,56 @@ mod tests {
         assert_eq!((ZOOM_MAX - ZOOM_MIN) % ZOOM_STEP, 0);
         assert_eq!(ZOOM_MIN % ZOOM_STEP, 0);
         assert_eq!(ZOOM_MAX % ZOOM_STEP, 0);
+    }
+
+    #[test]
+    fn next_zoom_walks_the_ladder() {
+        assert_eq!(next_zoom(100, -10), 90);
+        assert_eq!(next_zoom(90, 10), ZOOM_MAX);
+        assert_eq!(next_zoom(100, 10), ZOOM_MAX);
+        assert_eq!(next_zoom(60, -10), 50);
+    }
+
+    #[test]
+    fn next_zoom_stops_at_the_ends() {
+        // Held at the floor or the ceiling, a key press must be a no-op rather
+        // than a jump to the other end.
+        assert_eq!(next_zoom(ZOOM_MIN, -10), ZOOM_MIN);
+        assert_eq!(next_zoom(ZOOM_MAX, 10), ZOOM_MAX);
+        assert_eq!(next_zoom(ZOOM_MIN, -1), ZOOM_MIN);
+    }
+
+    #[test]
+    fn next_zoom_survives_an_oversized_delta() {
+        // The page supplies this number, so it is not necessarily one step. A
+        // delta that would take the sum negative must clamp to the floor: it used
+        // to fall through to the default and jump the zoom to 100%.
+        assert_eq!(next_zoom(50, -1000), ZOOM_MIN);
+        assert_eq!(next_zoom(50, i16::MIN), ZOOM_MIN);
+        assert_eq!(next_zoom(100, 1000), ZOOM_MAX);
+        assert_eq!(next_zoom(100, i16::MAX), ZOOM_MAX);
+        assert_eq!(next_zoom(50, 0), ZOOM_MIN);
+    }
+
+    #[test]
+    fn next_zoom_starts_from_a_scrambled_current_value() {
+        // A current value that is not on the ladder - a hand-edited settings file,
+        // or a value that predates a ladder change - must not produce a rung that
+        // is off the ladder.
+        for current in [0u8, 37, 57, 99, 200, 255] {
+            for delta in [-30i16, -10, -1, 0, 1, 10, 30] {
+                let next = next_zoom(current, delta);
+                assert!(
+                    (ZOOM_MIN..=ZOOM_MAX).contains(&next),
+                    "next_zoom({current}, {delta}) = {next} is off the ladder"
+                );
+                assert_eq!(
+                    next % ZOOM_STEP,
+                    0,
+                    "next_zoom({current}, {delta}) = {next} is not a rung"
+                );
+            }
+        }
     }
 
     #[test]
