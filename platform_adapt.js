@@ -868,7 +868,7 @@
       }
       /* The page inset is expressed in CSS pixels, so it has to be re-applied
          whenever the zoom changes. */
-      scheduleAvoidance(true);
+      scheduleAvoidance();
     }
 
     paint(zoom);
@@ -896,26 +896,29 @@
       report(true);
     }
 
-    function scheduleAvoidance(rescan) {
-      /* A rescan walks the DOM; a liveness check is one querySelector. The
-         observer fires constantly on a SPA, so it only does the cheap one. */
+    /* Re-detect on every mutation batch, debounced.
+     *
+     * There used to be a cheaper path here: skip unless our own marker had been
+     * removed from the document. That was wrong, and it is what left the chrome
+     * frozen on the boot screen. dsh keeps the same DOM node alive while a
+     * session loads and the dock opens, so the marker stayed connected, the
+     * detection never ran again, and the dock was never found or inset - the
+     * page's own layout had changed underneath a decision made three seconds
+     * after launch.
+     *
+     * The debounce is what keeps this affordable: a SPA mutating constantly
+     * still costs one debounced pass, and a pass is a single filtered scan.
+     */
+    function scheduleAvoidance() {
       if (pending) {
         clearTimeout(pending);
       }
       pending = setTimeout(function () {
         pending = null;
         try {
-          if (rescan) {
-            avoidance = applyCornerAvoidance();
-            reportAvoidance(false);
+          if (document.hidden) {
             return;
           }
-          var marked = document.querySelector("[" + INSET_FLAG + "]");
-          if (marked && marked.isConnected) {
-            return;
-          }
-          /* The SPA replaced the inset element on a navigation, or there never
-             was one. Re-check, but not on every single mutation. */
           avoidance = applyCornerAvoidance();
           reportAvoidance(false);
         } catch (error) {
@@ -927,13 +930,13 @@
 
     if (window.MutationObserver && document.body) {
       new MutationObserver(function () {
-        scheduleAvoidance(false);
+        scheduleAvoidance();
       }).observe(document.body, { childList: true, subtree: true });
     }
     window.addEventListener("resize", function () {
-      scheduleAvoidance(true);
+      scheduleAvoidance();
     });
-    scheduleAvoidance(true);
+    scheduleAvoidance();
 
     window.__DSH_SHELL_CHROME__ = {
       setZoom: paint,
