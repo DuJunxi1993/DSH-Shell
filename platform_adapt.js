@@ -1110,10 +1110,14 @@
     maximize.addEventListener("click", function () {
       invoke("plugin:window|toggle_maximize").catch(function () {});
     });
-    /* Closing raises ExitRequested, which runs the dsh shutdown path, exactly
-       like the native close button would. */
+    /* Hides to the tray instead of closing. The window has no native caption,
+       so the tray is the only way out from here - which is why Alt+F4 is
+       deliberately not routed through this: it still closes the window for
+       real, so there is always an exit that does not require finding the tray.
+       Closing would otherwise raise ExitRequested and kill dsh, which is no
+       longer what this button means. */
     close.addEventListener("click", function () {
-      invoke("plugin:window|close").catch(function () {});
+      invoke("hide_to_tray").catch(function () {});
     });
 
     winCluster.appendChild(minimize);

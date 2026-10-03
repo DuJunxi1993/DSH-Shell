@@ -1,13 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The local boot page. It is our own origin, so it only needs the shell's own commands for the chrome to install and self-diagnose before dsh is even up. The remote dsh origin is covered separately by chrome.json, which is scoped to loopback only.",
+  "description": "Baseline for the shell's own window. Deliberately small: every window and chrome command the title bar needs is granted per origin, in boot.json for the placeholder and chrome.json for the dsh page, so the remote origin's access is an explicit, reviewable list rather than a side effect of this one.",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "allow-zoom-step",
-    "allow-zoom-reset",
-    "allow-chrome-report",
-    "allow-chrome-error"
-  ]
+  "permissions": ["core:default"]
 }

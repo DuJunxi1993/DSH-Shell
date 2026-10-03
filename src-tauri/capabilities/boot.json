@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "boot",
+  "description": "The local boot placeholder, served from the app's own origin. It needs the window controls for the same reason the real page does: if dsh is slow to start, the title bar is the only way to close the window. Local origins only.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "allow-hide-to-tray",
+    "allow-zoom-step",
+    "allow-zoom-reset",
+    "allow-chrome-report",
+    "allow-chrome-error"
+  ]
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hide-to-tray"
+description = "Enables the hide_to_tray command without any pre-configured scope."
+commands.allow = ["hide_to_tray"]
+
+[[permission]]
+identifier = "deny-hide-to-tray"
+description = "Denies the hide_to_tray command without any pre-configured scope."
+commands.deny = ["hide_to_tray"]

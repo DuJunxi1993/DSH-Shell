@@ -22,11 +22,14 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use dsh_shell_core::chrome;
 use dsh_shell_core::config::{self, Config};
 use dsh_shell_core::error::ShellError;
+use dsh_shell_core::navigate;
 use dsh_shell_core::platform;
 use dsh_shell_core::process::{self, DshProcess};
 
@@ -52,6 +55,39 @@ struct AppState {
     /// Current page zoom in percent; the single source of truth for what the
     /// webview is actually set to.
     zoom_percent: AtomicU8,
+    /// Origin of the dsh page the window is allowed to navigate within, as
+    /// `scheme://host:port`. Empty until dsh resolves, while only the local boot
+    /// placeholder is reachable.
+    dsh_origin: parking_lot::RwLock<String>,
+}
+
+/// Menu ids for the tray, so the click handler does not match on labels.
+const TRAY_TOGGLE: &str = "toggle";
+const TRAY_ZOOM_RESET: &str = "zoom-reset";
+const TRAY_QUIT: &str = "quit";
+
+/// Hide the window instead of closing it.
+///
+/// The window has no native caption, so this is what the title bar's ✕ does.
+/// The process stays alive with dsh running, and the tray is the only way out —
+/// which is why Alt+F4 is deliberately *not* routed here: it must still close
+/// the window for real, so there is always an exit that does not require finding
+/// the tray.
+#[tauri::command]
+async fn hide_to_tray(window: WebviewWindow) -> CommandResult<()> {
+    window.hide().map_err(|err| format!("could not hide: {err}"))
+}
+
+/// Show and focus the window. Used by the tray, and by a second launch.
+fn raise_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        tracing::warn!(target: "dsh_shell", "no window to raise");
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    tracing::info!(target: "dsh_shell", "window raised");
 }
 
 fn main() {
@@ -64,6 +100,7 @@ fn main() {
         starting_pid: AtomicU32::new(0),
         shutting_down: AtomicBool::new(false),
         zoom_percent: AtomicU8::new(zoom),
+        dsh_origin: parking_lot::RwLock::new(String::new()),
     });
 
     let app = match build(state.clone(), zoom) {
@@ -96,14 +133,21 @@ fn main() {
                             tracing::warn!(target: "dsh_shell", "shutdown deadline reached; exiting anyway");
                         }
                     } else if let Some(pid) = nonzero_pid(&state) {
-                        // Closed while dsh was still starting: there is no
-                        // DshProcess to drop, so the tree has to be terminated
-                        // from the recorded PID or it is orphaned.
+                        // Closed while dsh was still starting, or in the gap
+                        // between `launch` returning and the process being
+                        // stored: there is no DshProcess to drop, so the tree has
+                        // to be terminated from the recorded PID or it outlives
+                        // us and keeps the port.
                         tracing::warn!(
                             target: "dsh_shell",
-                            "window closed during startup; terminating dsh pid {pid}"
+                            "no owned dsh at exit; terminating recorded pid {pid}"
                         );
                         platform::terminate_tree_sync(pid);
+                    } else {
+                        tracing::info!(
+                            target: "dsh_shell",
+                            "no dsh running at exit; nothing to terminate"
+                        );
                     }
                     tracing::info!(target: "dsh_shell", "dsh terminated; exiting");
                     handle.exit(0);
@@ -133,27 +177,27 @@ fn main() {
 /// it even if the window closes before [`DshProcess`] is handed over.
 ///
 /// `process::launch` only returns once the URL line arrives, which is seconds
-/// after the spawn. Without this window the record, that gap is exactly where a
-/// closed window leaves an orphan.
+/// after the spawn. Without this record, that gap is exactly where a closed
+/// window leaves an orphan.
+///
+/// The record is deliberately **not** cleared here on success. It is cleared by
+/// `point_at_dsh`, once the process is actually in `AppState` — clearing it at
+/// the moment `launch` returns opens a second gap, between that return and the
+/// store, where the exit path finds neither a `DshProcess` nor a PID and lets dsh
+/// outlive the app. The invariant is: while we own, or are about to own, a dsh,
+/// its PID is recorded.
 async fn launch_recording_pid(
     state: &Arc<AppState>,
     config: Config,
 ) -> Result<process::DshProcess, ShellError> {
-    let watched = config.clone();
     let dsh = process::launch_with_pid_hook(config, move |pid| {
         state.starting_pid.store(pid, Ordering::SeqCst);
         tracing::info!(target: "dsh_shell", "dsh spawned as pid {pid}");
     })
     .await;
-    let _ = watched;
-    match &dsh {
-        // Ownership has transferred, so the exit path no longer needs the PID.
-        Ok(_) => {
-            state.starting_pid.store(0, Ordering::SeqCst);
-        }
-        Err(_) => {
-            state.starting_pid.store(0, Ordering::SeqCst);
-        }
+    if dsh.is_err() {
+        // Nothing is running, so the record is dead weight.
+        state.starting_pid.store(0, Ordering::SeqCst);
     }
     dsh
 }
@@ -346,18 +390,125 @@ fn chrome_error(message: String) {
     tracing::error!(target: "dsh_shell", "chrome script threw:\n{message}");
 }
 
+/// The tray icon and its menu.
+///
+/// The window has no native caption, so once the ✕ hides it this is the only
+/// remaining way out. Left click raises the window because that is what a user
+/// double-clicking a tray icon expects; the menu is on the right click, where a
+/// menu is expected.
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let toggle = MenuItem::with_id(app, TRAY_TOGGLE, "显示 / 隐藏", true, None::<&str>)?;
+    let reset = MenuItem::with_id(app, TRAY_ZOOM_RESET, "缩放复位 100%", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT, "退出（关闭 dsh）", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&toggle, &reset, &quit])?;
+
+    // The window icon, so the tray does not need its own asset: it is the same
+    // whale the app already ships.
+    let mut tray = TrayIconBuilder::with_id("main").menu(&menu).tooltip("DSH Shell");
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.on_menu_event(|app, event| match event.id().as_ref() {
+        TRAY_TOGGLE => toggle_window(app),
+        TRAY_ZOOM_RESET => reset_zoom(app),
+        TRAY_QUIT => {
+            // The normal exit: ExitRequested runs the dsh tree kill.
+            app.exit(0);
+        }
+        other => tracing::debug!(target: "dsh_shell", "unhandled tray item {other}"),
+    })
+    .on_tray_icon_event(|tray, event| {
+        // Left click toggles. Right click is left to the platform so the menu
+        // appears the way Windows users expect.
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            toggle_window(tray.app_handle());
+        }
+    })
+    .build(app)?;
+    Ok(())
+}
+
+/// Show the window if it is hidden, hide it if it is shown. One place, because
+/// the tray icon and the tray menu both mean the same thing by it.
+fn toggle_window(app: &AppHandle) {
+    let visible = app
+        .get_webview_window(MAIN_WINDOW)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if visible {
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+            let _ = window.hide();
+        }
+    } else {
+        raise_window(app);
+    }
+}
+
+/// Back to 100%, from the tray, whether or not a page is asking.
+fn reset_zoom(app: &AppHandle) {
+    let state = app.state::<Arc<AppState>>();
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    match apply_zoom(&window, &state, config::ZOOM_DEFAULT) {
+        Ok(percent) => tracing::info!(target: "dsh_shell", "zoom reset to {percent}% from the tray"),
+        Err(err) => tracing::warn!(target: "dsh_shell", "zoom reset failed: {err}"),
+    }
+}
+
+impl AppState {
+    /// May the webview navigate here? The rule and the reason for it live in
+    /// [`navigate::is_internal`]; this only supplies the dsh origin, which is
+    /// unknown until dsh has resolved.
+    fn is_allowed_navigation(&self, url: &tauri::Url) -> bool {
+        navigate::is_internal(url, &self.dsh_origin.read())
+    }
+}
+
+/// Hand a URL to the system default browser.
+fn open_externally(url: &tauri::Url) {
+    if !navigate::is_openable(url) {
+        tracing::warn!(
+            target: "dsh_shell",
+            "refused to open {url} externally: scheme is not http(s)"
+        );
+        return;
+    }
+    tracing::info!(target: "dsh_shell", "opening {url} in the default browser");
+    if let Err(err) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>) {
+        tracing::warn!(target: "dsh_shell", "could not open {url}: {err}");
+    }
+}
+
 fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
     let setup_state = state.clone();
     let page_load_state = state.clone();
+    let nav_state = state.clone();
+    let new_window_state = state.clone();
     let chrome = chrome_script(zoom);
     let page_load_chrome = chrome.clone();
     tauri::Builder::default()
+        // A second launch raises the window that is already running instead of
+        // starting a rival one - which would otherwise race dsh for the port and
+        // fail with "port already in use". Registered before anything else so
+        // there is no window in which two instances can both be alive.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tracing::info!(target: "dsh_shell", "a second instance was launched; raising ours");
+            raise_window(app);
+        }))
+        .plugin(tauri_plugin_opener::init())
         // Required by the `zoom_step` and `chrome_report` commands, which read
         // the zoom through `tauri::State`. Without it, state resolution fails at
         // invoke time and the command returns an error the page cannot see -
         // which is exactly the failure that made the zoom control do nothing.
         .manage(state)
         .setup(move |app| {
+            build_tray(app)?;
             let window = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
                 .title("DSH Shell")
                 .inner_size(1280.0, 800.0)
@@ -401,6 +552,34 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
                         tracing::error!(target: "dsh_shell", "could not inject chrome: {err}");
                     }
                 })
+                // Keep the webview on the page it is meant to be showing. dsh's
+                // own routing is client-side and never reaches here, so the only
+                // things that do are genuine external destinations: a link, or a
+                // server-side redirect off dsh's origin. Letting either through
+                // would replace the app's contents with someone else's website.
+                .on_navigation(move |url| {
+                    if nav_state.is_allowed_navigation(url) {
+                        return true;
+                    }
+                    open_externally(url);
+                    false
+                })
+                // `target="_blank"` and `window.open` would otherwise open a
+                // second webview with no chrome, no tray and no dsh. Denied
+                // either way, but only an external URL is worth passing on: a
+                // dsh URL sent to the browser would have no token, and the index
+                // answers 401 without one.
+                .on_new_window(move |url, _features| {
+                    if new_window_state.is_allowed_navigation(&url) {
+                        tracing::warn!(
+                            target: "dsh_shell",
+                            "refused a second webview for our own {url}"
+                        );
+                    } else {
+                        open_externally(&url);
+                    }
+                    tauri::webview::NewWindowResponse::Deny
+                })
                 .build()?;
 
             let state = setup_state.clone();
@@ -424,7 +603,13 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![zoom_step, zoom_reset, chrome_report, chrome_error])
+        .invoke_handler(tauri::generate_handler![
+            hide_to_tray,
+            zoom_step,
+            zoom_reset,
+            chrome_report,
+            chrome_error
+        ])
         .build(tauri::generate_context!())
 }
 
@@ -445,9 +630,19 @@ async fn point_at_dsh(window: WebviewWindow, state: Arc<AppState>, dsh: DshProce
         }
     };
 
+    // Record the origin before navigating: the navigation guard reads it to tell
+    // dsh's own pages from an external destination, and the very next
+    // navigation is the dsh page.
+    let origin = parsed.origin().ascii_serialization();
+    *state.dsh_origin.write() = origin.clone();
+    tracing::info!(target: "dsh_shell", "dsh origin {origin}");
+
     // Store before navigating: from here on, the exit path owns a child that must
     // be reaped.
     *state.dsh.lock().await = Some(dsh);
+    // Only now is the PID redundant: the DshProcess owns it. Clearing it any
+    // earlier re-opens the window where a close leaks dsh.
+    state.starting_pid.store(0, Ordering::SeqCst);
 
     if let Err(err) = window.navigate(parsed) {
         tracing::error!(target: "dsh_shell", "could not navigate the window: {err}");

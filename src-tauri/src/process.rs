@@ -81,6 +81,19 @@ impl DshProcess {
             .stderr(Stdio::piped())
             .stdin(Stdio::null())
             .kill_on_drop(true);
+
+        // Unix only: make dsh its own process-group leader, so that
+        // `platform::terminate_tree`'s `killpg(pid)` addresses *its* group rather
+        // than ours. Without this the pid is not a group id at all - killpg
+        // returns ESRCH, and where it does not, it can signal our own group.
+        // Windows has no equivalent: the tree walk there is `taskkill /T`, and
+        // `hide_child_console` covers the console need.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
         // Without this a console window flashes open for the whole life of dsh,
         // because a GUI-subsystem parent has no console for the child to share.
         platform::hide_child_console(&mut cmd);

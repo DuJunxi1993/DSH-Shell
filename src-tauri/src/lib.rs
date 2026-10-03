@@ -8,12 +8,14 @@
 //! - [`preflight`]: the checks that keep us from nesting or double-binding
 //! - [`process`]: spawn / attach / wait / shutdown
 //! - [`platform`]: OS-specific termination
+//! - [`navigate`]: which URLs the webview is allowed to show
 //! - [`error`]: the shared error surface
 
 pub mod chrome;
 pub mod config;
 pub mod endpoint;
 pub mod error;
+pub mod navigate;
 pub mod platform;
 pub mod preflight;
 pub mod process;

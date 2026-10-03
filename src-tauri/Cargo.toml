@@ -28,8 +28,18 @@ doc = false
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Tauri 2.x
-tauri = { version = "2", features = [] }
+# Tauri 2.x. `tray-icon` is not in tauri's default feature set; the window has
+# no native caption, so the tray is the only way out once it is hidden.
+tauri = { version = "2", features = ["tray-icon"] }
+
+# A second launch must raise the window that is already running rather than
+# start a rival one. Uses a named mutex on Windows, so the activation happens
+# inside the first process and is not blocked by the foreground lock.
+tauri-plugin-single-instance = "2.5"
+
+# Opens http(s) links in the system default browser instead of navigating the
+# app's own webview away from dsh.
+tauri-plugin-opener = "2.5"
 
 # Async runtime (bundled with Tauri, but explicit for clarity)
 tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros", "rt-multi-thread"] }

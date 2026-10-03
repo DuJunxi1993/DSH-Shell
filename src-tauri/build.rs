@@ -10,6 +10,7 @@ fn main() {
             // capabilities/chrome.json, work fine.
             "zoom_step",
             "zoom_reset",
+            "hide_to_tray",
             "chrome_report",
             "chrome_error",
         ])),
