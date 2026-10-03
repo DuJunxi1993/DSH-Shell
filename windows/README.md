@@ -53,7 +53,7 @@ Node is *not* required: `cargo-tauri` does the packaging.
 ## Build
 
 ```powershell
-cd D:\Development\DSH-Shell\src-tauri
+cd windows\src-tauri        # from the repository root
 cargo test                 # hermetic; never starts a real dsh
 cargo clippy --all-targets -- -D warnings
 cargo tauri build          # -> target\release\bundle\{msi,nsis}
@@ -245,7 +245,7 @@ Two things make this work at all, and both are non-obvious:
 
 ```powershell
 $env:RUST_LOG = "info,dsh_shell=debug"
-cd D:\Development\DSH-Shell\src-tauri
+cd windows\src-tauri        # from the repository root
 cargo run
 ```
 

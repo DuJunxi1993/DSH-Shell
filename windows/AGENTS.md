@@ -2,6 +2,11 @@
 
 ## What this project is
 
+This is the **Windows** side of a two-implementation repository: this Tauri 2.x
+shell, and a SwiftUI shell for macOS under `macos/`. They are independent
+builds of the same idea, kept as siblings rather than as one product. Anything
+in this file is about `windows/` only.
+
 A Tauri 2.x desktop shell for the DeepSeek Harness (`dsh`) web UI. It forks
 `dsh web`, captures the authenticated URL it prints, and points a WebView2
 window at it. The core contract is: **the app exits → dsh dies → the port is
@@ -39,7 +44,7 @@ host process. Read them before running anything that touches processes.
 ## Build and test
 
 ```powershell
-Set-Location D:\Development\DSH-Shell\src-tauri
+Set-Location windows\src-tauri                      # from the repository root
 cargo test                                          # hermetic; never boots real dsh
 cargo clippy --all-targets -- -D warnings
 cargo build --release
@@ -69,6 +74,10 @@ the window is created in `setup()` with a runtime URL, so `tauri dev` would only
 ever show a blank page. Use `cargo run` for a debug build.
 
 ## Layout
+
+Paths below are relative to this implementation's root, `windows/`. The
+repository also holds a macOS SwiftUI implementation under `macos/`; the two
+share nothing but the idea, and neither one is built from the other's files.
 
 | Path | Role |
 |---|---|

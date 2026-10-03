@@ -1,0 +1,9 @@
+# Editor and OS noise only. Build output is ignored by each implementation's
+# own .gitignore (windows/.gitignore, macos/.gitignore).
+
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/
