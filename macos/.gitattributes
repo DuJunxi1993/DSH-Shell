@@ -1,0 +1,23 @@
+* text=auto eol=lf
+
+*.swift   text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.txt     text eol=lf
+
+*.png     binary
+*.jpg     binary
+*.gif     binary
+*.ico     binary
+*.icns    binary
+*.svg     text eol=lf
+
+*.pbxproj text eol=lf
+*.plist   text eol=lf
+*.entitlements text eol=lf
+
+# Force LF for shell scripts even on Windows checkouts
+*.sh      text eol=lf
+*.command text eol=lf
