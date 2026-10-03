@@ -46,7 +46,12 @@
   var CFG = window.__DSH_SHELL__ || {};
   var BAR_H = num(CFG.barH, 28);
   var WIN_W = num(CFG.winW, 40);
-  var GRAB_H = num(CFG.grabH, 12);
+  /* The drag strip spans the full bar again. It used to be halved to stop it
+     swallowing clicks on the page's top row, but the real fix was to move the
+     page's top row down to the session list's brand line - which sits well below
+     the bar - so the strip can be as tall as the bar without covering anything
+     clickable. */
+  var GRAB_H = num(CFG.grabH, 28);
   var RESIZE_BORDER = num(CFG.resizeBorder, 4);
   var CORNER_R = num(CFG.cornerR, 6);
   var RESERVED_W = 3 * WIN_W;
@@ -78,6 +83,13 @@
 
   var STYLE_ID = "dsh-shell-chrome-style";
   var ROOT_ID = "dsh-shell-chrome";
+
+  /* The content column's top row, republished by every avoidance pass so the
+     status line can read the session title out of it. Module scope on purpose:
+     `applyCornerAvoidance` is a top-level function and could not see a variable
+     declared inside `install`, which made every pass throw and silently
+     cancelled both the gutter and the dock inset. */
+  var topRow = null;
   var INSET_FLAG = "data-dsh-shell-inset";
 
   var zoom = clampZoom(num(CFG.zoom, 100));
@@ -604,7 +616,7 @@
    *   and needs the gutter; with the dock open the dock holds the corner and the
    *   row stops well short of it, so it is left alone.
    */
-  function gutterTopRow(best, reservedCss) {
+  function gutterTopRow(best, reservedCss, anchor) {
     var viewportW = document.documentElement.clientWidth;
     if (!best) {
       return "no top row found in the content column";
@@ -615,7 +627,7 @@
        that opening the dock - which releases the gutter - also dropped the row
        back against the window frame, which is the one place the content's top
        padding is actually visible. */
-    best.style.transform = shiftTopRow(best);
+    best.style.transform = shiftTopRow(best, anchor);
     /* The marker means "we own this element's geometry" whether or not a gutter
        is currently applied, so it is found again on the next pass and its
        transform is cleared by `clearApplied` rather than left behind. */
@@ -634,13 +646,13 @@
       return "top row " + describe(best) + " ends at " + Math.round(rect.right) +
         ", corner held by the dock (starts at " +
         Math.round(viewportW - reservedCss) + "): gutter released; " +
-        describeShift(best);
+        describeShift(best, anchor);
     }
     var gutter = reservedCss + cssPx(GUTTER_EXTRA);
     best.style.boxSizing = "border-box";
     best.style.paddingRight = gutter + "px";
     return "top row " + describe(best) + " shifted left " +
-      Math.round(gutter) + "px; " + describeShift(best);
+      Math.round(gutter) + "px; " + describeShift(best, anchor);
   }
 
   /* Where the row's text actually is.
@@ -665,53 +677,91 @@
     return isFinite(top) ? { top: top, bottom: bottom } : null;
   }
 
-  /* Vertical centre of our own button row, which is what the page's row has to
-     line up with. */
+  /* Vertical centre of our own button row - the fallback when the session list
+     has no brand row to line up with. */
   function chromeButtonCentre() {
     return cssPx(BUTTON_GAP) + (cssPx(BAR_H) - cssPx(BUTTON_GAP)) / 2;
   }
 
-  /* Places the content row so its text sits on the same line as our window
-     buttons, rather than a fixed distance below the frame.
+  /* The session list's top row: the deepseek brand mark. The content column's
+     own top row is placed on this row's centre, so the two columns read as one
+     line of chrome and, more usefully, the content row ends up well clear of the
+     drag strip instead of underneath it.
    *
-   * The row's own box says nothing useful here: it is much taller than the bar
-   * and renders its text at the top of itself, so aligning the row's *top* to a
-   * fixed gap put the text's centre several pixels below the button row - which
-   * is why the page's buttons looked lower than the chrome. Aligning the text's
-     centre is what makes the two rows read as one.
-   */
-  function shiftTopRow(row) {
+   * Found geometrically for the same reason everything else here is: no stable
+   * selector survives a dsh release. */
+  function brandRowCentre(leftColumn) {
+    var row = leftColumn ? topRowInColumn(leftColumn) : null;
+    if (!row) {
+      return { centre: chromeButtonCentre(), from: "chrome centre (no brand row found)" };
+    }
+    var rect = row.getBoundingClientRect();
+    return { centre: rect.top + rect.height / 2, from: "brand row " + describe(row) };
+  }
+
+  /* The topmost short, wide element inside a column - the row that sits at the
+     very top of it. */
+  function topRowInColumn(column) {
+    var best = null;
+    var width = column.getBoundingClientRect().width;
+    var nodes;
+    try {
+      nodes = column.querySelectorAll("*");
+    } catch (error) {
+      return null;
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.closest("#" + ROOT_ID)) {
+        continue;
+      }
+      var r = el.getBoundingClientRect();
+      if (r.width < width * 0.5 || r.height <= 0 || r.height > BAR_H * 4) {
+        continue;
+      }
+      if (r.top < -2 || r.top > BAR_H * 3) {
+        continue;
+      }
+      if (!best || r.top < best.getBoundingClientRect().top) {
+        best = el;
+      }
+    }
+    return best;
+  }
+
+  /* Places the content row so its content sits on the anchor's centre line -
+     normally the session list's brand mark - rather than at a fixed distance
+     from the frame. Returns "" when there is nothing to move. */
+  function shiftTopRow(row, anchor) {
     var text = measureRowText(row);
     if (!text) {
       return "";
     }
-    var centre = (text.top + text.bottom) / 2;
-    var shift = chromeButtonCentre() - centre;
-    /* The same top gap the window buttons get, and no more. Centring the row
-       can otherwise leave its content a pixel or two higher than the buttons -
-       2px against their 4px in the run this was measured from - so the two
-       rows read as misaligned even though their centres match. */
+    var shift = anchor.centre - (text.top + text.bottom) / 2;
+    /* The same top gap the window buttons get, and no more, so the row can never
+       ride up under the frame. */
     if (text.top + shift < cssPx(BUTTON_GAP)) {
       shift = cssPx(BUTTON_GAP) - text.top;
     }
     return shift ? "translateY(" + shift + "px)" : "";
   }
 
-  function describeShift(row) {
+  function describeShift(row, anchor) {
     var text = measureRowText(row);
     if (!text) {
-      return "no text in this row; left in place (chrome centre " +
-        Math.round(chromeButtonCentre()) + "px)";
+      return "no text in this row; left in place (anchor " +
+        Math.round(anchor.centre) + "px)";
     }
     return "text " + Math.round(text.top) + ".." + Math.round(text.bottom) +
       "px, centre " + Math.round((text.top + text.bottom) / 2) +
-      " (chrome centre " + Math.round(chromeButtonCentre()) +
-      "px, bar 0.." + Math.round(cssPx(BAR_H)) + "px)";
+      " (anchor " + Math.round(anchor.centre) + "px from " + anchor.from + ")";
   }
 
   function applyCornerAvoidance() {
     /* Replace, never accumulate. */
     clearApplied();
+    /* Held at install() scope so the status line can read the session title out of it. */
+    topRow = null;
     var gaps = "gaps: gutter+=" + Math.round(cssPx(GUTTER_EXTRA)) +
       "px dock=" + Math.round(cssPx(DOCK_TOP)) +
       "px bar=" + Math.round(cssPx(BAR_H)) +
@@ -726,12 +776,14 @@
     var applied = [gaps, "layout: " + found.notes.join(" | ")];
 
     /* The content column's top row is found once and shared: the gutter decides
-       whether it reaches the reserved corner, and its depth decides how far the
-       dock has to come down. Measuring it twice is what broke the dock: the
+       whether it reaches the reserved corner, and the row is placed on the
+       session list's brand line. Measuring it twice is what broke the dock: the
        second scan skipped the row, because the first pass had just marked it. */
+    var anchor = brandRowCentre(found.left);
     var row = found.content ? findContentTopRow(found.content) : null;
+    topRow = row;
     if (found.content) {
-      var gutter = gutterTopRow(row, reservedCss);
+      var gutter = gutterTopRow(row, reservedCss, anchor);
       if (gutter) {
         applied.push(gutter);
       }
@@ -845,6 +897,94 @@
       invoke(cmd).catch(function () {});
     });
     bar.appendChild(grab);
+
+    /* Status, centred in the *window* rather than in the leftover space, so it
+     * does not drift as the button cluster's width or the zoom changes. It is
+     * click-through: the drag strip underneath has to keep working, and that
+     * strip now spans the full bar height again.
+     *
+     * Three things, all obtained without inventing an API: which dsh we are
+     * attached to and whether it is still answering, the session that is open,
+     * and the zoom - which has no other UI at all, since the shortcut is the
+     * only way to change it.
+     *
+     * The dot is deliberately three-state. A failed probe only means "down" once
+     * a probe has ever succeeded: a page whose own CSP blocked the request would
+     * otherwise report dsh as dead while dsh is serving it.
+     */
+    var status = document.createElement("div");
+    status.className = "dss-status";
+    status.style.cssText = [
+      "position:absolute",
+      "top:0",
+      "left:50%",
+      "transform:translateX(-50%)",
+      "height:" + px(BAR_H),
+      "line-height:" + px(BAR_H),
+      "padding:0 " + px(10),
+      "pointer-events:none",
+      "white-space:nowrap",
+      "overflow:hidden",
+      "text-overflow:ellipsis",
+      "max-width:60%",
+      "font-size:" + px(10.5),
+      "opacity:0.75",
+      "color:inherit"
+    ].join(";");
+    bar.appendChild(status);
+
+    var reachable = false;
+    var everReached = false;
+
+    function paintStatus() {
+      var tint = !everReached ? "inherit" : (reachable ? "#22c55e" : "#ef4444");
+      var parts = [
+        '<span style="color:' + tint + '">' + (everReached ? "●" : "○") + "</span>",
+        "dsh " + (location.host || "?"),
+        "· " + zoom + "%"
+      ];
+      var session = currentSessionTitle();
+      if (session) {
+        parts.splice(2, 0, "· " + session);
+      }
+      status.innerHTML = parts.join(" ");
+    }
+
+    /* The open session's name, from the first piece of text in the content
+       column's top row. Best effort by design: the status line is a nicety and
+       that row's internals are not a stable contract. */
+    function currentSessionTitle() {
+      if (!topRow) {
+        return "";
+      }
+      for (var i = 0; i < topRow.children.length; i++) {
+        var child = topRow.children[i];
+        if (child.tagName === "BUTTON" || child.getAttribute("role") === "button") {
+          continue;
+        }
+        var text = (child.textContent || "").replace(/\s+/g, " ").trim();
+        if (text) {
+          return text.length > 26 ? text.slice(0, 25) + "…" : text;
+        }
+      }
+      return "";
+    }
+
+    /* Same-origin probe: any answer at all proves dsh's HTTP server is up, and
+       the 401 from its auth fence counts. */
+    function probeDsh() {
+      fetch(location.origin + "/", { method: "HEAD", cache: "no-store" })
+        .then(function () {
+          reachable = true;
+          everReached = true;
+        })
+        .catch(function () {
+          reachable = false;
+        })
+        .then(function () {
+          paintStatus();
+        });
+    }
 
     /* --- window buttons --- */
     var winCluster = document.createElement("div");
@@ -990,6 +1130,7 @@
             return;
           }
           avoidance = applyCornerAvoidance();
+          paintStatus();
           reportAvoidance(false);
         } catch (error) {
           avoidance = "error: " + String((error && error.message) || error);
@@ -1006,6 +1147,9 @@
     window.addEventListener("resize", function () {
       scheduleAvoidance();
     });
+    paintStatus();
+    probeDsh();
+    setInterval(probeDsh, 4000);
     scheduleAvoidance();
 
     window.__DSH_SHELL_CHROME__ = {

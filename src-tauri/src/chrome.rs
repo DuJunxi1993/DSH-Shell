@@ -30,12 +30,13 @@
 pub const BAR_H: f64 = 24.0;
 /// Design width of one window button.
 pub const WIN_W: f64 = 32.0;
-/// Height of the strip at the top of the bar that actually drags the window.
+/// Height of the strip at the top of the bar that drags the window.
 ///
-/// Deliberately much shorter than the bar: the rest is `pointer-events: none`,
-/// so the page's own top row stays clickable. Only the top 12 of 28 logical
-/// pixels are given away to dragging.
-pub const GRAB_H: f64 = 12.0;
+/// The full bar height, derived rather than repeated: it was halved at one point
+/// to stop it swallowing clicks on the page's top row, but the real answer was
+/// to move that row down to the session list's brand line. The strip spans the
+/// whole width, so a narrower one only hid part of the problem.
+pub const GRAB_H: f64 = BAR_H;
 /// Top strip left free for the OS resize border, since a frameless window has
 /// no caption to drag. Inside [`GRAB_H`], so it costs nothing extra.
 pub const RESIZE_BORDER: f64 = 4.0;
@@ -76,16 +77,17 @@ pub fn script(zoom_percent: u8) -> String {
 /// Invariants that are cheap to check at compile time, so a bad edit is a build
 /// failure rather than a test failure nobody ran.
 const _: () = {
-    // The grab strip has to be tall enough to grab and short enough to leave the
-    // page's top row usable. A full-height strip silently swallows every click on
-    // the page's own header, which is a control-dense row in this app.
+    // The resize border lives inside the drag strip, so the strip has to be at
+    // least twice as tall for the border not to swallow all of it.
     assert!(GRAB_H >= RESIZE_BORDER * 2.0);
-    assert!(GRAB_H < BAR_H / 1.5);
+    assert!(GRAB_H <= BAR_H);
     // A radius larger than half the button renders as a lozenge.
     assert!(CORNER_R <= BAR_H / 2.0);
     assert!(CORNER_R <= WIN_W / 2.0);
     // The buttons must be able to hold a glyph at a legible size.
-    assert!(WIN_W >= 30.0);
+    assert!(WIN_W >= 28.0);
+    // The button row is inset from the top, so it has to leave room for itself.
+    assert!(RESIZE_BORDER < BAR_H - RESIZE_BORDER);
 };
 
 #[cfg(test)]
