@@ -90,6 +90,8 @@
      declared inside `install`, which made every pass throw and silently
      cancelled both the gutter and the dock inset. */
   var topRow = null;
+  /* The session list's brand row, published for the layout report. */
+  var brandRow = null;
   var INSET_FLAG = "data-dsh-shell-inset";
 
   var zoom = clampZoom(num(CFG.zoom, 100));
@@ -692,6 +694,7 @@
    * selector survives a dsh release. */
   function brandRowCentre(leftColumn) {
     var row = leftColumn ? topRowInColumn(leftColumn) : null;
+    brandRow = row;
     if (!row) {
       return { centre: chromeButtonCentre(), from: "chrome centre (no brand row found)" };
     }
@@ -729,32 +732,97 @@
     return best;
   }
 
-  /* Places the content row so its content sits on the anchor's centre line -
-     normally the session list's brand mark - rather than at a fixed distance
-     from the frame. Returns "" when there is nothing to move. */
-  function shiftTopRow(row, anchor) {
+/* The row's title: its first child that is not a control *and* actually
+   occupies space. The zero-size check matters: the row's first child is a
+     zero-height wrapper holding the whole row, so without it the session
+     title came out as a concatenation of every label in the row. */
+  function rowTitle() {
+    if (!topRow) {
+      return null;
+    }
+    for (var i = 0; i < topRow.children.length; i++) {
+      var child = topRow.children[i];
+      if (child.tagName === "BUTTON" || child.getAttribute("role") === "button") {
+        continue;
+      }
+      var rect = child.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        continue;
+      }
+      if ((child.textContent || "").trim()) {
+        return child;
+      }
+    }
+    return null;
+  }
+  
+  /* The row's right-hand control group: the last child holding a button. */
+  function rowButtonCluster() {
+    if (!topRow) {
+      return null;
+    }
+    for (var i = topRow.children.length - 1; i >= 0; i--) {
+      var child = topRow.children[i];
+      if (child.tagName === "BUTTON" || child.getAttribute("role") === "button" ||
+          (child.querySelector && child.querySelector("button"))) {
+        return child;
+      }
+    }
+    return null;
+  }
+  
+  
+    /* What the row should be aligned on.
+     *
+   * Not the row's own box, and not the union of its line boxes: the row is 76px
+   * tall - far taller than the bar - and that union spans the title, the model
+   * selector and the button group at three different heights, so its centre
+   * means nothing. The title element is what the eye reads as the row's line, so
+   * that is what is aligned, with the union as the fallback when the row has no
+   * separable title. */
+  function rowAlignmentTarget(row) {
+    var title = rowTitle();
+    if (title) {
+      var rect = title.getBoundingClientRect();
+      if (rect.height > 0) {
+        return { top: rect.top, bottom: rect.bottom, from: "title " + describe(title) };
+      }
+    }
     var text = measureRowText(row);
     if (!text) {
+      return null;
+    }
+    return { top: text.top, bottom: text.bottom, from: "row line boxes" };
+  }
+
+  /* Places the content row so it sits on the anchor's centre line - normally the
+     session list's brand mark - and clears the bar, so the status line in the bar
+     has the band to itself. Returns "" when there is nothing to move. */
+  function shiftTopRow(row, anchor) {
+    var target = rowAlignmentTarget(row);
+    if (!target) {
       return "";
     }
-    var shift = anchor.centre - (text.top + text.bottom) / 2;
-    /* The same top gap the window buttons get, and no more, so the row can never
-       ride up under the frame. */
-    if (text.top + shift < cssPx(BUTTON_GAP)) {
-      shift = cssPx(BUTTON_GAP) - text.top;
+    var shift = anchor.centre - (target.top + target.bottom) / 2;
+    /* Clear the drag strip, not the whole bar. The status line occupies the rest
+       of the bar but is click-through, so a row poking into that part is still
+       fully clickable - and the page keeps more of its height. */
+    if (target.top + shift < cssPx(GRAB_H)) {
+      shift = cssPx(GRAB_H) - target.top;
     }
     return shift ? "translateY(" + shift + "px)" : "";
   }
 
   function describeShift(row, anchor) {
-    var text = measureRowText(row);
-    if (!text) {
-      return "no text in this row; left in place (anchor " +
+    var target = rowAlignmentTarget(row);
+    if (!target) {
+      return "nothing measurable in this row; left in place (anchor " +
         Math.round(anchor.centre) + "px)";
     }
-    return "text " + Math.round(text.top) + ".." + Math.round(text.bottom) +
-      "px, centre " + Math.round((text.top + text.bottom) / 2) +
-      " (anchor " + Math.round(anchor.centre) + "px from " + anchor.from + ")";
+    return "row " + Math.round(target.top) + ".." + Math.round(target.bottom) +
+      "px, centre " + Math.round((target.top + target.bottom) / 2) +
+      " (anchor " + Math.round(anchor.centre) + "px from " + anchor.from +
+      ", grab 0.." + Math.round(cssPx(GRAB_H)) + "px, from " + target.from + ")";
   }
 
   function applyCornerAvoidance() {
@@ -954,20 +1022,15 @@
        column's top row. Best effort by design: the status line is a nicety and
        that row's internals are not a stable contract. */
     function currentSessionTitle() {
-      if (!topRow) {
+      var title = rowTitle();
+      if (!title) {
         return "";
       }
-      for (var i = 0; i < topRow.children.length; i++) {
-        var child = topRow.children[i];
-        if (child.tagName === "BUTTON" || child.getAttribute("role") === "button") {
-          continue;
-        }
-        var text = (child.textContent || "").replace(/\s+/g, " ").trim();
-        if (text) {
-          return text.length > 26 ? text.slice(0, 25) + "…" : text;
-        }
+      var text = (title.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text) {
+        return "";
       }
-      return "";
+      return text.length > 26 ? text.slice(0, 25) + "…" : text;
     }
 
     /* Same-origin probe: any answer at all proves dsh's HTTP server is up, and
@@ -1191,8 +1254,13 @@
           origin: location.origin,
           boxes: "bar=" + describe(node) +
             " grab=" + describe(grab) +
+            " status=" + describe(status) +
             " winc=" + describe(winCluster) +
             " close=" + describe(close) +
+            " row=" + describe(topRow) +
+            " rowTitle=" + describe(rowTitle()) +
+            " rowBtns=" + describe(rowButtonCluster()) +
+            " brandRow=" + describe(brandRow) +
             " color=" + getComputedStyle(node || bar).color,
           avoid: avoidance
         }

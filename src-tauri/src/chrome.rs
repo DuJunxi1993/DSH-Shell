@@ -32,11 +32,11 @@ pub const BAR_H: f64 = 24.0;
 pub const WIN_W: f64 = 32.0;
 /// Height of the strip at the top of the bar that drags the window.
 ///
-/// The full bar height, derived rather than repeated: it was halved at one point
-/// to stop it swallowing clicks on the page's top row, but the real answer was
-/// to move that row down to the session list's brand line. The strip spans the
-/// whole width, so a narrower one only hid part of the problem.
-pub const GRAB_H: f64 = BAR_H;
+/// Two thirds of the bar, not all of it. The strip spans the full width, so
+/// anything the page puts at the very top of the window sits under it and cannot
+/// be clicked; the status line in the bar is click-through and needs no such
+/// clearance, which leaves the lower third of the bar free for page controls.
+pub const GRAB_H: f64 = BAR_H * 2.0 / 3.0;
 /// Top strip left free for the OS resize border, since a frameless window has
 /// no caption to drag. Inside [`GRAB_H`], so it costs nothing extra.
 pub const RESIZE_BORDER: f64 = 4.0;
