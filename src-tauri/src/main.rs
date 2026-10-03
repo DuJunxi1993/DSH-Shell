@@ -25,6 +25,7 @@ use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri_plugin_notification::NotificationExt;
 
 use dsh_shell_core::chrome;
 use dsh_shell_core::config::{self, Config};
@@ -502,6 +503,9 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
             raise_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        // Toast only, and only from Rust: the page never gets a notification
+        // capability, because a dsh page has no business posting toasts as us.
+        .plugin(tauri_plugin_notification::init())
         // Required by the `zoom_step` and `chrome_report` commands, which read
         // the zoom through `tauri::State`. Without it, state resolution fails at
         // invoke time and the command returns an error the page cannot see -
@@ -649,6 +653,69 @@ async fn point_at_dsh(window: WebviewWindow, state: Arc<AppState>, dsh: DshProce
         return;
     }
     let _ = window.set_title("DSH Shell — dsh");
+    watch_dsh_exit(window.app_handle().clone(), state);
+}
+
+/// How often to ask dsh whether it is still there.
+const EXIT_POLL: Duration = Duration::from_secs(1);
+
+/// Watch dsh for an unexpected exit and say so.
+///
+/// Nothing used to notice this: dsh could die and the window would sit there
+/// showing a page with no server behind it, looking like a hang. Suppressed
+/// while we are shutting down, where dsh exiting is the whole point and a toast
+/// would be a lie.
+fn watch_dsh_exit(app: AppHandle, state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(EXIT_POLL).await;
+            if state.shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
+            // Locked in the same order as the shutdown path (dsh, then child),
+            // and only for the length of one non-blocking poll.
+            let polled = {
+                let guard = state.dsh.lock().await;
+                match guard.as_ref() {
+                    Some(dsh) => dsh.poll_exit().await,
+                    None => continue,
+                }
+            };
+            match polled {
+                Ok(process::Exited::No) => {}
+                Ok(process::Exited::Yes(code)) => {
+                    let how = match code {
+                        Some(code) => format!("退出代码 {code}"),
+                        None => "被信号终止".to_string(),
+                    };
+                    tracing::error!(target: "dsh_shell", "dsh exited unexpectedly ({how})");
+                    notify(&app, "dsh 已退出", format!("DSH Shell 的 dsh 意外退出（{how}）。窗口仍然打开，但页面已无法连接。"));
+                    return;
+                }
+                Err(err) => {
+                    // A failed poll says nothing about dsh. Keep watching.
+                    tracing::warn!(target: "dsh_shell", "could not poll dsh: {err}");
+                }
+            }
+        }
+    });
+}
+
+/// Put a toast on screen, and log it either way.
+///
+/// Best-effort by design: the log is the diagnostic of record, and a notification
+/// that cannot be shown must never take the app down with it.
+fn notify(app: &AppHandle, title: &str, body: String) {
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body.clone())
+        .show()
+    {
+        tracing::warn!(target: "dsh_shell", "could not notify ({title}): {err}");
+    }
+    tracing::info!(target: "dsh_shell", "notified: {title} — {body}");
 }
 
 /// Surface a startup failure in the window itself. A release build has no
@@ -656,6 +723,11 @@ async fn point_at_dsh(window: WebviewWindow, state: Arc<AppState>, dsh: DshProce
 fn report_failure(window: &WebviewWindow, err: &ShellError) {
     tracing::error!(target: "dsh_shell", "startup failed: {err}");
     write_crash_log(&format!("startup failed: {err}"));
+    notify(
+        window.app_handle(),
+        "dsh 启动失败",
+        format!("DSH Shell 无法启动 dsh：{err}"),
+    );
 
     let message = serde_json::to_string(&err.to_string()).unwrap_or_else(|_| "\"unknown\"".into());
     let script = format!(

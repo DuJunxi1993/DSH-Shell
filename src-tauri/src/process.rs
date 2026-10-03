@@ -27,6 +27,18 @@ pub struct DshProcess {
     config: Config,
 }
 
+/// The answer from [`DshProcess::poll_exit`].
+///
+/// Two variants rather than `Option<Option<i32>>`: "still running" and "died
+/// without an exit code" are different facts, and a watcher that conflated them
+/// would stop watching a dsh killed by a signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exited {
+    No,
+    /// Gone. The code is `None` when it was killed by a signal.
+    Yes(Option<i32>),
+}
+
 impl std::fmt::Debug for DshProcess {
     /// Hand-written: `Child` is not `Debug`, and the interesting fields are the
     /// ones a failure message needs.
@@ -213,6 +225,26 @@ impl DshProcess {
             return Ok(None);
         };
         child.wait().await.map(|status| status.code()).map_err(ShellError::Io)
+    }
+
+    /// Check whether dsh has exited, without blocking and without giving up the
+    /// ability to shut it down.
+    ///
+    /// [`wait`] cannot be used for this: it holds the child lock for the whole
+    /// lifetime of dsh, which would make [`shutdown`] unreachable from any other
+    /// task — and that deadlock is why nothing used to watch dsh at all.
+    pub async fn poll_exit(&self) -> Result<Exited> {
+        let mut guard = self.child.lock().await;
+        // Attach mode: the dsh we found was never ours, so there is nothing whose
+        // exit is ours to report.
+        let Some(child) = guard.as_mut() else {
+            return Ok(Exited::No);
+        };
+        match child.try_wait() {
+            Ok(None) => Ok(Exited::No),
+            Ok(Some(status)) => Ok(Exited::Yes(status.code())),
+            Err(err) => Err(ShellError::Io(err)),
+        }
     }
 
     /// Terminate dsh, then reap it. Idempotent, and a no-op in attach mode
