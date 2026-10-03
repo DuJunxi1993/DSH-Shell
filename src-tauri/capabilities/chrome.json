@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "dsh-shell-chrome",
-  "description": "Window controls for the injected title bar. The chrome is DOM inside the remote dsh page, so the page's own origin has to be allowed to invoke them. Scoped to loopback only, and to four window commands: start-dragging, minimize, toggle-maximize, close. No fs, shell, clipboard or path access, and the local boot page keeps its own separate capability.",
+  "description": "Window controls and zoom for the injected title bar. The chrome is DOM inside the remote dsh page, so the page's own origin has to be allowed to invoke them. Scoped to loopback only, and to four window commands plus our own zoom and self-diagnosis commands. No fs, shell, clipboard or path access, and the local boot page keeps its own separate capability.",
   "windows": ["main"],
   "local": false,
   "remote": {
@@ -13,6 +13,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "allow-zoom-step",
+    "allow-zoom-reset",
     "allow-chrome-report",
     "allow-chrome-error"
   ]

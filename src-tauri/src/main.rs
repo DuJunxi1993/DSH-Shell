@@ -18,7 +18,7 @@
 
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +27,7 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use dsh_shell_core::chrome;
 use dsh_shell_core::config::{self, Config};
 use dsh_shell_core::error::ShellError;
+use dsh_shell_core::platform;
 use dsh_shell_core::process::{self, DshProcess};
 
 /// Hard ceiling on the exit path. Shutdown must never be able to wedge the app.
@@ -38,9 +39,18 @@ type CommandResult<T> = Result<T, String>;
 
 struct AppState {
     dsh: tokio::sync::Mutex<Option<DshProcess>>,
+    /// PID of a dsh that has been spawned but is not yet owned by `dsh`, because
+    /// `launch` has not returned yet.
+    ///
+    /// Without this, closing the window *during startup* orphans dsh: the exit
+    /// handler finds `dsh == None`, has nothing to terminate, and exits the
+    /// process while the spawn task is still in flight — so nothing ever runs
+    /// `DshProcess::drop` and the harness keeps the port. Observed, not
+    /// theoretical.
+    starting_pid: AtomicU32,
     shutting_down: AtomicBool,
-    /// Current page zoom in percent; the single source of truth for the readout
-    /// the chrome draws.
+    /// Current page zoom in percent; the single source of truth for what the
+    /// webview is actually set to.
     zoom_percent: AtomicU8,
 }
 
@@ -51,6 +61,7 @@ fn main() {
     let zoom = config::normalize_zoom(config.zoom_percent);
     let state = Arc::new(AppState {
         dsh: tokio::sync::Mutex::new(None),
+        starting_pid: AtomicU32::new(0),
         shutting_down: AtomicBool::new(false),
         zoom_percent: AtomicU8::new(zoom),
     });
@@ -84,6 +95,15 @@ fn main() {
                         {
                             tracing::warn!(target: "dsh_shell", "shutdown deadline reached; exiting anyway");
                         }
+                    } else if let Some(pid) = nonzero_pid(&state) {
+                        // Closed while dsh was still starting: there is no
+                        // DshProcess to drop, so the tree has to be terminated
+                        // from the recorded PID or it is orphaned.
+                        tracing::warn!(
+                            target: "dsh_shell",
+                            "window closed during startup; terminating dsh pid {pid}"
+                        );
+                        platform::terminate_tree_sync(pid);
                     }
                     tracing::info!(target: "dsh_shell", "dsh terminated; exiting");
                     handle.exit(0);
@@ -109,7 +129,44 @@ fn main() {
     });
 }
 
+/// Record the child's PID the moment it exists, so the exit path can terminate
+/// it even if the window closes before [`DshProcess`] is handed over.
+///
+/// `process::launch` only returns once the URL line arrives, which is seconds
+/// after the spawn. Without this window the record, that gap is exactly where a
+/// closed window leaves an orphan.
+async fn launch_recording_pid(
+    state: &Arc<AppState>,
+    config: Config,
+) -> Result<process::DshProcess, ShellError> {
+    let watched = config.clone();
+    let dsh = process::launch_with_pid_hook(config, move |pid| {
+        state.starting_pid.store(pid, Ordering::SeqCst);
+        tracing::info!(target: "dsh_shell", "dsh spawned as pid {pid}");
+    })
+    .await;
+    let _ = watched;
+    match &dsh {
+        // Ownership has transferred, so the exit path no longer needs the PID.
+        Ok(_) => {
+            state.starting_pid.store(0, Ordering::SeqCst);
+        }
+        Err(_) => {
+            state.starting_pid.store(0, Ordering::SeqCst);
+        }
+    }
+    dsh
+}
+
 const MAIN_WINDOW: &str = "main";
+
+/// The PID recorded for an in-flight spawn, if any.
+fn nonzero_pid(state: &Arc<AppState>) -> Option<u32> {
+    match state.starting_pid.swap(0, Ordering::SeqCst) {
+        0 => None,
+        pid => Some(pid),
+    }
+}
 
 /// The chrome script, with its geometry and the current zoom baked in.
 ///
@@ -142,12 +199,31 @@ async fn zoom_step(
         .ok()
         .map(config::normalize_zoom)
         .unwrap_or(config::ZOOM_DEFAULT);
+    apply_zoom(&window, &state, next)
+}
 
+/// `Ctrl+0`: back to 100%.
+#[tauri::command]
+async fn zoom_reset(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> CommandResult<u8> {
+    apply_zoom(&window, &state, config::ZOOM_DEFAULT)
+}
+
+fn apply_zoom(
+    window: &WebviewWindow,
+    state: &Arc<AppState>,
+    next: u8,
+) -> CommandResult<u8> {
+    let next = config::normalize_zoom(next);
+    let current = state.zoom_percent.load(Ordering::Relaxed);
     if next != current {
         window
             .set_zoom(config::zoom_scale(next))
             .map_err(|err| format!("could not set zoom: {err}"))?;
         state.zoom_percent.store(next, Ordering::Relaxed);
+        tracing::info!(target: "dsh_shell", "page zoom {current}% -> {next}%");
         persist_zoom(next);
     }
     Ok(next)
@@ -195,18 +271,11 @@ fn chrome_report(report: ChromeReport) {
     // of 46, which is what "the menu bar grows when I zoom out" was.
     let expected = [
         ("bar height", report.measured_bar_h, chrome::BAR_H),
-        ("zoom control", report.measured_zoom_w, chrome::ZOOM_W),
-        (
-            "window buttons",
-            report.measured_win_w,
-            chrome::window_cluster_width(),
-        ),
-        // The footprint the avoidance actually reserves, which is the sum of
-        // the two clusters and so is the one number that has to be right for
-        // the page to clear the chrome.
+        // The window cluster is the whole reserved corner now that the zoom
+        // control is gone, so one measurement covers both.
         (
             "reserved width",
-            report.measured_zoom_w + report.measured_win_w,
+            report.measured_win_w,
             chrome::reserved_width(),
         ),
     ];
@@ -224,7 +293,7 @@ fn chrome_report(report: ChromeReport) {
             "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} avoidance: {}",
             report.origin,
             round1(report.measured_bar_h),
-            round1(report.measured_zoom_w + report.measured_win_w),
+            round1(report.measured_win_w),
             report.zoom,
             report.placeholder,
             report.avoid
@@ -242,12 +311,7 @@ fn chrome_report(report: ChromeReport) {
     // The layout boxes are what you want when the chrome is present but
     // invisible: they distinguish "element is missing" from "element is there
     // but not painted", which a screenshot cannot.
-    tracing::debug!(
-        target: "dsh_shell",
-        "chrome layout: color={} {}",
-        report.color,
-        report.boxes
-    );
+    tracing::debug!(target: "dsh_shell", "chrome layout: {}", report.boxes);
 }
 
 fn round1(value: f64) -> f64 {
@@ -263,9 +327,6 @@ struct ChromeReport {
     /// Bar height multiplied by the page zoom, i.e. in logical pixels. Compared
     /// against [`chrome::BAR_H`].
     measured_bar_h: f64,
-    /// Zoom-control cluster width, multiplied by the page zoom. Compared
-    /// against [`chrome::ZOOM_W`].
-    measured_zoom_w: f64,
     /// Window-button cluster width, multiplied by the page zoom. Compared
     /// against [`chrome::window_cluster_width`].
     measured_win_w: f64,
@@ -276,7 +337,6 @@ struct ChromeReport {
     boxes: String,
     /// What the reserved-corner avoidance did, or why it did nothing.
     avoid: String,
-    color: String,
 }
 
 /// A throw inside the injected script. Logged verbatim: it is the only record of
@@ -356,7 +416,7 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
                     config.dsh_binary_path.display(),
                 );
 
-                match process::launch(config).await {
+                match launch_recording_pid(&state, config).await {
                     Ok(dsh) => point_at_dsh(window, state, dsh).await,
                     Err(err) => report_failure(&window, &err),
                 }
@@ -364,7 +424,7 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![zoom_step, chrome_report, chrome_error])
+        .invoke_handler(tauri::generate_handler![zoom_step, zoom_reset, chrome_report, chrome_error])
         .build(tauri::generate_context!())
 }
 
@@ -436,7 +496,7 @@ fn init_tracing() {
     use tracing_subscriber::util::SubscriberInitExt;
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dsh_shell=debug"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dsh_shell=debug,tauri=debug,tao=warn"));
 
     let dir = log_dir();
     let _ = std::fs::create_dir_all(&dir);

@@ -3,34 +3,38 @@
  * The page is REMOTE and we do not control its stylesheet, so this file is
  * written to lose gracefully:
  *
- *  * Every length that decides where something is or how big it is is an inline
- *    style. Inline styles beat any host rule that is not `!important`, so the
- *    dsh app's reset, its CSS custom properties and any future restyle cannot
- *    move or collapse the bar.
+ *  * The stylesheet carries background and hover colours only. Sizes and radii
+ *    are inline, because they are geometry and have to track the page zoom, and
+ *    because an inline `background` would beat every `:hover` rule in the
+ *    stylesheet - which is exactly how the hover highlights went missing once.
  *  * The bar hangs off `document.documentElement`, not `body`, so nothing the
  *    page does to its own root container can capture it.
- *  * The injected stylesheet carries hover colours only. Losing it costs
- *    affordance, not layout.
  *  * It is injected twice on purpose. `initialization_script` does not survive
  *    dsh's Content-Security-Policy, so the real page gets this from Rust via
  *    `eval` on page load; the early return below makes that idempotent.
  *
  * ## Zoom
  *
- * The page is zoomed; the chrome is not. The geometry arrives from Rust
- * (`window.__DSH_SHELL__`) and every length goes through `px()`, which divides
- * by the page zoom exactly once. Do not also counter-scale with a transform:
- * that was the bug where zooming out made the window buttons grow.
+ * The page is zoomed (Ctrl +/-/0); the chrome is not. The geometry arrives from
+ * Rust (`window.__DSH_SHELL__`) and every length goes through `px()`, which
+ * divides by the page zoom exactly once. Do not also counter-scale with a
+ * transform: that was the bug where zooming out made the buttons grow.
  * `chrome_report` re-measures the live DOM and Rust fails the run if
  * `height * zoom !== barH`.
+ *
+ * ## Clicking through
+ *
+ * Only a `GRAB_H` strip at the very top drags the window. The rest of the bar
+ * is `pointer-events: none`, because a full-height drag strip silently swallows
+ * every click on the page's own top row.
  *
  * ## The page's own layout
  *
  * There is no stable selector to hook - dsh's app shell has no semantic id and
  * no ARIA landmarks, and its class names are hashed per build - so the reserved
- * corner is handled by hit-testing: find the row that actually occupies it and
- * pad its right edge. It is a heuristic, so it is marked, re-checked, logged,
- * and reversible by removing one attribute.
+ * corner is handled by geometry. The inset prefers `margin-top` on the topmost
+ * child over `padding-top` on the column, because the dock panel's tab strip is
+ * not in normal flow and a parent padding does not move it.
  */
 (function () {
   "use strict";
@@ -40,16 +44,40 @@
   }
 
   var CFG = window.__DSH_SHELL__ || {};
-  var BAR_H = num(CFG.barH, 32);
-  var WIN_W = num(CFG.winW, 46);
-  var ZOOM_W = num(CFG.zoomW, 96);
-  var RESIZE_BORDER = num(CFG.resizeBorder, 6);
-  var CORNER_R = num(CFG.cornerR, 8);
-  var RESERVED_W = ZOOM_W + 3 * WIN_W;
+  var BAR_H = num(CFG.barH, 28);
+  var WIN_W = num(CFG.winW, 40);
+  var GRAB_H = num(CFG.grabH, 12);
+  var RESIZE_BORDER = num(CFG.resizeBorder, 4);
+  var CORNER_R = num(CFG.cornerR, 6);
+  var RESERVED_W = 3 * WIN_W;
 
-  var MIN = 50;
-  var MAX = 100;
-  var STEP = 10;
+  var ZOOM_MIN = 50;
+  var ZOOM_MAX = 100;
+  var ZOOM_STEP = 10;
+
+  /* Narrowest thing that counts as a column. The sidebar's resize handle is 8px
+     wide and full height, and it is a sibling of the content area, so it has to
+     be excluded or it takes the content area's slot. */
+  var MIN_COLUMN_W = 40;
+
+  /* Extra room on top of the reserved width when shifting a row left.
+     Shifting by exactly the reserved width leaves the row's right edge *on* the
+     boundary, and a sub-pixel difference in layout, or the cluster's own shadow,
+     is then enough to clip the last control. A small margin makes the clearance
+     positive rather than zero. */
+  var GUTTER_EXTRA = 12;
+
+  /* Gap between the top of the window and the button row. Native captions are
+     flush against the frame, but on a frameless window the buttons sit on the
+     page and read as glued to the edge without it. The drag strip keeps the full
+     bar height so grabbing the very top still moves the window. */
+  var BUTTON_GAP = 3;
+
+  /* Minimum clearance between the top of the window and the row's text. The
+     bar is transparent, so nothing occludes the row; this is purely about the
+     text not looking glued to the frame, and it is applied as a downward nudge
+     rather than by lifting, so it can only ever help. */
+  var TOP_ROW_MIN_GAP = 8;
 
   var STYLE_ID = "dsh-shell-chrome-style";
   var ROOT_ID = "dsh-shell-chrome";
@@ -64,16 +92,15 @@
   }
 
   function clampZoom(value) {
-    if (!isFinite(value)) return MAX;
-    if (value < MIN) return MIN;
-    if (value > MAX) return MAX;
+    if (!isFinite(value)) return ZOOM_MAX;
+    if (value < ZOOM_MIN) return ZOOM_MIN;
+    if (value > ZOOM_MAX) return ZOOM_MAX;
     return value;
   }
 
   /* The one place page zoom is divided out. See chrome::css_len.
-     Two forms, because the two callers want different things: `cssPx` for
-     arithmetic and hit-testing, `px` for a CSS length. Using the string form
-     in arithmetic yields NaN, which is what `elementsFromPoint` rejects. */
+     Two forms: `cssPx` for arithmetic and hit-testing, `px` for a CSS length.
+     Using the string form in arithmetic yields NaN. */
   function cssPx(designPx) {
     return designPx / z;
   }
@@ -95,52 +122,73 @@
     return Promise.reject(new Error("no tauri bridge on this origin"));
   }
 
-  /* Hover colours only. Radius and sizes are inline, because they are geometry
-     and have to track the zoom. */
+  /* Backgrounds and hover states live here, not inline: an inline background
+     would beat every `:hover` rule in the stylesheet and the highlight would
+     never show. The zoom and the sizes are still inline, because they are
+     geometry and have to track the page zoom from one place.
+   *
+   * A constructed stylesheet is used rather than a `<style>` element because our
+   * own boot page's CSP drops injected style elements - the buttons then fell
+   * back to the UA default grey border and fill, which is the white outline seen
+   * during startup. Constructed sheets are not subject to the page's CSP. */
   function installStylesheet() {
-    if (document.getElementById(STYLE_ID)) {
-      return;
-    }
-    var style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = [
-      "#" + ROOT_ID + " button { outline: none; }",
-      "#" + ROOT_ID + " svg { display: block; }",
-      /* Every self-drawn button gets a hover highlight. */
-      "#" + ROOT_ID + " .dss-win button:hover,",
-      "#" + ROOT_ID + " .dss-zoom button:hover:not(:disabled) {",
+    var css = [
+      "#" + ROOT_ID + " button {",
+      "  background: transparent;",
+      "  border: 0;",
+      "  outline: none;",
+      "  color: inherit;",
+      "  cursor: default;",
+      "}",
+      "#" + ROOT_ID + " button:hover {",
       "  background: rgba(127,127,127,0.22);",
       "}",
-      /* Close is a light red, not a solid one: the cluster behind it is the
-         page's own surface colour, so a solid fill reads as a foreign panel. */
+      /* Light red, not a solid fill: the cluster behind it is the page's own
+         surface colour, and a solid block there reads as a foreign panel. */
       "#" + ROOT_ID + " .dss-win button[data-dss-close]:hover {",
       "  background: rgba(214,45,45,0.18);",
       "}",
       "#" + ROOT_ID + " .dss-win button[data-dss-close]:hover svg g {",
       "  stroke: #c0392b;",
       "}",
-      "#" + ROOT_ID + " .dss-zoom button:disabled,",
-      "#" + ROOT_ID + " .dss-zoom button:disabled:hover {",
-      "  background: transparent;",
-      "  opacity: 0.3;",
-      "}"
+      "#" + ROOT_ID + " svg { display: block; }"
     ].join("\n");
+
+    try {
+      if (window.CSSStyleSheet) {
+        var sheet = new CSSStyleSheet();
+        sheet.replaceSync(css);
+        document.adoptedStyleSheets = document.adoptedStyleSheets.concat([sheet]);
+        return;
+      }
+    } catch (error) {
+      /* Older engines, or a document that forbids constructed sheets: the
+         element below still works on the dsh origin. */
+    }
+
+    if (document.getElementById(STYLE_ID)) {
+      return;
+    }
+    var style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = css;
     (document.head || document.documentElement).appendChild(style);
   }
 
   /* A window glyph in a 10x10 viewBox. `currentColor` so it follows the host
-     page's foreground. */
+     page's foreground, and a presentation attribute rather than an inline style
+     so the close hover can override the colour from the stylesheet. */
   function glyph(kind) {
     var ns = "http://www.w3.org/2000/svg";
     var svg = document.createElementNS(ns, "svg");
     svg.setAttribute("viewBox", "0 0 10 10");
-    svg.setAttribute("width", px(11));
-    svg.setAttribute("height", px(11));
+    svg.setAttribute("width", px(10));
+    svg.setAttribute("height", px(10));
     svg.setAttribute("aria-hidden", "true");
 
     var shape = document.createElementNS(ns, "g");
     shape.setAttribute("stroke", "currentColor");
-    shape.setAttribute("stroke-width", "1");
+    shape.setAttribute("stroke-width", "1.1");
     shape.setAttribute("fill", "none");
     shape.setAttribute("stroke-linecap", "round");
 
@@ -170,61 +218,14 @@
     return svg;
   }
 
-  function cluster(className, widthPx) {
-    var el = document.createElement("div");
-    el.className = className;
-    el.style.cssText = [
-      "display:flex",
-      "align-items:stretch",
-      "pointer-events:auto",
-      "width:" + px(widthPx),
-      "height:" + px(BAR_H),
-      "flex:0 0 auto",
-      /* The page's own surface colour, so the bar follows the dsh light/dark
-         theme instead of guessing. Opaque: a see-through control cluster over an
-         arbitrary page is unreadable, and `color-mix` is a needless
-         compatibility risk. */
-      "background:var(--dsw-alias-bg-base, #ffffff)"
-    ].join(";");
-    return el;
-  }
-
-  function control(className, title, widthPx, child) {
-    var button = document.createElement("button");
-    button.type = "button";
-    button.className = className;
-    button.title = title;
-    button.setAttribute("aria-label", title);
-    button.style.cssText = [
-      "appearance:none",
-      "-webkit-appearance:none",
-      "border:0",
-      "margin:0",
-      "padding:0",
-      "background:transparent",
-      "color:inherit",
-      "cursor:default",
-      "display:flex",
-      "align-items:center",
-      "justify-content:center",
-      /* Geometry, all of it inline so it tracks the zoom from one place. */
-      "width:" + px(widthPx),
-      "height:" + px(BAR_H),
-      "border-radius:" + px(CORNER_R),
-      "font:500 " + px(13) + "/1 'Segoe UI', system-ui, sans-serif"
-    ].join(";");
-    button.appendChild(child);
-    return button;
-  }
-
   function describe(el) {
     if (!el) {
       return "none";
     }
     var r = el.getBoundingClientRect();
     var name = typeof el.className === "string" ? el.className : "";
-    if (name.length > 60) {
-      name = name.slice(0, 60) + "…";
+    if (name.length > 40) {
+      name = name.slice(0, 40) + "…";
     }
     return (
       el.tagName.toLowerCase() +
@@ -235,44 +236,42 @@
     );
   }
 
-  /* --- reserved-corner avoidance -------------------------------------------
+  function positionOf(el) {
+    try {
+      return getComputedStyle(el).position;
+    } catch (error) {
+      return "?";
+    }
+  }
+
+  /* --- columns ---------------------------------------------------------------
    *
-   * The chrome covers the top-right corner, and the dsh app puts real controls
-   * there. Rather than guessing at hashed class names, hit-test the reserved
-   * rectangle and pad whichever row is actually sitting in it.
-   *
-   * `elementsFromPoint` is used instead of walking the DOM because it is
-   * proportional to the handful of elements in one rectangle rather than to the
-   * size of the app, and because it only ever returns elements that genuinely
-   * occupy that space. It is also re-run on resize and after SPA re-renders, so
-   * a stale choice self-corrects.
+   * See findRightColumns below. The left column is deliberately not modelled:
+   * nothing is ever occluded there, so it keeps the full window height.
    */
-  /* --- content-column inset -------------------------------------------------
+  /* --- the right-hand column that owns the corner ----------------------------
    *
-   * The chrome is a full-width strip at the top, so the only principled way to
-   * keep the page clear of it is to inset the *content column* by the bar height
-   * while leaving the sidebar full height, which is also how a native app looks.
-   * Anything the dsh app puts in the top right of that column is then below the
-   * bar, whatever it happens to be this release.
+   * The dsh page has a session list down the left edge and, on the right, a dock
+   * panel that starts as a strip of buttons and expands into a full-height
+   * drawer. Only the right side is ever occluded: our buttons sit in the top-right
+   * corner, so in both states of the panel something of the page is underneath
+   * them. The left column is therefore never touched - it keeps the full window
+   * height, which is what it should have all along.
    *
-   * Finding the column is geometry too - there is no stable selector - but the
-   * relationship is simple and stable: the sidebar is the tall column pinned to
-   * the left edge, and the content column is its sibling that reaches the right
-   * edge. There is deliberately no per-row fallback. Guessing at "the row" found
-   * list items and conversation bubbles, and padding one of those would break
-   * the layout rather than protect it. When no column can be identified nothing
-   * is touched, and the reason travels into the log.
+   * Finding it is geometry because the page offers nothing else: no stable
+   * selector, no ARIA landmarks, class names hashed per build.
    */
-  function findColumns() {
+  function findRightColumns() {
     var viewportW = document.documentElement.clientWidth;
     var viewportH = document.documentElement.clientHeight;
     var notes = [];
-    var result = { sidebar: null, content: null, notes: notes };
+    var result = { left: null, content: null, dock: [], columns: [], notes: notes };
     if (!viewportW || !viewportH) {
       notes.push("no viewport size");
       return result;
     }
-    var tall = [];
+
+    var candidates = [];
     var nodes;
     try {
       nodes = document.querySelectorAll("#root *");
@@ -289,109 +288,387 @@
       if (r.width <= 0) {
         continue;
       }
-      /* Columns, not the app shell: a candidate must sit inside the viewport. */
+      /* Columns, sitting inside the viewport and tall enough to be a column. */
       if (r.left < 0 || r.right > viewportW + 1) {
         continue;
       }
       if (r.height < viewportH * 0.4) {
         continue;
       }
-      tall.push({ el: el, rect: r });
-    }
-    if (notes.length < 12) {
-      notes.push("viewport " + viewportW + "x" + viewportH + ", " + tall.length +
-        " tall column(s): " + tall.map(function (c) {
-          return describe(c.el);
-        }).join(", "));
-    }
-    if (!tall.length) {
-      return result;
-    }
-
-    /* Sidebar: the widest column touching the left edge that is *not* the whole
-       window. The app shell also touches the left edge and is wider than the
-       sidebar, so without the width bound the shell gets picked and then every
-       other column looks like it is "inside the sidebar". */
-    var sidebar = null;
-    for (var s = 0; s < tall.length; s++) {
-      var rect = tall[s].rect;
-      if (rect.left > 2) {
+      /* Slivers are not columns. The sidebar's resize handle is 8px wide and
+         full height, so without this it wins the "first column right of the
+         sidebar" slot and every decision after it shifts by one: the content
+         area gets treated as the dock and sunk, and the top row is never found.
+         The same bound is applied to the left anchor below. */
+      if (r.width < MIN_COLUMN_W) {
         continue;
       }
-      if (rect.width >= viewportW - 2 || rect.width < 40) {
-        continue; /* the shell, or something too thin to be a sidebar */
-      }
-      if (!sidebar || rect.width > sidebar.rect.width) {
-        sidebar = tall[s];
-      }
+      candidates.push({ el: el, rect: r });
     }
-    if (!sidebar) {
-      notes.push("no column touches the left edge");
-      return result;
+    if (notes.length < 8) {
+      notes.push("viewport " + viewportW + "x" + viewportH + ", " + candidates.length +
+        " column candidate(s)");
     }
-    result.sidebar = sidebar.el;
 
-    /* Content: a column that starts where the sidebar ends and reaches the right
-       edge, and that is not an ancestor of the sidebar (which would make it the
-       app shell rather than a sibling column). */
-    for (var c = 0; c < tall.length; c++) {
-      var candidate = tall[c];
-      if (candidate.el === sidebar.el || sidebar.el.contains(candidate.el)) {
+    /* The left column is the anchor, and it is never inset.
+     *
+     * Anchoring on the window edges instead is what failed twice: with the dock
+     * open the content column's right edge is pushed left by the dock and no
+     * longer touches the window, so a "reaches the right edge" test dropped it
+     * and its top row never got the gutter that moves its buttons clear. And a
+     * "not full width" test is not enough to exclude the app shell, which is
+     * full width *and* contains the left column, so insetting it dragged the
+     * session list down with it. */
+    var leftColumn = null;
+    for (var s = 0; s < candidates.length; s++) {
+      var r = candidates[s].rect;
+      if (r.left > 2) {
         continue;
       }
-      var why = "";
-      if (candidate.rect.left < sidebar.rect.right - 4) {
-        why = "left " + Math.round(candidate.rect.left) + " is inside the sidebar";
-      } else if (candidate.rect.right < viewportW - 28) {
-        /* A scrollbar, or a gap, keeps the column short of the window edge, so
-           this cannot demand a flush right edge. */
-        why = "right " + Math.round(candidate.rect.right) + " stops short of the window edge " +
-          viewportW;
+      if (r.width >= viewportW * 0.9 || r.width < MIN_COLUMN_W) {
+        continue; /* the shell, or something too thin to be the session list */
       }
-      if (why) {
-        if (notes.length < 12) {
-          notes.push(describe(candidate.el) + " rejected: " + why);
+      if (!leftColumn || r.width > leftColumn.rect.width) {
+        leftColumn = candidates[s];
+      }
+    }
+    if (!leftColumn) {
+      notes.push("no left column found");
+      return result;
+    }
+    result.left = leftColumn.el;
+    notes.push("anchor " + describe(leftColumn.el));
+
+    var divider = leftColumn.rect.right;
+
+    /* Everything to the right of the session list, left to right. The first is
+       the content area; the rest are the dock, collapsed or expanded. */
+    var right = [];
+    for (var c = 0; c < candidates.length; c++) {
+      var el = candidates[c].el;
+      var rect = candidates[c].rect;
+      if (el === leftColumn.el || leftColumn.el.contains(el)) {
+        continue; /* the anchor, or the shell around it */
+      }
+      if (rect.left < divider - 4) {
+        continue;
+      }
+      var shadowed = false;
+      for (var o = 0; o < right.length; o++) {
+        if (right[o].el.contains(el)) {
+          shadowed = true;
+          break;
         }
+      }
+      if (shadowed) {
         continue;
       }
-      if (!result.content ||
-          candidate.rect.left < result.content.getBoundingClientRect().left) {
-        result.content = candidate.el;
+      for (var k = right.length - 1; k >= 0; k--) {
+        if (el.contains(right[k].el)) {
+          right.splice(k, 1);
+        }
       }
+      right.push({ el: el, rect: rect });
+    }
+    right.sort(function (a, b) { return a.rect.left - b.rect.left; });
+
+    if (right.length) {
+      result.content = right[0].el;
+      for (var d = 1; d < right.length; d++) {
+        result.dock.push(right[d].el);
+      }
+      notes.push("content " + describe(result.content));
+      for (var n = 0; n < result.dock.length && notes.length < 8; n++) {
+        notes.push("dock " + describe(result.dock[n]));
+      }
+    } else {
+      notes.push("nothing right of the session list");
     }
     return result;
   }
 
-  function applyColumnInset() {
-    var columns = findColumns();
-    if (!columns.content) {
-      return { ok: false, why: "no content column found: " + columns.notes.join(" | ") };
+  /* Remove every inset this script applied, so a re-run replaces rather than
+     accumulates. The first version skipped the already-marked element when
+     choosing a target, so each pass moved the column down another 28px. */
+  function clearApplied() {
+    var marked = document.querySelectorAll("[" + INSET_FLAG + "]");
+    for (var i = 0; i < marked.length; i++) {
+      marked[i].style.paddingTop = "";
+      marked[i].style.marginTop = "";
+      marked[i].style.paddingRight = "";
+      marked[i].style.transform = "";
+      marked[i].removeAttribute(INSET_FLAG);
     }
-    var content = columns.content;
-    var previous = document.querySelector("[" + INSET_FLAG + "]");
-    if (previous && previous !== content && previous.isConnected) {
-      previous.style.paddingTop = "";
-      previous.removeAttribute(INSET_FLAG);
+  }
+
+  /* Last-resort pass: make sure nothing at all is left sitting under the buttons.
+   *
+   * Neither a parent's padding nor a search inside the column reaches an element
+   * that is portalled onto `body` instead, which is how a drawer can easily render
+   * its own header. So this looks at the reserved rectangle itself and nudges
+   * whatever is still there.
+   */
+  /* Is this element inside something that scrolls?
+   *
+   * Used to tell a page header from a message in a conversation: both can be
+   * flush against the top of the reserved corner, but only the header belongs
+   * there. Moving a scrolled item is a visible bug - the whole thread shifts
+   * sideways - and it happened because a list item passed through the corner
+   * while the conversation was scrolled.
+   */
+  function isInsideScroller(el) {
+    for (var node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+      var overflow = getComputedStyle(node).overflowY;
+      if (overflow === "auto" || overflow === "scroll" || overflow === "overlay") {
+        return true;
+      }
     }
-    /* Start from the element's own padding so the adjustment is additive. */
-    if (previous !== content) {
-      content.style.paddingTop = "";
+    return false;
+  }
+
+  function clearCorner(layout) {
+    var barCss = cssPx(BAR_H);
+    var reservedCss = cssPx(RESERVED_W);
+    var viewportW = document.documentElement.clientWidth;
+    if (viewportW <= reservedCss) {
+      return "no reserved corner to clear";
     }
-    content.style.paddingTop = px(BAR_H);
-    content.setAttribute(INSET_FLAG, "1");
-    return {
-      ok: true,
-      text: "inset " + describe(content) + " by " + Math.round(cssPx(BAR_H)) +
-        "px css; sidebar " + Math.round(columns.sidebar.getBoundingClientRect().width) + "px"
-    };
+    var left = viewportW - reservedCss;
+    var found = [];
+    var target = null;
+    var nodes;
+    try {
+      nodes = document.querySelectorAll("body *");
+    } catch (error) {
+      return "scan failed: " + error;
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.closest("#" + ROOT_ID) || el.closest("[" + INSET_FLAG + "]")) {
+        continue;
+      }
+      var r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) {
+        continue;
+      }
+      /* Containers are not corner content. `#root` and the app shell intersect
+         the reserved rectangle trivially because they cover the viewport, and
+         nudging one of those pushes the whole application down - which is
+         exactly the "the sidebar sank a long way" this pass must not cause. */
+      if (r.width >= viewportW * 0.9 && r.height >= document.documentElement.clientHeight * 0.9) {
+        continue;
+      }
+      /* Only things that are actually *in* the strip, i.e. a top row or a
+         control cluster. A full-height column is the column's business, not
+         this pass's. */
+      if (r.height > barCss * 3) {
+        continue;
+      }
+      /* Only rows that *start* at the top of the document. A negative top means
+         the element is scrolled content - a message list item that happens to
+         pass through the corner, say - and moving that is how a conversation
+         gets shoved sideways by a page whose header was the actual target.
+         A positive top is not enough on its own either: a scrolled list can
+         bring an item flush to the top, which is why the scrollable ancestors
+         are checked next. */
+      if (r.top < -1) {
+        continue;
+      }
+      /* Scrolled containers mean the content is not a header, whatever its
+         current position. */
+      if (isInsideScroller(el)) {
+        continue;
+      }
+      if (r.right <= left || r.left >= viewportW || r.bottom <= 0 || r.top >= barCss) {
+        continue;
+      }
+      if (found.length < 4) {
+        found.push(describe(el) + " (position:" + positionOf(el) + ")");
+      }
+      if (!target || r.width * r.height > target.getBoundingClientRect().width *
+          target.getBoundingClientRect().height) {
+        target = el;
+      }
+    }
+    if (!target) {
+      return "reserved corner is empty";
+    }
+    /* Direction depends on which side of the page the element belongs to:
+       content moves left, the dock moves down. Getting this wrong is what put a
+       content row under the bar instead of beside it. */
+    var dockLeft = layout.dock.length
+      ? layout.dock[0].getBoundingClientRect().left
+      : Infinity;
+    var moveDown = target.getBoundingClientRect().left >= dockLeft - 4;
+    /* `transform` rather than a margin, so it applies whatever the element's own
+       positioning is - which is the whole point, since that is why the padding
+       did not reach it. */
+    target.style.transform = moveDown
+      ? "translateY(" + barCss + "px)"
+      : "translateX(-" + reservedCss + "px)";
+    target.setAttribute(INSET_FLAG, "1");
+    return "corner held [" + found.join(", ") + "]; moved " +
+      (moveDown ? "down" : "left") + " " + describe(target) +
+      " (position:" + positionOf(target) + ")";
+  }
+
+  /* Push a column's content below the bar.
+   *
+   * `padding-top` on the column moves everything in normal flow. It does not
+   * move absolutely positioned children, which is how the dock panel's top row
+   * stayed level with the bar, so whatever is still sitting in the strip
+   * afterwards gets a `margin-top` of its own.
+   */
+  function insetColumn(column, label) {
+    var barCss = cssPx(BAR_H);
+    column.style.boxSizing = "border-box";
+    column.style.paddingTop = barCss + "px";
+    column.setAttribute(INSET_FLAG, "1");
+
+    /* Only normal-flow content is moved by the padding. Anything positioned -
+       `absolute`, `fixed`, `sticky` - ignores a parent's padding, which is how the
+       dock's own top row stayed level with the bar. Those are left for
+       `clearCorner` to push out, so there is exactly one place that displaces
+       elements and they cannot be displaced twice. */
+    return "inset " + label + " " + describe(column) +
+      " (position:" + positionOf(column) + ", padding-top " +
+      Math.round(cssPx(BAR_H)) + "px)";
+  }
+
+  /* --- the content area's top row ------------------------------------------
+   *
+   * The content area does NOT sink: it is the main reading surface, and losing a
+   * row of height for every session is a poor trade. Only its top row moves, and
+   * only sideways.
+   *
+   * Two details are load-bearing:
+   *
+   * - `box-sizing` is set explicitly. Under the host's default `content-box`,
+   *   `padding-right` does not move content left at all, it widens the element
+   *   and pushes its right edge past the window: a partial-looking shift plus a
+   *   clipped right edge.
+   * - The row is only touched when it actually reaches into the reserved corner.
+   *   This is what makes the two dock states come out right without branching on
+   *   "is the dock open": with the dock closed the row ends at the window edge
+   *   and needs the gutter; with the dock open the dock holds the corner and the
+   *   row stops well short of it, so it is left alone.
+   */
+  function gutterTopRow(content, reservedCss) {
+    var viewportW = document.documentElement.clientWidth;
+    var barCss = cssPx(BAR_H);
+    var contentWidth = content.getBoundingClientRect().width;
+    var best = null;
+    var nodes;
+    try {
+      nodes = content.querySelectorAll("*");
+    } catch (error) {
+      return null;
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.closest("[" + INSET_FLAG + "]") || el.closest("#" + ROOT_ID)) {
+        continue;
+      }
+      var r = el.getBoundingClientRect();
+      /* Topmost wins, and never something scrolled out of sight: an earlier
+         version preferred the largest element and picked a list item 2500px
+         above the viewport. */
+      if (r.top < -2 || r.top > barCss * 1.5) {
+        continue;
+      }
+      if (r.height > barCss * 4 || r.width < contentWidth * 0.5) {
+        continue;
+      }
+      if (!best || r.top < best.getBoundingClientRect().top) {
+        best = el;
+      }
+    }
+    if (!best) {
+      return "no top row found in the content column";
+    }
+    var rect = best.getBoundingClientRect();
+    if (rect.right <= viewportW - reservedCss) {
+      return "top row " + describe(best) + " ends at " + Math.round(rect.right) +
+        ", clear of the reserved corner (starts at " +
+        Math.round(viewportW - reservedCss) + "): no shift needed";
+    }
+    var gutter = reservedCss + cssPx(GUTTER_EXTRA);
+    best.style.boxSizing = "border-box";
+    best.style.paddingRight = gutter + "px";
+    /* Measured, not assumed: the row's text is found by its own line boxes and
+       then placed so it clears the window top by TOP_ROW_MIN_GAP while still
+       sitting inside the bar's band. When the text cannot be measured - the
+       blank state has none - the row is left where it is rather than guessed
+       at, because lifting by half the bar was what put the text too close to
+       the frame. */
+    var lift = 0;
+    var range = document.createRange();
+    range.selectNodeContents(best);
+    var boxes = range.getClientRects();
+    var textTop = Infinity;
+    var textBottom = -Infinity;
+    for (var b = 0; b < boxes.length; b++) {
+      if (boxes[b].height > 0 && boxes[b].width > 0) {
+        textTop = Math.min(textTop, boxes[b].top);
+        textBottom = Math.max(textBottom, boxes[b].bottom);
+      }
+    }
+    var measured = isFinite(textTop);
+    if (measured) {
+      /* Wanted: the text's top at TOP_ROW_MIN_GAP, and no higher than the bar's
+         bottom, so the row still reads as reaching the top of the window. */
+      var wanted = cssPx(TOP_ROW_MIN_GAP);
+      var ceiling = cssPx(BAR_H) - (textBottom - textTop) * 0.5;
+      lift = wanted - textTop;
+      if (textTop + lift < wanted) {
+        lift = wanted - textTop;
+      }
+      if (textTop + lift > ceiling) {
+        lift = Math.max(0, ceiling - textTop);
+      }
+    }
+    best.style.transform = lift ? "translateY(" + lift + "px)" : "";
+    best.setAttribute(INSET_FLAG, "1");
+    return "top row " + describe(best) + " shifted left " +
+      Math.round(gutter) + "px, moved " + (lift >= 0 ? "down " : "up ") +
+      Math.abs(Math.round(lift)) + "px; " +
+      (measured
+        ? "text " + Math.round(textTop) + ".." + Math.round(textBottom) +
+          "px, centre " + Math.round((textTop + textBottom) / 2)
+        : "no text in this row; left in place") +
+      " (bar 0.." + Math.round(cssPx(BAR_H)) + "px, wanted text top >= " +
+      Math.round(cssPx(TOP_ROW_MIN_GAP)) + "px)";
   }
 
   function applyCornerAvoidance() {
-    var inset = applyColumnInset();
-    if (inset.ok) {
-      return inset.text;
+    /* Replace, never accumulate. */
+    clearApplied();
+
+    var found = findRightColumns();
+    if (!found.content && !found.dock.length) {
+      return "skipped: " + found.notes.join(" | ");
     }
-    return "skipped: " + inset.why;
+
+    var reservedCss = cssPx(RESERVED_W);
+    var applied = ["layout: " + found.notes.join(" | ")];
+
+    /* The dock, collapsed or expanded, hugs the right edge under our buttons, so
+       it comes down by a row. It keeps its total height: `border-box` plus a
+       top padding moves its content down and leaves the bottom edge where it
+       was. */
+    for (var i = 0; i < found.dock.length; i++) {
+      applied.push(insetColumn(found.dock[i], "dock"));
+    }
+
+    if (found.content) {
+      var gutter = gutterTopRow(found.content, reservedCss);
+      if (gutter) {
+        applied.push(gutter);
+      }
+    }
+
+    applied.push(clearCorner(found));
+    return applied.join(" | ");
   }
 
   function install() {
@@ -408,33 +685,34 @@
       "padding:0",
       "border:0",
       "display:flex",
-      /* stretch, spelled out: the drag strip is an empty element and would
-         otherwise collapse to zero height, which silently makes a frameless
-         window undraggable. */
       "align-items:flex-start",
       "height:" + px(BAR_H),
       "z-index:2147483647",
-      "pointer-events:none", /* the children opt back in */
+      /* Everything below is click-through except the grab strip and the buttons. */
+      "pointer-events:none",
       "color:var(--dsw-alias-label-primary, #16181d)",
       "-webkit-user-select:none",
-      "user-select:none",
-      "font:500 " + px(11.5) + "/1 'Segoe UI', system-ui, sans-serif"
+      "user-select:none"
     ].join(";");
 
-    var drag = document.createElement("div");
-    drag.className = "dss-drag";
-    drag.style.cssText = [
-      "flex:1 1 auto",
-      "align-self:stretch",
+    /* The drag strip: a short band at the very top, not the full bar height. A
+       full-height strip swallows every click on the page's own top row, which
+       is a control-dense row in this app. */
+    var grab = document.createElement("div");
+    grab.className = "dss-grab";
+    grab.style.cssText = [
+      "position:absolute",
+      "top:0",
+      "left:0",
+      "right:" + px(RESERVED_W),
+      "height:" + px(GRAB_H),
+      /* The first few logical pixels belong to the OS resize border: a frameless
+         window cannot otherwise be resized from its top edge. */
+      "border-top:" + px(RESIZE_BORDER) + " solid transparent",
       "pointer-events:auto",
-      /* Give the top few logical pixels back to the OS resize border: a
-         frameless window cannot otherwise be resized from its top edge. */
-      "margin-top:" + px(RESIZE_BORDER),
       "background:transparent"
     ].join(";");
-    /* Our own drag rather than `data-tauri-drag-region`, so the drag area is
-       exactly what we drew and the page keeps every other pixel. */
-    drag.addEventListener("mousedown", function (event) {
+    grab.addEventListener("mousedown", function (event) {
       if (event.button !== 0 || (event.detail !== 1 && event.detail !== 2)) {
         return;
       }
@@ -445,87 +723,56 @@
         : "plugin:window|start_dragging";
       invoke(cmd).catch(function () {});
     });
-    bar.appendChild(drag);
-
-    /* --- zoom control --- */
-    var zoomCluster = cluster("dss-cluster dss-zoom", ZOOM_W);
-
-    var zoomOut = control("dss-btn dss-zoom-btn", "Zoom out (Ctrl+Alt+Down)", 30,
-      document.createTextNode("\u2212"));
-    zoomOut.id = "dss-zoom-out";
-
-    var zoomLabel = document.createElement("span");
-    zoomLabel.id = "dss-zoom-label";
-    zoomLabel.style.cssText = [
-      "flex:1 1 auto",
-      "text-align:center",
-      "align-self:center",
-      "height:" + px(BAR_H),
-      "line-height:" + px(BAR_H),
-      "font-variant-numeric:tabular-nums",
-      "font-size:" + px(12),
-      "opacity:0.85"
-    ].join(";");
-
-    var zoomIn = control("dss-btn dss-zoom-btn", "Zoom in (Ctrl+Alt+Up)", 30,
-      document.createTextNode("+"));
-    zoomIn.id = "dss-zoom-in";
-
-    function paint(value) {
-      zoom = clampZoom(value);
-      z = zoom / 100;
-      zoomLabel.textContent = zoom + "%";
-      zoomOut.disabled = zoom <= MIN;
-      zoomIn.disabled = zoom >= MAX;
-      /* Every length is derived from px(), so one recompute covers the bar, the
-         drag strip, both clusters, all five buttons, the label and the radius. */
-      bar.style.height = px(BAR_H);
-      drag.style.marginTop = px(RESIZE_BORDER);
-      zoomCluster.style.width = px(ZOOM_W);
-      zoomCluster.style.height = px(BAR_H);
-      winCluster.style.width = px(RESERVED_W - ZOOM_W);
-      winCluster.style.height = px(BAR_H);
-      var buttons = [zoomOut, zoomIn, minimize, maximize, close];
-      for (var i = 0; i < buttons.length; i++) {
-        var isZoom = buttons[i] === zoomOut || buttons[i] === zoomIn;
-        buttons[i].style.width = px(isZoom ? 30 : WIN_W);
-        buttons[i].style.height = px(BAR_H);
-        buttons[i].style.borderRadius = px(CORNER_R);
-        buttons[i].style.fontSize = px(isZoom ? 13 : 11.5);
-      }
-      zoomLabel.style.height = px(BAR_H);
-      zoomLabel.style.lineHeight = px(BAR_H);
-      zoomLabel.style.fontSize = px(12);
-      var glyphs = winCluster.querySelectorAll("svg");
-      for (var g = 0; g < glyphs.length; g++) {
-        glyphs[g].setAttribute("width", px(11));
-        glyphs[g].setAttribute("height", px(11));
-      }
-      /* The reserved corner changed width, so the page has to be re-checked.
-         A rescan: the padding we applied is now the wrong size. */
-      scheduleAvoidance(true);
-    }
-
-    function step(delta) {
-      invoke("zoom_step", { delta: delta })
-        .then(paint)
-        .catch(function () {});
-    }
-
-    zoomOut.addEventListener("click", function () { step(-STEP); });
-    zoomIn.addEventListener("click", function () { step(STEP); });
-
-    zoomCluster.appendChild(zoomOut);
-    zoomCluster.appendChild(zoomLabel);
-    zoomCluster.appendChild(zoomIn);
-    bar.appendChild(zoomCluster);
+    bar.appendChild(grab);
 
     /* --- window buttons --- */
-    var winCluster = cluster("dss-cluster dss-win", RESERVED_W - ZOOM_W);
+    var winCluster = document.createElement("div");
+    winCluster.className = "dss-cluster dss-win";
+    winCluster.style.cssText = [
+      "display:flex",
+      "align-items:stretch",
+      "pointer-events:auto",
+      "margin-left:auto",
+      /* A small gap so the buttons do not look glued to the top frame. */
+      "margin-top:" + px(BUTTON_GAP),
+      "width:" + px(RESERVED_W),
+      "height:" + px(BAR_H - BUTTON_GAP),
+      "flex:0 0 auto",
+      /* No background at all. The bar is chrome over the page, and a fill here
+         reads as a foreign panel: it did not match the loaded page or the
+         content column. Legibility comes from the glyph colour instead, which
+         follows the page's own `--dsw-alias-label-primary` and so works on the
+         light dsh theme and on the dark boot page alike. */
+      "background:transparent"
+    ].join(";");
 
-    var minimize = control("dss-btn", "Minimize", WIN_W, glyph("min"));
-    var maximize = control("dss-btn", "Maximize", WIN_W, glyph("max"));
-    var close = control("dss-btn", "Close", WIN_W, glyph("close"));
+    function control(title, child) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "dss-btn";
+      button.title = title;
+      button.setAttribute("aria-label", title);
+      button.style.cssText = [
+        "appearance:none",
+        "-webkit-appearance:none",
+        "margin:0",
+        "padding:0",
+        "display:flex",
+        "align-items:center",
+        "justify-content:center",
+        /* Geometry, all inline so it tracks the zoom from one place. The
+           background deliberately is not inline: see installStylesheet. */
+        "width:" + px(WIN_W),
+        "height:" + px(BAR_H),
+        "border-radius:" + px(CORNER_R)
+      ].join(";");
+      button.appendChild(child);
+      return button;
+    }
+
+    var minimize = control("Minimize", glyph("min"));
+    var maximize = control("Maximize", glyph("max"));
+    var close = control("Close", glyph("close"));
     close.setAttribute("data-dss-close", "");
 
     minimize.addEventListener("click", function () {
@@ -546,18 +793,45 @@
     bar.appendChild(winCluster);
 
     document.documentElement.appendChild(bar);
+
+    function paint(value) {
+      zoom = clampZoom(value);
+      z = zoom / 100;
+      bar.style.height = px(BAR_H);
+      grab.style.right = px(RESERVED_W);
+      grab.style.height = px(GRAB_H);
+      grab.style.borderTopWidth = px(RESIZE_BORDER);
+      winCluster.style.width = px(RESERVED_W);
+      winCluster.style.marginTop = px(BUTTON_GAP);
+      winCluster.style.height = px(BAR_H - BUTTON_GAP);
+      var buttons = [minimize, maximize, close];
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].style.width = px(WIN_W);
+        buttons[i].style.height = px(BAR_H - BUTTON_GAP);
+        buttons[i].style.borderRadius = px(CORNER_R);
+      }
+      var glyphs = winCluster.querySelectorAll("svg");
+      for (var g = 0; g < glyphs.length; g++) {
+        glyphs[g].setAttribute("width", px(10));
+        glyphs[g].setAttribute("height", px(10));
+      }
+      /* The page inset is expressed in CSS pixels, so it has to be re-applied
+         whenever the zoom changes. */
+      scheduleAvoidance(true);
+    }
+
     paint(zoom);
 
-    /* --- reserved-corner avoidance, kept current --- */
+    /* --- page inset, kept current --- */
     var avoidance = "not run yet";
     var pending = null;
     var lastReported = null;
     var lastReportAt = 0;
 
-    /* Re-report whenever the avoidance settles on something different.
-       The first two reports land while dsh is still showing its boot screen,
-       before a session header exists at all, so without this the log only ever
-       describes the page before it was interesting. */
+    /* Re-report whenever the inset settles on something different. The first
+       reports land while dsh is still on its boot screen, before the columns
+       exist, so without this the log only ever describes the page before it was
+       interesting. */
     function reportAvoidance(force) {
       var now = Date.now();
       if (!force && avoidance === lastReported) {
@@ -589,7 +863,7 @@
           if (marked && marked.isConnected) {
             return;
           }
-          /* The SPA replaced the padded element on a navigation, or there never
+          /* The SPA replaced the inset element on a navigation, or there never
              was one. Re-check, but not on every single mutation. */
           avoidance = applyCornerAvoidance();
           reportAvoidance(false);
@@ -617,8 +891,8 @@
         maximize.setAttribute("aria-label", maximize.title);
         var old = maximize.querySelector("svg");
         var fresh = glyph(isMaximized ? "restore" : "max");
-        fresh.setAttribute("width", px(11));
-        fresh.setAttribute("height", px(11));
+        fresh.setAttribute("width", px(10));
+        fresh.setAttribute("height", px(10));
         if (old) {
           maximize.replaceChild(fresh, old);
         } else {
@@ -629,36 +903,30 @@
 
     /* Tell Rust what happened. The chrome lives in a document we do not own, so
        this is how a broken injection becomes a log line instead of a frameless
-       window with no close button. Re-checked after a tick, because a SPA that
-       rewrites <body> would otherwise drop the bar silently. */
+       window with no close button. */
     function report(stillPresent) {
-      var node = document.getElementById(ROOT_ID);
-      var barBox = node && stillPresent ? node.getBoundingClientRect() : null;
-      var zoomBox = stillPresent ? zoomCluster.getBoundingClientRect() : null;
+      var node = stillPresent ? document.getElementById(ROOT_ID) : null;
+      var barBox = node ? node.getBoundingClientRect() : null;
       var winBox = stillPresent ? winCluster.getBoundingClientRect() : null;
       invoke("chrome_report", {
         report: {
           installed: true,
-          still_present: !!node && stillPresent,
+          still_present: !!node,
           /* Multiplied by the page zoom so Rust can compare against the design
              constants it owns: a mismatch means the 1/zoom correction was
              applied a different number of times than exactly once. */
           measured_bar_h: barBox ? barBox.height * z : 0,
-          measured_zoom_w: zoomBox ? zoomBox.width * z : 0,
           measured_win_w: winBox ? winBox.width * z : 0,
           zoom: z,
           placeholder: document.documentElement.hasAttribute("data-dsh-shell-placeholder"),
           ready_state: document.readyState,
           origin: location.origin,
-          boxes: "bar=" + describe(node && stillPresent ? node : null) +
-            " drag=" + describe(drag) +
-            " zoomc=" + describe(zoomCluster) +
-            " minus=" + describe(zoomOut) +
-            " plus=" + describe(zoomIn) +
+          boxes: "bar=" + describe(node) +
+            " grab=" + describe(grab) +
             " winc=" + describe(winCluster) +
-            " close=" + describe(close),
-          avoid: avoidance,
-          color: getComputedStyle(bar).color
+            " close=" + describe(close) +
+            " color=" + getComputedStyle(node || bar).color,
+          avoid: avoidance
         }
       }).catch(function () {});
     }
@@ -669,27 +937,39 @@
     }, 1500);
   }
 
-  /* Keyboard: handled here because focus is inside the page, not the window.
-     Synthesising a click on our own buttons keeps the zoom ladder in Rust
-     alone. `code` rather than `key`, so it does not depend on the layout. */
+  function paintZoom(value) {
+    if (window.__DSH_SHELL_CHROME__ && typeof window.__DSH_SHELL_CHROME__.setZoom === "function") {
+      window.__DSH_SHELL_CHROME__.setZoom(value);
+    }
+  }
+
+  /* Zoom shortcuts. Handled here because focus is inside the page, not the
+     window, and `code` is used so the bindings do not depend on the keyboard
+     layout: Ctrl+= (and Ctrl+Shift+=) zooms in, Ctrl+- out, Ctrl+0 resets.
+     Chromium's own zoom hotkeys are disabled in Rust so these cannot double up. */
   document.addEventListener("keydown", function (event) {
-    if (!event.ctrlKey || !event.altKey) {
+    if (!event.ctrlKey || event.altKey || event.metaKey) {
       return;
     }
+    var code = event.code;
+    var command = null;
     var delta = 0;
-    if (event.code === "ArrowUp" || event.code === "NumpadAdd" || event.code === "Equal") {
-      delta = STEP;
-    } else if (event.code === "ArrowDown" || event.code === "NumpadSubtract" || event.code === "Minus") {
-      delta = -STEP;
+    if (code === "Equal" || code === "NumpadAdd") {
+      command = "zoom_step";
+      delta = ZOOM_STEP;
+    } else if (code === "Minus" || code === "NumpadSubtract") {
+      command = "zoom_step";
+      delta = -ZOOM_STEP;
+    } else if (code === "Digit0" || code === "Numpad0") {
+      command = "zoom_reset";
     }
-    if (delta === 0) {
+    if (!command) {
       return;
     }
     event.preventDefault();
-    var button = document.getElementById(delta > 0 ? "dss-zoom-in" : "dss-zoom-out");
-    if (button) {
-      button.click();
-    }
+    invoke(command, command === "zoom_reset" ? {} : { delta: delta })
+      .then(paintZoom)
+      .catch(function () {});
   });
 
   function run() {

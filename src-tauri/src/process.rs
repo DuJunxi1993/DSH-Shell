@@ -89,9 +89,26 @@ impl DshProcess {
 
     /// Fork dsh and wait until it can tell us its authenticated URL.
     pub async fn spawn(config: Config) -> Result<Self> {
+        Self::spawn_with_pid_hook(config, |_| {}).await
+    }
+
+    /// [`Self::spawn`], but reports the child's PID as soon as it exists.
+    ///
+    /// The window can be closed while this is still waiting for the URL line,
+    /// and by then the caller holds nothing that would terminate the child on
+    /// drop. The hook is how the shell keeps a handle on a dsh it does not own
+    /// yet.
+    pub async fn spawn_with_pid_hook<F: FnOnce(u32) + Send>(
+        config: Config,
+        on_pid: F,
+    ) -> Result<Self> {
         preflight::check_spawn(&config)?;
 
-        let mut child = Self::build_command(&config).spawn().map_err(ShellError::Spawn)?;
+        let mut cmd = Self::build_command(&config);
+        let mut child = cmd.spawn().map_err(ShellError::Spawn)?;
+        if let Some(pid) = child.id() {
+            on_pid(pid);
+        }
         let pid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -201,6 +218,21 @@ pub async fn launch(config: Config) -> Result<DshProcess> {
     match config.launch_mode {
         LaunchMode::Spawn => DshProcess::spawn(config).await,
         LaunchMode::Attach => DshProcess::attach(config).await,
+    }
+}
+
+/// [`launch`], reporting a spawned child's PID before the caller owns it.
+pub async fn launch_with_pid_hook<F: FnOnce(u32) + Send>(
+    config: Config,
+    on_pid: F,
+) -> Result<DshProcess> {
+    match config.launch_mode {
+        LaunchMode::Spawn => DshProcess::spawn_with_pid_hook(config, on_pid).await,
+        // Attach mode forks nothing, so there is no PID to report.
+        LaunchMode::Attach => {
+            let _ = on_pid;
+            DshProcess::attach(config).await
+        }
     }
 }
 
