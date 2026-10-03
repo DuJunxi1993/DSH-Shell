@@ -81,10 +81,11 @@
      chrome. */
   var TOP_ROW_MIN_GAP = 14;
 
-  /* Extra clearance for the dock on top of the content row's depth, so its own
-     header reads as a separate band rather than sitting just under the window
-     buttons. */
-  var DOCK_EXTRA = 10;
+  /* Clearance for the dock below the chrome, on top of the bar's own height.
+     The bar is all the dock's header has to clear, and it is enough: basing this
+     on the content row's full depth instead put the dock 84px down and left a
+     chasm above it. */
+  var DOCK_EXTRA = 20;
 
   var STYLE_ID = "dsh-shell-chrome-style";
   var ROOT_ID = "dsh-shell-chrome";
@@ -546,9 +547,54 @@
     column.style.boxSizing = "border-box";
     column.style.paddingTop = pad + "px";
     column.setAttribute(INSET_FLAG, "1");
+
+    /* `padding-top` only moves normal-flow content. The dock's own icon row is
+       positioned, so it stayed put at the top of the column and ended up
+       directly under the window buttons - not overlapping them, but crowded
+       against them. It is handled here rather than by widening the global
+       reserved-corner test, because that test spans the whole top strip and
+       would drag the content column's header down with it. */
+    var note = "";
+    var columnWidth = column.getBoundingClientRect().width;
+    var straggler = null;
+    var stragglerTop = 0;
+    var stragglerWidth = 0;
+    var nodes;
+    try {
+      nodes = column.querySelectorAll("*");
+    } catch (error) {
+      nodes = [];
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.closest("#" + ROOT_ID)) {
+        continue;
+      }
+      var r = el.getBoundingClientRect();
+      /* Still up in the bar's band, wide enough to be a row rather than an
+         icon, and therefore not moved by the padding. */
+      if (r.width <= 0 || r.height <= 0) {
+        continue;
+      }
+      if (r.top >= pad * 0.7 || r.width < columnWidth * 0.35) {
+        continue;
+      }
+      if (r.width > stragglerWidth) {
+        straggler = el;
+        stragglerTop = r.top;
+        stragglerWidth = r.width;
+      }
+    }
+    if (straggler) {
+      straggler.style.transform = "translateY(" + (pad - stragglerTop) + "px)";
+      straggler.setAttribute(INSET_FLAG, "1");
+      note = " + pushed " + describe(straggler) + " from " +
+        Math.round(stragglerTop) + "px to " + Math.round(pad) + "px";
+    }
+
     return "inset " + label + " " + describe(column) +
       " (position:" + positionOf(column) + ", padding-top " +
-      Math.round(pad) + "px)";
+      Math.round(pad) + "px)" + note;
   }
 
   /* --- the content area's top row ------------------------------------------
@@ -679,15 +725,11 @@
       }
     }
 
-    /* The dock clears the content row, not the bar. The row is already placed
-       inside the bar's band, so clearing only the bar left the dock level with
-       it - which is how the dock's tabs ended up beside the content header and
-       under the window buttons. `DOCK_EXTRA` on top so the dock's own header
-       reads as its own band rather than crowding the chrome. */
-    var dockPad = 0;
-    if (row) {
-      dockPad = row.getBoundingClientRect().bottom + cssPx(DOCK_EXTRA);
-    }
+    /* The dock clears the chrome bar, not the content row. It has to clear the
+       bar because that is where the window buttons are; it does not have to
+       clear the content row, which is a separate column entirely, and using its
+       depth as the basis dropped the dock 84px down for no gain. */
+    var dockPad = cssPx(BAR_H) + cssPx(DOCK_EXTRA);
     for (var i = 0; i < found.dock.length; i++) {
       applied.push(insetColumn(found.dock[i], "dock", dockPad));
     }
