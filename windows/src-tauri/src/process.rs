@@ -100,11 +100,16 @@ impl DshProcess {
         // returns ESRCH, and where it does not, it can signal our own group.
         // Windows has no equivalent: the tree walk there is `taskkill /T`, and
         // `hide_child_console` covers the console need.
+        //
+        // No `use std::os::unix::process::CommandExt` here: `cmd` is a
+        // `tokio::process::Command`, and `process_group` is one of its own
+        // inherent methods. The import was left over from when this built a
+        // `std::process::Command`, and because the whole block is `cfg(unix)`
+        // it never compiled on Windows - where `cargo clippy -- -D warnings`
+        // runs - so nothing noticed. The call itself was always correct; only
+        // the import was a lie about how it resolved.
         #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
+        cmd.process_group(0);
 
         // Without this a console window flashes open for the whole life of dsh,
         // because a GUI-subsystem parent has no console for the child to share.

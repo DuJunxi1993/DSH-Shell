@@ -13,18 +13,40 @@
 //! place in this crate where the page zoom may be divided out.
 //!
 //! It was previously applied twice — once by dividing each length and again with
-//! a `transform: scale(1 / zoom)` on the control clusters — so at 50% zoom the
-//! window buttons rendered at 92 logical pixels instead of 40, i.e. zooming out
-//! made the chrome grow. The rule is now enforced by the tests below rather than
-//! by a comment, and `chrome_report` re-checks it against the live DOM.
+//! a `transform: scale(1 / zoom)` on the control clusters — so zooming out made
+//! the chrome grow. The symptom is remembered as "the menu bar grows when I zoom
+//! out"; the exact pixel figures from that build are not recoverable from here,
+//! and a comment that cannot be checked is a comment that will drift. What *is*
+//! checkable is the round trip, and that is what the tests assert.
 //!
-//! # The page is the unknown
+//! # The page does have a contract — use it first
 //!
-//! There is no stable selector to hook: dsh's app shell has no semantic `id`
-//! and no ARIA landmark roles, and its CSS-Modules class names are hashed per
-//! build. So these constants are the contract the injected script is given, and
-//! the only adjustment that can be made to the page itself is the inset the
-//! script applies to whatever column it finds in the reserved corner.
+//! dsh ships a desktop-host contract, and the shell used to ignore it and
+//! compensate geometrically instead. Setting two properties is enough:
+//!
+//! ```js
+//! document.documentElement.setAttribute('data-windows-titlebar', '')
+//! document.documentElement.style.setProperty('--dsh-windows-titlebar-height', '32px')
+//! ```
+//!
+//! dsh then reserves the caption height on its own frame, paints the drag
+//! strip, rounds the content column's top-left corner, publishes
+//! `--dsh-frame-chrome-top`, insets its own fullscreen modal overlays, and
+//! converges both when the window goes fullscreen. Measured, not assumed — see
+//! `docs/dsh-desktop-contract.md` §2.3.
+//!
+//! So the injected script is two layers: a **contract layer** that declares the
+//! host and reads dsh's published clearances, and a **fallback layer** of
+//! geometric avoidance that runs only when the contract is absent — an older
+//! dsh, or the local boot placeholder, which is ours and has no contract at
+//! all. The fallback is what `platform_adapt.js` used to be unconditionally, and
+//! it stays because "the page has no contract" is still true for a dsh that
+//! predates one.
+//!
+//! What the fallback cannot be is the default path. Insetting a column we found
+//! by its geometry is a guess about a document whose CSS-Modules class names are
+//! rehashed every build; reading a custom property dsh publishes is a
+//! conversation with dsh.
 
 use crate::config::{ZOOM_MAX, ZOOM_MIN, ZOOM_STEP};
 
@@ -51,9 +73,14 @@ pub fn reserved_width() -> f64 {
 }
 
 /// Width of the window-button cluster.
-pub fn window_cluster_width() -> f64 {
-    reserved_width()
-}
+    ///
+    /// A deliberate alias of [`reserved_width`], kept because both names read
+    /// correctly at their call sites: one is "how much of the page's right edge
+    /// do we own", the other is "how wide is the cluster". They are the same
+    /// number because the cluster *is* everything the chrome reserves.
+    pub fn window_cluster_width() -> f64 {
+        reserved_width()
+    }
 
 /// Convert a design length in logical pixels to a CSS length that renders at
 /// that size whatever the page zoom is.
@@ -191,10 +218,10 @@ mod tests {
 
     #[test]
     fn zoom_out_does_not_inflate_the_chrome() {
-        // The regression, stated as a test: at 50% the window buttons must still
-        // resolve to 40 CSS pixels * 2 = 80, which paints as 40 logical pixels.
-        // Dividing twice used to give 160, which is what "the menu bar grows
-        // when I zoom out" was.
+        // Stated as an assertion rather than as a remembered pixel count: a
+        // button is 32 logical px wide, so at 50% zoom it needs 64 CSS px to
+        // paint at 32 logical px. Dividing twice used to double that again, and
+        // that is what "the menu bar grows when I zoom out" was.
         let zoom = 0.5;
         assert!((css_len(WIN_W, zoom) - 64.0).abs() < 1e-9);
         assert!((css_len(WIN_W, zoom) * zoom - WIN_W).abs() < 1e-9);
@@ -202,7 +229,7 @@ mod tests {
 
     #[test]
     fn zoomed_out_chrome_occupies_more_css_but_the_same_logical_space() {
-        // At 50% the bar is 56 CSS px tall so that it paints as 28 logical px.
+        // Same rule for the bar: 24 logical px, so 48 CSS px at 50% zoom.
         assert!((css_len(BAR_H, 0.5) - 48.0).abs() < 1e-9);
         assert!((css_len(BAR_H, 0.5) * 0.5 - BAR_H).abs() < 1e-9);
     }
@@ -226,5 +253,26 @@ mod tests {
         assert!(!script.contains("zoomW"), "{script}");
         // The static part of the script must follow it.
         assert!(script.contains("dsh-shell-chrome"), "{script}");
+    }
+
+    /// The contract layer is not optional. Without it the script silently falls
+    /// back to guessing the page's geometry, and the chrome *looks* fine, so
+    /// nothing would report the regression.
+    #[test]
+    fn the_script_declares_the_desktop_contract() {
+        let script = script(100);
+        assert!(script.contains("data-windows-titlebar"), "{script}");
+        assert!(script.contains("--dsh-windows-titlebar-height"), "{script}");
+        // And it must read back what dsh publishes rather than assuming it.
+        assert!(script.contains("--dsh-frame-chrome-top"), "{script}");
+        assert!(script.contains("--dsh-frame-top-clearance"), "{script}");
+    }
+
+    /// The two layers must be separable, or the fallback cannot stay dormant.
+    #[test]
+    fn the_script_distinguishes_the_contract_from_the_fallback() {
+        let script = script(100);
+        assert!(script.contains("contractActive"), "{script}");
+        assert!(script.contains("contractMissing"), "{script}");
     }
 }

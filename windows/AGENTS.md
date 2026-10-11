@@ -231,10 +231,73 @@ obvious and the Tauri docs do not put them together.
     re-deriving this. Claim an AUMID only for an installed build, the way the
     plugin does — an unregistered AUMID makes the toast fail to appear at all.
 
-## The dsh page has no hook to grab on
+## The repo has two implementations and one contract
 
-dsh's app shell cannot be addressed directly, and any change to the page layout
-has to be geometric:
+`windows/` (Tauri + WebView2) and `macos/` (SwiftUI + WKWebView) are independent
+builds of the same idea. They import nothing from each other, but they must
+agree about dsh, and the file that says how is **`docs/dsh-shell-contract.md`**
+at the repository root. It covers endpoint resolution, the `stub-dsh` fixture
+table, the preflight guards, PID ownership, and configuration compatibility.
+
+When you change a rule there, change both sides and add a test on each. The
+measurements behind the current rules are in `docs/dsh-desktop-contract.md`,
+with screenshots and raw JSON under `docs/probe/`.
+
+## The dsh page has a hook — use it before you guess
+
+dsh ships a **desktop-host contract**. Setting two properties on `<html>` is
+enough to make it do the window-chrome work itself:
+
+```js
+document.documentElement.setAttribute('data-windows-titlebar', '')
+document.documentElement.style.setProperty('--dsh-windows-titlebar-height', '32px')
+```
+
+Measured against real dsh `0.2.0-rc.2`, not assumed
+(`docs/dsh-desktop-contract.md` §2.3): the frame then reserves the caption
+height itself, dsh paints its own drag strip, the content column gets its 16px
+top-left radius, `--dsh-frame-chrome-top` and `--dsh-frame-overlay-top` are
+published, fullscreen modal overlays are inset by the same amount, and both
+custom properties converge when the window goes fullscreen.
+
+`--dsh-windows-titlebar-height` is **read** by dsh and never set by it, so the
+host owns the number. Declare it through `px()` like every other length: dsh
+reads it as a CSS length and the page zoom multiplies it.
+
+`platform_adapt.js` is therefore two layers:
+
+- **the contract layer**, which declares the host and reads dsh's published
+  clearances;
+- **the geometric fallback** (`findRightColumns`, `insetColumn`, `clearCorner`,
+  `gutterTopRow`, `layoutSignature`), which runs only when
+  `contractState()` reports `contractMissing` — an older dsh, or our own boot
+  placeholder, which is not dsh and never will be.
+
+`chrome_report` now logs `contract=` and `contract_top_clearance=` on every
+report, and `chrome_report` warns when the contract goes unanswered on a
+non-placeholder document. **If you are about to add a fourth geometric pass,
+check that field first** — the answer is usually that no pass is needed.
+
+dsh does *not* provide the caption's buttons. It reserves the space and offers a
+drag region; the three window buttons stay ours, because they are the only part
+of a native caption that talks to the window manager.
+
+### Why the fallback exists at all
+
+"The page has no contract" is still true for a dsh that predates one, and the
+fallback is the only thing standing between that dsh and a chrome drawn on top
+of its controls. It is a fallback, not the strategy.
+
+What it cannot be is correct-by-default. Insetting a column found by its
+geometry is a guess about a document whose class names are rehashed every
+build, and a wrong guess displaces the page's own layout. The pass that once
+"padded list items and conversation bubbles" was this code with the wrong
+anchor.
+
+### What the fallback still has to do, and why geometry is the only option
+
+When the contract is absent, dsh's app shell still cannot be addressed
+directly, so the corner has to be handled geometrically:
 
 - No stable selector. No semantic `id` on the shell, and CSS-Modules class
   names are hashed per build (`pI_x6G_centerCol` in one release, something else
@@ -245,17 +308,24 @@ has to be geometric:
   `pointer-events: none` overlay, and app headers routinely have one, so the row
   being covered is invisible to it exactly when it matters.
 
-What does work, and what `platform_adapt.js` relies on: the shell is the widest
-left-anchored column that is not the full window width, and the content column is
-its sibling reaching the right edge. Insetting that content column by the bar
-height clears the chrome for *anything* the app puts in the corner, now and after
-a dsh upgrade. Note that the right-hand dock panel (`P3OORG_panel` in one
-release) is a sibling of the content column and shares its right edge, so it is
-covered by the same inset — which is what the user wanted, since that panel holds
-the buttons that were being hidden.
+The heuristic the fallback relies on: the shell is the widest left-anchored
+column that is not the full window width, and the content column is its sibling
+reaching the right edge. Note that the right-hand dock panel is a sibling of
+the content column and shares its right edge, so it is covered by the same
+inset — which is what the user wanted, since that panel holds the buttons that
+were being hidden.
 
 Do not add a per-row padding fallback. It was tried: it padded list items and
 conversation bubbles, which breaks the layout rather than protecting it.
+
+### macOS cannot have this for free
+
+On macOS the same contract has a catch: `document.documentElement.dataset.platform`
+is not a CSS hook but a **runtime switch** — its presence puts dsh into the
+desktop runtime, which then requires a trusted preload
+(`window.dshDesktop` / `window.dshDesktopBoot`). Setting it alone makes the Web
+UI fail to boot with 24 entries never activating. The measured preload surface
+is five entry points; see `docs/dsh-shell-contract.md` §7.
 
 ## Chrome self-diagnosis
 

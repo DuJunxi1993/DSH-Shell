@@ -308,8 +308,10 @@ fn chrome_report(report: ChromeReport) {
     // in the script. The page multiplies its measurements by the zoom, so these
     // must come back as the design lengths. They did not once: dividing the
     // lengths *and* counter-scaling the clusters applied the correction twice,
-    // so at 50% zoom the window buttons rendered at 92 logical pixels instead
-    // of 46, which is what "the menu bar grows when I zoom out" was.
+    // and zooming out made the chrome grow. The pixel figures from that build
+    // are not recoverable, and a comment asserting a number nothing checks is a
+    // comment that will be edited into a lie; the round trip is the assertion,
+    // and `chrome::tests` holds it.
     let expected = [
         ("bar height", report.measured_bar_h, chrome::BAR_H),
         // The window cluster is the whole reserved corner now that the zoom
@@ -328,16 +330,34 @@ fn chrome_report(report: ChromeReport) {
         })
         .collect();
 
+    // Which layer is doing the work. When dsh honours the desktop contract it
+    // reserves the caption itself and the geometric fallback is dormant, so
+    // `avoid` is empty and that is correct rather than broken. A dsh that
+    // dropped the contract would look identical from the geometry alone, so the
+    // state is logged explicitly.
+    if report.contract == "contractMissing" && !report.placeholder {
+        tracing::warn!(
+            target: "dsh_shell",
+            "dsh did not answer the desktop contract ({}), so the chrome is compensating \
+             geometrically. Expect the reserved corner to be inset by guesswork rather than \
+             by dsh. contract_top_clearance={:?} avoidance: {}",
+            report.origin,
+            report.contract_top_clearance,
+            report.avoid
+        );
+    }
+
     if wrong.is_empty() {
         tracing::info!(
             target: "dsh_shell",
             "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} \
-             notifications={} avoidance: {}",
+             contract={} notifications={} avoidance: {}",
             report.origin,
             round1(report.measured_bar_h),
             round1(report.measured_win_w),
             report.zoom,
             report.placeholder,
+            report.contract,
             report.notifications,
             report.avoid
         );
@@ -387,8 +407,19 @@ struct ChromeReport {
     /// plugin that shows system notifications, dsh-notification included, checks
     /// this itself and gives up silently.
     notifications: String,
+    /// Which chrome layer is doing the work: `"contractActive"` when dsh honours
+    /// the desktop-host contract and reserves the caption itself, or
+    /// `"contractMissing"` when the script is compensating geometrically.
+    ///
+    /// Logged explicitly because the two states are otherwise indistinguishable
+    /// from the geometry: a dsh that dropped the contract would leave the window
+    /// looking correct while a heuristic quietly did the work again.
+    contract: String,
+    /// dsh's published `--dsh-frame-top-clearance`, when it publishes one.
+    contract_top_clearance: Option<f64>,
     boxes: String,
-    /// What the reserved-corner avoidance did, or why it did nothing.
+    /// What the reserved-corner avoidance did, or why it did nothing. Empty when
+    /// the contract is active, which is not a fault.
     avoid: String,
 }
 

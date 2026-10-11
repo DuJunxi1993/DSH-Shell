@@ -24,14 +24,15 @@
 │   ├── DSHShellApp.swift  (@main, App scene, window group)     │
 │   ├── Views/ShellScene.swift                                 │
 │   │     ├─ WebSurfaceView (NSViewRepresentable → WKWebView)  │
-│   │     ├─ LoadingOverlay (until endpoint resolves)          │
-│   │     └─ ErrorView (dsh failed to start)                   │
-│   ├── ViewModels/ShellViewModel (@Observable)                │
-│   └── Services/                                              │
-│         ├── DSHProcessManager  (forks `dsh web`, supervises) │
-│         ├── EndpointResolver   (parses `dsh web:` URL line)  │
-│         ├── HealthProbe        (HTTP GET /, retry)           │
-│         └── AttachProbe        (scans 127.0.0.1 ports)       │
+│   │     ├─ LoadingView     (until endpoint resolves)         │
+│   │     └─ ErrorView       (dsh failed to start)             │
+│   ├── ViewModels/AppCoordinator (@MainActor, ObservableObject)│
+│   └── DSHShellCore/                                          │
+│         ├── Preflight        (anti-nest, port ownership)      │
+│         ├── DSHProcessManager (forks `dsh web`, supervises)  │
+│         ├── EndpointResolver  (the four acceptance rules)    │
+│         ├── HealthProbe       (port liveness, logging only)   │
+│         └── AttachProbe       (the configured port only)     │
 └───────────────────────────────────────────────────────────────┘
                             │
                             │  Process (stdout/stderr)
@@ -64,31 +65,79 @@ dsh-swiftUI talks to dsh exclusively through the public HTTP/WebSocket surface t
 
 - validates the configured `dshBinaryPath` is absolute and executable,
 - constructs the argv without going through a shell,
+- gives the child a null stdin, so it never inherits the app's,
+- rebuilds the child's `PATH` (below) and **strips the `DSH_*` harness markers** from its environment,
+- runs both preflight guards before spawning, and nothing else does,
 - pipes stdout/stderr to an `AsyncStream<String>` consumed by the UI (for the loading overlay and the "Open Console" debug menu),
-- rescues the `dsh web:` URL line from stdout and forwards it to `EndpointResolver`,
-- reclaims the fixed preferred port before spawning: an orphaned `dsh web` from a previous session (pkill/crash leaves no cleanup) would otherwise make the fresh child die with `EADDRINUSE`. `reclaimPort` probes the port, and only if it truly serves the dsh SPA kills the listener (lsof + SIGTERM/SIGKILL), so an unrelated service squatting on the port is left alone,
-- adopts the endpoint by health probe when the URL line is late or missing: `dsh web`'s own loader can take 30-60s+ to settle depending on startup work, so after the URL deadline we keep the live child and poll `http://<host>:<preferredPort>/` until it serves the SPA (fixed port only),
-- supervises lifetime: SIGTERM on graceful exit, SIGKILL after 5s, exponential back-off on crash (max 30s, single auto-restart),
-- refuses to spawn more than one child at a time.
+- resolves the `dsh web:` URL line from **stdout only**, applying all four acceptance rules,
+- supervises lifetime: SIGTERM on graceful exit, SIGKILL after 5s, bounded exponential back-off on crash (3 attempts, 2/4/8s, counter reset once an endpoint resolves),
+- refuses to spawn more than one child at a time,
+- records the child's PID the instant it exists, not when `start()` returns.
 
 The launch arguments we send:
 
 ```
 dsh web
+  --no-open
   --host 127.0.0.1
-  --port <preferredPort, default 34247; 0 = OS-assigned>
+  --port <preferredPort; 0 or absent means the OS picks>
   --trusted-host <each entry in trustedHosts>
 ```
 
-A fixed default port (rather than `0`) is deliberate: it lets the shell adopt
-the endpoint by probing even when the URL line never arrives, and lets the
-orphan reaper target the right listener. Set `0` in Preferences to opt out
-(OS-assigned port, URL-line-only startup).
+`--port` is **omitted entirely** when the port is OS-assigned. The previous code
+passed a literal `--port 0` on the strength of an assumption that dsh reads it
+as "ask the kernel"; that was never verified against a real dsh, and a literal 0
+is ambiguous — it could equally mean "bind port zero". Omitting the flag is the
+spelling that cannot be misread, and it is what `dsh web --help` documents.
 
-dsh's web profile accepts exactly those three flags; anything else (e.g. a
-`--workspace`) is rejected as an unknown option. The SPA picks its own
-workspace inside the browser UI, so the shell forwards no working directory
-and `dsh web` defaults to its invoking cwd.
+dsh's web profile accepts exactly those flags; anything else is rejected as an
+unknown option. The SPA picks its own workspace inside the browser UI, so the
+shell forwards no working directory and `dsh web` defaults to its invoking cwd.
+
+### 5.1 Endpoint resolution: four rules, no exceptions
+
+Only stdout is a URL source. stderr carries dsh's internal `bili` proxy
+(`http://127.0.0.1:18787`), and a loose "any loopback URL" match points the
+webview at the proxy and shows a white window — the bug this repository once
+shipped with. A line is accepted only when it is a `dsh web:` line, on loopback,
+on the port we asked for, and carries a **non-empty `?token=`**.
+
+That last rule is the load-bearing one, and it was verified against real dsh:
+a tokenized URL answers `303` plus a `dsh-auth-` cookie; the cookied clean URL
+answers `200` and serves the SPA; a bare URL answers `401`. **A tokenless URL can
+never load the SPA.**
+
+### 5.2 The port probe is a log line, not a fallback
+
+The earlier design raced the URL line against an HTTP probe of the known port
+and adopted whatever answered first. It cannot work: the probe's URL has no
+token, so dsh answers `401`. The feature was therefore either inert or
+dependent on the dsh version — the worst place for behaviour to live.
+
+What the port probe *is* good for is the difference between "dsh is slow" and
+"dsh is broken" in the log, because the socket binds seconds before dsh's plugin
+Loader settles and prints its URL. So it is logged, and never adopted:
+
+```
+port 3080 is listening (HTTP 401); still waiting for the authenticated URL line
+```
+
+### 5.3 Orphaned dsh: refuse, do not reap
+
+With a fixed preferred port, a `dsh web` left over from a previous session
+would make the next spawn die with `EADDRINUSE`. The previous code resolved this
+by finding the listener with `lsof` and **killing it**, if it answered an
+unauthenticated request with the dsh SPA.
+
+That is wrong twice over. It destroyed a dsh the operator started by hand —
+possibly one they were using — merely by opening the app. And its
+identification test could not succeed against a current dsh, which answers
+`401` to exactly that unauthenticated probe, so the reaper never fired and the
+scenario it was sold as solving could not occur through it either.
+
+The replacement refuses to start and names `attach` as the alternative. A second
+dsh cannot share a port anyway, and the user's alternative is already
+implemented. See §7.
 
 ## 6. App Sandbox stance
 
@@ -109,9 +158,26 @@ That fight is intentionally postponed.
 
 ## 7. Attachment fallback
 
-If `launchMode == attach` (or if `spawn` fails to deliver a URL within `spawnTimeoutSeconds`), `AttachProbe` walks a small set of ports on `127.0.0.1` and asks each one for `/`. The first server that responds with a 200 whose `Content-Type` is `text/html` and whose body matches the dsh SPA signature is adopted as the upstream.
+`attach` means: do not fork; adopt something already listening on the configured
+loopback port. It requires a fixed `preferredPort`, and it probes exactly that
+one port.
 
-The probe is intentionally narrow: it only scans well-known ephemeral ports opened within the last minute by a process whose name is `node` (heuristic; not enforced). This is good enough for the lone-dev case and a no-op on multi-user hosts.
+The previous implementation swept the entire macOS ephemeral range — all 16384
+ports from 49152 — with 32-way concurrency, ignored `preferredPort` entirely,
+identified a hit by scraping the SPA's HTML for a marker, and returned whatever
+URL it found. Three separate problems: it ignored the only port the user
+configured; 16k outbound loopback connections is visible to anything watching
+`lsof` and trips local network tooling; and it could adopt a dsh belonging to a
+*different* session, which it then — by design — never kills.
+
+**Attach has a real limit, and it should be stated rather than worked around.**
+The URL it adopts carries no token, so a token-fenced dsh answers `401` to it.
+That is information, not a defect to engineer around: the authenticated URL can
+only be printed by the dsh that owns the token. Attach therefore suits a dsh
+whose fence is already satisfied — a LaunchAgent, or one sharing a cookie jar —
+and for a fresh `dsh web` the answer is to print its URL line and use it.
+Preflight skips both guards in attach mode, since attach forks nothing and
+cannot collide with anything.
 
 ## 8. Threading and concurrency
 
@@ -119,18 +185,45 @@ The probe is intentionally narrow: it only scans well-known ephemeral ports open
 - SwiftUI state mutation is done via `@Observable` view models and `@MainActor` isolation.
 - `WKWebView` is touched only on the main thread (enforced by `WebSurfaceView`).
 - Child stdout/stderr lines are funneled through an `AsyncStream<String>` and consumed by a `@MainActor` consumer; we never block the UI on the child's pipe.
-
 ## 9. Why not Electron / Tauri / Wails?
 
-Neutral summary, captured here so we can revisit it:
+> **Superseded in part.** The reasoning below is kept because the ADR it came
+> from (`0003-wkwebview-not-electron-or-tauri`) is still "Accepted", and it
+> contains a claim that measurement has since refuted: it says Tauri brings "a
+> different security model" and a different engine. On macOS, Tauri renders
+> through **WKWebView** — the same engine this shell uses. So on macOS the two
+> routes are not separated by rendering at all, and the only real difference is
+> code sharing with the Windows implementation. That is a live question, not a
+> settled one; see `docs/dsh-shell-contract.md`.
 
-- **Electron**: ships its own Chromium and a parallel Node runtime. We already need to give users a Node runtime for dsh. Two engines double the disk footprint and the rendering surface.
-- **Tauri**: brings a Rust toolchain and a different security model. dsh is Node-native and the brief is "respect dsh's philosophy"; mixing Rust in front of dsh is a smell.
+The original reasoning, for the record:
+
+- **Electron**: ships its own Chromium and a parallel Node runtime. We already
+  need to give users a Node runtime for dsh. Two engines double the disk
+  footprint and the rendering surface.
+- **Tauri**: brings a Rust toolchain. dsh is Node-native, and putting Rust in
+  front of dsh was read as a smell.
 - **Wails**: also Go. Same argument.
 
-`WKWebView` is the right primitive: it is the same WebKit dsh was already built for, and the SwiftUI side is the value we add.
-
+`WKWebView` remains the right primitive for *this* shell: it is the same WebKit
+dsh was built for, and the SwiftUI side is the value we add.
 ## 10. Open questions
 
-- Homepage URL detection: dsh prints `dsh web: http://...` only when `printUrl` is true. We will set up a flag, but if dsh ever changes that contract we need to detect by listening (HTTP probe if we know the port, port-scan if we do not).
-- Keyboard shortcut surface: dsh's SPA has its own shortcuts; macOS expects ⌘ to do native things. We will eventually need a discoverable shortcut map. Deferred.
+- **Homepage URL detection.** Resolved, not open. `dsh web` prints its URL line
+  when `printUrl` is true, which is the default; the shell reads stdout and
+  requires the line to carry a token. The port probe can never substitute for
+  it, so there is no listening-based fallback to design.
+- **Keyboard shortcut surface.** dsh's SPA has its own shortcuts; macOS expects
+  ⌘ to do native things. A discoverable shortcut map is still wanted.
+- **The desktop-host contract.** dsh publishes one for macOS as well
+  (`html[data-platform='darwin']`, `--dsh-frame-top-clearance`, a
+  `shell.leading` seat), but it is **not** a CSS hook: the attribute's presence
+  flips dsh into its desktop runtime, which then demands a trusted preload
+  supplying `window.dshDesktop` / `window.dshDesktopBoot`. Setting it alone
+  stops the Web UI from booting. The measured preload surface is five entry
+  points, so this is a decision rather than an obstacle — see
+  `docs/dsh-shell-contract.md` §7 and `docs/dsh-desktop-contract.md` §2.4.
+- **The window-chrome shim is currently inert.** `bridge.js` patches
+  `#root [data-dsh-frame] > [data-pane="sidebar"]`, and neither attribute exists
+  anywhere in dsh `0.2.0-rc.2`. It degrades to a no-op rather than breaking
+  anything, which is the right failure mode and the wrong feature.

@@ -20,13 +20,24 @@
 //! Keeping the handle alive is the whole difference between "the click was
 //! swallowed" and "the click came back to us as an action".
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+// `Manager` is what turns an `AppHandle` into a `WebviewWindow`, and only the
+// Windows path looks one up. Gated with it for the same reason as its caller.
+#[cfg(target_os = "windows")]
+use tauri::Manager;
 
 #[cfg(target_os = "windows")]
 use notify_rust::Timeout;
 
 /// Raise the main window. The single-instance plugin uses the same shape, so a
 /// toast click and a second launch land the user in the same place.
+///
+/// Windows-only, like its sole caller. The non-Windows path goes through
+/// `tauri_plugin_notification`, which drops the handle — and therefore cannot
+/// receive the activation at all (see the module docs). Leaving this ungated
+/// meant `cargo clippy -- -D warnings`, which `AGENTS.md` declares a gate, only
+/// passed on Windows; anywhere else both this and `installed_build` were dead.
+#[cfg(target_os = "windows")]
 fn raise_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) else {
         tracing::warn!(target: "dsh_shell", "no window to raise for a toast click");
@@ -48,6 +59,7 @@ fn raise_main_window(app: &AppHandle) {
 /// PowerShell AUMID, which always displays. So a dev run still sees the toast and
 /// simply does not get click-to-focus, which is the honest outcome: the activation
 /// plumbing only exists once the app is actually installed.
+#[cfg(target_os = "windows")]
 fn installed_build() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;

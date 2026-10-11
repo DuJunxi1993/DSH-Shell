@@ -15,6 +15,17 @@ They share the goal and nothing else. Neither wraps the other, they import no
 code from each other, and each is built, tested and released on its own — so a
 directory's own README is the one to read.
 
+They do, however, have to **agree about dsh**. That agreement is written down
+rather than left to drift:
+
+| Document | What it is |
+|---|---|
+| [`docs/dsh-shell-contract.md`](docs/dsh-shell-contract.md) | The specification both implementations must satisfy: endpoint resolution, the `stub-dsh` fixture table, the preflight guards, PID ownership, configuration compatibility. Change a rule here and you change both sides, with a test on each. |
+| [`docs/dsh-desktop-contract.md`](docs/dsh-desktop-contract.md) | A measurement of what the dsh Web UI actually does when a desktop host declares itself, against real `dsh@0.2.0-rc.2`. Screenshots and raw JSON under [`docs/probe/`](docs/probe/). Produced by [`macos/tools/dsh-probe`](macos/tools/dsh-probe). |
+
+It changed the Windows shell's chrome strategy and it is the reason the macOS
+shell's probe-adoption feature was removed rather than tuned.
+
 ## Building
 
 Windows (Rust and `cargo-tauri`):

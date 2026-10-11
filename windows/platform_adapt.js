@@ -92,6 +92,100 @@
   var STYLE_ID = "dsh-shell-chrome-style";
   var ROOT_ID = "dsh-shell-chrome";
 
+  /* ===================================================================
+   * LAYER 1 — the desktop contract
+   * ===================================================================
+   *
+   * dsh publishes a desktop-host contract, and this file used to ignore it and
+   * compensate geometrically instead. Declaring the host costs two properties:
+   *
+   *   document.documentElement.setAttribute('data-windows-titlebar', '')
+   *   --dsh-windows-titlebar-height: <our bar height>
+   *
+   * dsh then reserves the caption height on its own frame, paints its own drag
+   * strip, rounds the content column's top-left corner, publishes
+   * `--dsh-frame-chrome-top`, insets its own fullscreen modal overlays, and
+   * converges both of those when the window goes fullscreen. Measured, not
+   * assumed: see docs/dsh-desktop-contract.md §2.3.
+   *
+   * Note what dsh does *not* provide: a caption with buttons. It reserves space
+   * and offers a drag region; the three window buttons stay ours, because they
+   * are the only part of a native caption that talks to the window manager.
+   *
+   * The height is ours to declare, so it comes from the same constant as every
+   * other length here and goes through `px()` like all of them. Declaring it in
+   * logical pixels would be wrong: dsh reads it as a CSS length and the page
+   * zoom multiplies it, exactly like everything else in the document.
+   *
+   * `--dsh-windows-titlebar-height` is *read* by dsh and never set by it, which
+   * is what makes the host the owner of the number.
+   */
+  function declareDesktopContract() {
+    var html = document.documentElement;
+    if (!html) return;
+    try {
+      if (!html.hasAttribute("data-windows-titlebar")) {
+        html.setAttribute("data-windows-titlebar", "");
+      }
+      html.style.setProperty("--dsh-windows-titlebar-height", px(BAR_H));
+    } catch (error) {
+      /* A document that refuses the attribute still gets the fallback layer. */
+      reportContract("contractMissing", String(error));
+    }
+  }
+
+  /* Whether dsh is honouring the contract.
+   *
+   * The test is whether dsh has *published* something in response, not whether
+   * our attribute is present: an attribute we set is only a claim, and a dsh
+   * that predates the contract will ignore it silently. Reading back
+   * `--dsh-frame-chrome-top` is the conversation. */
+  function contractState() {
+    var html = document.documentElement;
+    if (!html) return "contractMissing";
+    /* Our own boot placeholder is not dsh and has no contract to honour. */
+    if (html.hasAttribute("data-dsh-shell-placeholder")) return "contractMissing";
+    try {
+      var published = window.getComputedStyle(html)
+        .getPropertyValue("--dsh-frame-chrome-top").trim();
+      return published ? "contractActive" : "contractMissing";
+    } catch (error) {
+      return "contractMissing";
+    }
+  }
+
+  /* dsh's reserved height, in logical pixels, or null when it publishes none.
+   * Used to sit the status line below dsh's own caption rather than below our
+   * own arithmetic, which is the difference between agreeing with the page and
+   * guessing at it. */
+  function contractTopClearance() {
+    if (contractState() !== "contractActive") return null;
+    try {
+      var raw = window.getComputedStyle(document.documentElement)
+        .getPropertyValue("--dsh-frame-top-clearance").trim();
+      if (!raw) return null;
+      var parsed = parseFloat(raw);
+      return isFinite(parsed) && parsed > 0 ? parsed : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  var contractReport = "contractMissing";
+
+  function reportContract(state, detail) {
+    contractReport = state;
+    try {
+      window.__DSH_SHELL_CONTRACT__ = {
+        state: state,
+        detail: detail || null,
+        topClearance: contractTopClearance()
+      };
+    } catch (error) {
+      /* Nothing to do: the diagnostic is best-effort by construction. */
+    }
+  }
+
   /* The content column's top row, republished by every avoidance pass so the
      status line can read the session title out of it. Module scope on purpose:
      `applyCornerAvoidance` is a top-level function and could not see a variable
@@ -927,6 +1021,11 @@
 
   function install() {
     installStylesheet();
+    /* Layer 1 first: the page may already be laid out, and every pass below
+     * reads whether the contract took. Declaring it before the bar is built
+     * means the chrome and the page's reservation appear together rather than
+     * as two separate reflows. */
+    declareDesktopContract();
 
     var bar = document.createElement("div");
     bar.id = ROOT_ID;
@@ -1349,6 +1448,44 @@
         if (document.hidden) {
           return;
         }
+        /* =================================================================
+         * LAYER 2 — the geometric fallback
+         * =================================================================
+         *
+         * Everything below this point guesses. It finds columns by geometry in a
+         * document whose class names are rehashed every dsh build, and writes
+         * padding and transforms onto them. It was the whole strategy until the
+         * contract was measured; it is now the fallback for a dsh that does not
+         * publish one, and for our own boot placeholder, which never will.
+         *
+         * Two reasons it must not run unconditionally:
+         *
+         *  - It is expensive and continuous. A MutationObserver drives it on
+         *    every batch, including during a streaming response.
+         *  - It is wrong in the case that matters. Writing an inset onto a
+         *    column it guessed at can displace the page's own layout, and the
+         *    pass that once "padded list items and conversation bubbles" was
+         *    this code with the wrong anchor.
+         *
+         * When the contract is active dsh has already reserved everything below
+         * the caption, so there is nothing left to avoid and the correct action
+         * is to do nothing and say so.
+         */
+        var state = contractState();
+        if (state === "contractActive") {
+          reportContract("contractActive");
+          if (avoidance !== null) {
+            /* The contract can go away — a navigation back to a dsh without one
+             * — and the insets this script wrote have to be undone, or they
+             * stack on top of dsh's own reservation. */
+            clearApplied();
+            avoidance = null;
+            topRow = null;
+          }
+          return;
+        }
+        reportContract("contractMissing");
+
         var signature = layoutSignature();
         if (signature !== null && signature === lastSignature) {
           /* Same structure, same size: the pass would re-derive the same answer
@@ -1459,6 +1596,13 @@
           ready_state: document.readyState,
           origin: location.origin,
           notifications: notificationState(),
+          /* Which layer is doing the work. "contractActive" means dsh reserved
+             the caption itself and the geometric fallback is dormant;
+             "contractMissing" means we are still guessing, and the log line says
+             so rather than looking identical. A future dsh that dropped the
+             contract would be invisible without this field. */
+          contract: contractReport,
+          contract_top_clearance: contractTopClearance(),
           boxes: "bar=" + describe(node) +
             " grab=" + describe(grab) +
             " status=" + describe(status) +

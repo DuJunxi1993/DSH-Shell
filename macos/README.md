@@ -21,11 +21,15 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | `DSHShellCore` framework — process manager, endpoint resolver, health/attach probes, settings store | ✅ |
 | SwiftUI `DSHShell` app — `AppDelegate`-owned `AppCoordinator`, native window, `WKWebView` surface | ✅ |
 | `DSHProcessManager` — fork `dsh web`, capture URL, crash-time auto-restart, **clean shutdown via `kill`/`waitpid`** | ✅ |
-| `launchMode == .attach` fallback (scan loopback for an existing dsh) | ✅ |
+| `launchMode == .attach` fallback (probe the configured loopback port only) | ✅ |
 | App icon, transparent titlebar, floating status badge | ✅ |
 | Preferences (binary path, listen host/port, trusted hosts, timeouts, auto-restart) | ✅ |
-| Unit tests for `DSHShellCore` | ✅ 10/10 |
-| `swift build` and `xcodebuild` both clean | ✅ 0 warnings, 0 errors |
+| Unit tests for `DSHShellCore` | ✅ 63 passing, 0 failing |
+| Hermetic lifecycle tests against `stub-dsh` | ✅ 13, every one ends by asserting the port is bindable again |
+| `swift build` and `xcodebuild` both clean | ✅ 0 errors |
+| Preflight: refuse to nest inside a harness session | ✅ |
+| Preflight: refuse a port someone else owns, never kill it | ✅ |
+| Preflight: `SO_REUSEADDR` on the port probe | ✅ so `TIME_WAIT` cannot fake a collision |
 | Git / File tree / Terminal panels | ⏳ Roadmap only |
 
 ---
@@ -92,10 +96,10 @@ Settings live at `~/Library/Application Support/dsh-swiftUI/settings.json`. Defa
 | `dshBinaryPath` | Absolute path to the `dsh` executable. |
 | `launchMode` | `spawn` → fork `dsh web` ourselves; `attach` → only connect to an already-running instance. |
 | `listenHost` | Local host passed to `dsh web --host`. `0.0.0.0` is **not** supported (mirrors dsh's own policy). |
-| `preferredPort` | Fixed port forwarded to `dsh web --port`. A fixed port lets the shell adopt the endpoint by probing when the URL line is late, and lets it reclaim the port from orphaned instances. `0` → OS-assigned (URL-line-only startup). |
+| `preferredPort` | Fixed port forwarded to `dsh web --port`. A fixed port lets preflight refuse to start over somebody else's listener instead of killing it, and lets `attach` know where to look. `0` → the flag is omitted entirely and the OS assigns a port. |
 | `trustedHosts` | Hosts appended to `dsh web --trusted-host` (repeatable). |
 | `spawnTimeoutSeconds` | How long to wait for the `dsh web:` URL line on stdout before probing the fixed port as a fallback. |
-| `autoRestartOnCrash` | One-shot exponential back-off restart on unexpected child exit. |
+| `autoRestartOnCrash` | Bounded exponential back-off restart on unexpected child exit: 3 attempts at 2s, 4s and 8s. The counter resets once an endpoint resolves, so a dsh that crashes once an hour is not treated as a crash loop. |
 
 The shell forwards no working directory to `dsh web` — the dsh SPA picks its own workspace inside the browser UI.
 
@@ -115,7 +119,7 @@ The shell forwards no working directory to `dsh web` — the dsh SPA picks its o
 ```
 
 - On launch the app forks `dsh web`, captures the `dsh web: http://127.0.0.1:NNNN/` line, and points the `WKWebView` at it.
-- If the child crashes, the manager schedules a single automatic restart with exponential back-off (capped at 30s).
+- If the child crashes, the manager restarts it up to 3 times with exponential back-off (2s, 4s, 8s), then gives up and **says so** — both in the UI and as a notification. A window that keeps showing a dead conversation over a server that is gone is the failure this exists to prevent.
 - On `applicationWillTerminate` the `AppDelegate` calls `AppCoordinator.shutdownBlocking()`: it signals the child with `SIGTERM`, escalates to `SIGKILL` after 5s, and uses `waitpid` to confirm the child has reaped before the process exits. **This is the path that prevents orphan dsh processes** — a Swift `Task` would not have run in time during runtime teardown.
 
 ---
@@ -134,7 +138,9 @@ Or read the last minute:
 log show --predicate 'subsystem == "ai.deepseek.dsh-shell"' --last 1m --info --debug
 ```
 
-If a launch fails with `EADDRINUSE`, a previous `dsh web` is still bound to a port. The error message tells you to run `pkill -f 'dsh web'`.
+If the configured port is already owned, the shell **refuses to start and names `attach`** as the alternative. It never kills a process it did not spawn: that would destroy a `dsh web` you started by hand, possibly one you were using, merely by opening the app.
+
+The error message deliberately does not suggest `pkill`. Killing dsh by name is forbidden throughout this repository — see [`AGENTS.md` in the Windows implementation](../../windows/AGENTS.md) rule 1, which records what happened when a previous agent did it.
 
 ---
 
