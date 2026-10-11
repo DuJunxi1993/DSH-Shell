@@ -949,6 +949,99 @@
       "user-select:none"
     ].join(";");
 
+    /* --- adaptive foreground colour ---
+     *
+     * The bar is chrome over a page we do not control, and dsh ships a dark
+     * theme. The glyphs are `currentColor` and the buttons inherit, so their
+     * colour resolves to this bar's `color: var(--dsw-alias-label-primary,
+     * #16181d)`. That fallback is near-black, which is correct on a light page and
+     * invisible on a dark one — and dsh's dark theme does not always define the
+     * alias, so the bar fell back to it and the window buttons vanished.
+     *
+     * Rather than guess dsh's theme tokens (which differ per build, and are not
+     * guaranteed on `<html>` at all), measure the surface the bar actually sits on
+     * and pick a foreground with contrast against it. This reacts to a theme
+     * switch on its own, and works for the boot page and dsh alike.
+     */
+
+    /* Parse a CSS colour into 0..255 channels. Handles the rgb()/rgba() form the
+     * computed style always yields, and a hex token for the custom properties.
+     * Returns null for anything it cannot read, so the caller can fall through to
+     * the next candidate rather than trusting a parse of "inherit". */
+    function parseColor(value) {
+      if (!value) {
+        return null;
+      }
+      var text = String(value).trim();
+      var rgb = text.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+      if (rgb) {
+        return {
+          r: parseFloat(rgb[1]),
+          g: parseFloat(rgb[2]),
+          b: parseFloat(rgb[3])
+        };
+      }
+      var hex = text.match(/^#?([0-9a-f]{6})$/i) || text.match(/^#?([0-9a-f]{3})$/i);
+      if (hex) {
+        var h = hex[1];
+        if (h.length === 3) {
+          h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        }
+        return {
+          r: parseInt(h.slice(0, 2), 16),
+          g: parseInt(h.slice(2, 4), 16),
+          b: parseInt(h.slice(4, 6), 16)
+        };
+      }
+      return null;
+    }
+
+    /* WCAG relative luminance, 0 (black) to 1 (white). The threshold is not
+     * 0.5: a mid grey is the worst case for both, and 0.45 keeps dark-on-mid
+     * readable without washing out a light page. */
+    function luminance(rgb) {
+      function channel(value) {
+        var c = value / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      }
+      return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
+    }
+
+    /* The colour actually painted behind the bar. Walk the theme token dsh uses,
+     * then the document's own surfaces, and take the first opaque one. The bar is
+     * transparent, so this is the page's own colour showing through it. */
+    function pageBackground() {
+      var candidates = [];
+      try {
+        var rootStyle = getComputedStyle(document.documentElement);
+        candidates.push(rootStyle.getPropertyValue("--dsw-alias-bg-base"));
+        candidates.push(rootStyle.backgroundColor);
+        candidates.push(getComputedStyle(document.body).backgroundColor);
+        candidates.push(rootStyle.getPropertyValue("background"));
+      } catch (error) {
+        /* A document too early to compute a style; the white default below stands. */
+      }
+      for (var i = 0; i < candidates.length; i++) {
+        var rgb = parseColor(candidates[i]);
+        if (rgb && (candidates[i].indexOf("rgba") < 0 || candidates[i].indexOf(", 0)") < 0)) {
+          return rgb;
+        }
+      }
+      /* Unknown: assume the light default dsh boots with. */
+      return { r: 255, g: 255, b: 255 };
+    }
+
+    var lastFg = null;
+    function probeTheme() {
+      var bg = pageBackground();
+      var fg = luminance(bg) < 0.45 ? "#e6e6e6" : "#16181d";
+      if (fg !== lastFg) {
+        bar.style.color = fg;
+        lastFg = fg;
+      }
+      return fg;
+    }
+
     /* The drag strip: a short band at the very top, not the full bar height. A
        full-height strip swallows every click on the page's own top row, which
        is a control-dense row in this app. */
@@ -1265,6 +1358,11 @@
         var started = Date.now();
         avoidance = applyCornerAvoidance();
         var cost = Date.now() - started;
+        /* Measure the surface for the foreground too. A theme switch is a class
+           or a custom-property change, which is exactly the kind of mutation the
+           observer sees, so a page that goes dark is noticed here without any
+           polling. */
+        probeTheme();
         /* A pass that found nothing proves nothing about the page, so it must not
            become the baseline the next mutation is compared against. */
         if (signature !== null && avoidance.indexOf("skipped:") !== 0 &&
@@ -1295,6 +1393,15 @@
     paintStatus();
     probeDsh();
     setInterval(probeDsh, 4000);
+    /* The foreground is measured rather than derived from a token, and a theme
+       switch is not something this observer can see: it watches childList, and
+       swapping a theme is a class or custom-property change on an existing node.
+       It also does not necessarily change the node count, so the layout signature
+       would skip the pass that could have re-measured. A slow poll is the honest
+       fix - `probeTheme` only touches the DOM when the colour actually changed, so
+       this costs a handful of computed-style reads a second. */
+    setInterval(probeTheme, 1500);
+    probeTheme();
     /* The first pass describes the page as it is now, and there is nothing to
        debounce against. */
     scheduleAvoidance(true);

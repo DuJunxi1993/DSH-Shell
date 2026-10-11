@@ -22,10 +22,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod toast;
+
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use tauri_plugin_notification::NotificationExt;
 
 use dsh_shell_core::chrome;
 use dsh_shell_core::config::{self, Config};
@@ -712,17 +713,11 @@ fn watch_dsh_exit(app: AppHandle, state: Arc<AppState>) {
 ///
 /// Best-effort by design: the log is the diagnostic of record, and a notification
 /// that cannot be shown must never take the app down with it.
+///
+/// Delegated to [`toast`] so the toast's handle survives and clicking it raises
+/// the window — the plugin's fire-and-forget `show()` swallows the click.
 fn notify(app: &AppHandle, title: &str, body: String) {
-    if let Err(err) = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body.clone())
-        .show()
-    {
-        tracing::warn!(target: "dsh_shell", "could not notify ({title}): {err}");
-    }
-    tracing::info!(target: "dsh_shell", "notified: {title} — {body}");
+    toast::show_clickable(app, title, body);
 }
 
 /// Surface a startup failure in the window itself. A release build has no

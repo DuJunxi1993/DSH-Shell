@@ -65,6 +65,13 @@ regex = "1"
 url = "2"
 tauri-plugin-notification = "2.3.3"
 
+# The plugin shows a toast and drops the handle, which kills the WinRT
+# activation handler: clicking the toast is swallowed. The shell's own toasts go
+# through notify-rust directly so the handle survives and a click can be received.
+# Windows-only; see src/toast.rs.
+[target.'cfg(windows)'.dependencies]
+notify-rust = "4"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
