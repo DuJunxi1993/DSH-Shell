@@ -23,7 +23,22 @@ final class AppCoordinator: ObservableObject {
 
     private let store: SettingsStore
     private var manager: DSHProcessManager?
-    private var observerTask: Task<Void, Never>?
+    /// The task driving `runLifecycle`. Cancelled and cleared only by an
+    /// explicit teardown — see `stopLifecycle()`.
+    private var lifecycleTask: Task<Void, Never>?
+    /// The task consuming the manager's event stream. Stored for the same
+    /// reason: it used to be discarded, so a `reload()` left the previous
+    /// manager's stream being drained by a task nobody could stop.
+    private var eventTask: Task<Void, Never>?
+    /// Whether a lifecycle is currently in flight.
+    ///
+    /// This is deliberately *not* derived from `lifecycleTask != nil`. The
+    /// original `start()` guarded on the task handle being nil, but
+    /// `runLifecycle()` returned without clearing it, so the guard latched shut
+    /// after the first launch: ⌘R and Preferences→Apply killed dsh, called
+    /// `start()`, got an immediate no-op, and left the window on
+    /// "Shutting down dsh…" until the app was restarted.
+    private var lifecycleRunning = false
     private var lastURL: URL?
     private var lastChildPID: Int32?
     private var bridge: WebBridge?
@@ -37,17 +52,38 @@ final class AppCoordinator: ObservableObject {
     }
 
     func start() {
-        guard observerTask == nil else { return }
-        observerTask = Task { [weak self] in
+        guard !lifecycleRunning else {
+            logger.debug("start() ignored — a lifecycle is already running")
+            return
+        }
+        lifecycleRunning = true
+        lifecycleTask = Task { [weak self] in
             await self?.runLifecycle()
         }
     }
 
     func shutdown() {
-        observerTask?.cancel()
-        observerTask = nil
-        guard let manager else { return }
-        Task { await manager.stop() }
+        Task { @MainActor in await stopLifecycle() }
+    }
+
+    /// Stop the current lifecycle, if any, and wait for the teardown to finish.
+    ///
+    /// Everything the previous version did from `reload()` and `shutdown()`,
+    /// in one place, and awaited: cancel the lifecycle task, cancel the event
+    /// consumer, stop the manager (which terminates dsh), then clear the
+    /// references. Clearing `manager` matters — a reused manager still holding
+    /// `process != nil` would refuse the next `start()` with `alreadyRunning`.
+    private func stopLifecycle() async {
+        lifecycleRunning = false
+        lifecycleTask?.cancel()
+        lifecycleTask = nil
+        eventTask?.cancel()
+        eventTask = nil
+        if let manager {
+            await manager.stop()
+        }
+        manager = nil
+        lastChildPID = nil
     }
 
     /// Blocking shutdown for `applicationWillTerminate`. The process exits
@@ -59,8 +95,11 @@ final class AppCoordinator: ObservableObject {
     /// plain syscalls that cannot be dropped by teardown — and only then
     /// attempt the best-effort actor cleanup.
     func shutdownBlocking() {
-        observerTask?.cancel()
-        observerTask = nil
+        lifecycleRunning = false
+        lifecycleTask?.cancel()
+        lifecycleTask = nil
+        eventTask?.cancel()
+        eventTask = nil
         let pid = manager?.currentChildPID() ?? lastChildPID
         if let pid {
             kill(pid, SIGTERM)
@@ -83,15 +122,15 @@ final class AppCoordinator: ObservableObject {
             }
             _ = semaphore.wait(timeout: .now() + 1)
         }
+        manager = nil
     }
 
     func reload() {
         Task { @MainActor in
             self.state = .shuttingDown
-            if let manager {
-                await manager.stop()
-            }
+            await self.stopLifecycle()
             self.consoleLines.removeAll()
+            self.state = .idle
             self.start()
         }
     }
@@ -121,11 +160,23 @@ final class AppCoordinator: ObservableObject {
 
     private func notifyAgentIdle() {
         guard let since = agentRunningSince, Date().timeIntervalSince(since) > 5 else { return }
+        let body = webSession.title.map { "\($0) — 任务完成" } ?? "任务完成"
+        notify(title: "Agent 已空闲", body: body)
+    }
+
+    /// Post a user notification.
+    ///
+    /// Deliberately not routed through a delegate that raises the window: the
+    /// whole point of these two notifications is that they arrive *while* the
+    /// window is showing a dead page, which is exactly when a click that only
+    /// brings the window forward would be useless.
+    private func notify(title: String, body: String) {
         let content = UNMutableNotificationContent()
-        content.title = "Agent 已空闲"
-        content.body = webSession.title.map { "\($0) — 任务完成" } ?? "任务完成"
+        content.title = title
+        content.body = body
         content.sound = .default
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
 
@@ -151,21 +202,26 @@ final class AppCoordinator: ObservableObject {
         let manager = DSHProcessManager(settings: settings)
         self.manager = manager
         let events = await manager.events()
-        _ = Task { @MainActor in
+        eventTask = Task { @MainActor [weak self] in
             for await event in events {
-                self.handle(event: event)
+                self?.handle(event: event)
             }
         }
 
         do {
             let url = try await manager.start()
-            logger.info("manager.start() returned url=\(url, privacy: .public)")
+            logger.info("manager.start() returned url=\(url.absoluteString, privacy: .public)")
             self.lastURL = url
+        } catch is CancellationError {
+            // Teardown, not a failure. Leave whatever state `stopLifecycle()`
+            // already set.
+            logger.debug("lifecycle cancelled during startup")
         } catch {
             logger.error("manager.start() failed: \(String(describing: error), privacy: .public)")
             await MainActor.run {
                 self.state = .failed(reason: error.localizedDescription)
                 self.appendConsole(.shell, text: "[error] \(error.localizedDescription)")
+                self.notify(title: "DSH Shell 无法启动", body: error.localizedDescription)
             }
         }
     }
@@ -193,10 +249,20 @@ final class AppCoordinator: ObservableObject {
             appendConsole(.shell, text: "[shell] dsh exited (status \(status))")
         case .autoRestartScheduled(let after):
             appendConsole(.shell, text: "[shell] auto-restart scheduled in \(Int(after))s")
+            notify(title: "DSH Shell：dsh 已退出",
+                   body: "将在 \(Int(after)) 秒后重启。")
         case .autoRestartAttempted:
             appendConsole(.shell, text: "[shell] auto-restart attempting")
         case .autoRestartAborted(let reason):
             appendConsole(.shell, text: "[shell] auto-restart aborted: \(reason)")
+        case .connectionLost(let reason):
+            // The window must stop pretending. Without this the UI stayed on
+            // `.ready(oldURL)`, showing a conversation over a server that is no
+            // longer listening — the "lying window" failure.
+            lastURL = nil
+            state = .failed(reason: reason)
+            appendConsole(.shell, text: "[shell] connection lost: \(reason)")
+            notify(title: "DSH Shell：连接已断开", body: reason)
         }
     }
 

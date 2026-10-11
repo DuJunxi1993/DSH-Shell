@@ -13,6 +13,10 @@ public enum DSHProcessError: Error, LocalizedError, Sendable {
     case timedOutWaitingForURL(Int)
     case noExistingEndpointFound
     case childExitedUnexpectedly(Int32, lastLogLines: [String])
+    case nestedSession(vars: [String])
+    case portInUse(host: String, port: Int)
+    case nonLoopbackHost(String)
+    case attachNeedsFixedPort
 
     public var errorDescription: String? {
         switch self {
@@ -27,12 +31,24 @@ public enum DSHProcessError: Error, LocalizedError, Sendable {
         case .spawnFailedWithDetail(let code, let detail):
             return "Failed to spawn dsh (errno \(code)): \(detail)"
         case .timedOutWaitingForURL(let seconds):
-            return "dsh web did not print its URL line within \(seconds)s. Check for a stale `dsh web` process (`pkill -f 'dsh web'`) and try again."
+            return "dsh web did not print its authenticated URL line within \(seconds)s. "
+                + "dsh's startup loader gates that line, and a port that answers is not enough — "
+                + "the index answers 401 without the token. See the console tab for dsh's own output."
         case .noExistingEndpointFound:
-            return "No existing dsh web instance was found on loopback ports."
+            return "No dsh instance is listening on the configured port."
         case .childExitedUnexpectedly(let code, let lines):
             let tail = lines.suffix(5).joined(separator: "\n")
             return "dsh exited with status \(code). Last log:\n\(tail)"
+        case .nestedSession(let vars):
+            return "Refusing to start inside a harness session (found \(vars.joined(separator: ", "))). "
+                + "A second dsh contends for the same ports, proxy and session store, and the damage lands on the outer session."
+        case .portInUse(let host, let port):
+            return "Nothing was started: \(host):\(port) is already in use. "
+                + "Switch `launchMode` to `attach` to use the instance that owns it — this shell never kills a dsh it did not spawn."
+        case .nonLoopbackHost(let host):
+            return "Refusing to bind \(host): dsh listens on loopback only."
+        case .attachNeedsFixedPort:
+            return "attach mode needs a known port to adopt. Set `preferredPort` in Preferences."
         }
     }
 }
@@ -48,12 +64,28 @@ public enum DSHProcessEvent: Sendable {
     case autoRestartScheduled(after: TimeInterval)
     case autoRestartAttempted
     case autoRestartAborted(reason: String)
+    /// The child died and the shell cannot bring it back on its own.
+    ///
+    /// Without this the window keeps showing the last good URL over a server
+    /// that is no longer listening — a window that lies. Every path that loses
+    /// the child emits it, so "the dsh is gone" is always something the UI can
+    /// show rather than something only the log knows.
+    case connectionLost(reason: String)
 }
 
 /// Owns the `dsh web` child process. Never invokes a shell, so user input
 /// cannot become argv injection. Implemented as an actor so all state mutation
 /// happens under Swift's structured concurrency isolation rules.
 public actor DSHProcessManager {
+    /// How many times a crashed dsh is respawned before the shell gives up and
+    /// tells the user. Bounded on purpose: an unbounded restart loop fights the
+    /// contract that closing the window ends the session.
+    public static let maxRestartAttempts = 3
+    public static let maxRestartDelay: TimeInterval = 30
+    /// How long a child gets to honour SIGTERM before SIGKILL. Long enough for
+    /// dsh to close its listeners and release the port cleanly.
+    public static let terminationGrace: TimeInterval = 5
+
     public let settings: ShellSettings
     private let resolver: EndpointResolver
 
@@ -116,19 +148,22 @@ public actor DSHProcessManager {
 
     private func startSpawn() async throws -> URL {
         if process != nil { throw DSHProcessError.alreadyRunning }
+
+        // Both guards run before `spawn` and nowhere else. `attach` forks
+        // nothing, so it cannot collide and is exempt.
+        try Preflight.checkSpawn(settings: settings)
+
         state = .launching
         broadcast(.launching)
-
-        // An orphaned `dsh web` from a previous session may still hold the
-        // fixed preferred port. Reclaim it (only if it truly serves the dsh
-        // SPA) so the fresh child can bind.
-        await Self.reclaimPort(host: settings.listenHost, port: settings.preferredPort)
 
         let argv = Self.buildArgv(settings: settings)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: settings.dshBinaryPath)
         process.arguments = Array(argv.dropFirst())
         process.environment = Self.childEnvironment(dshBinaryPath: settings.dshBinaryPath)
+        // Never inherit the app's stdin: dsh would see a terminal it has no
+        // business reading, and a close would race whatever is on it.
+        process.standardInput = FileHandle.nullDevice
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -155,6 +190,11 @@ public actor DSHProcessManager {
 
         self.process = process
         let pid = process.processIdentifier
+        // Recorded the instant the PID exists, not when `start()` returns.
+        // `start()` blocks for seconds waiting for the URL line, and a close
+        // during that window finds neither this manager's teardown nor a stored
+        // child — dsh would survive holding the port. The invariant is: while we
+        // own, or are about to own, a dsh, its PID is recorded.
         lastSpawnedPID = pid
         broadcast(.launched(pid: pid))
 
@@ -170,8 +210,10 @@ public actor DSHProcessManager {
             await self?.drain(handle: errHandle, isErr: true)
         }
 
-        // Wait for endpoint resolution with a per-instance deadline.
+        // Wait for the authenticated URL line. The port is only ever logged,
+        // never adopted: see `probePortLiveness`.
         let deadline = Date().addingTimeInterval(TimeInterval(settings.spawnTimeoutSeconds))
+        var announcedListening = false
         while true {
             if Task.isCancelled {
                 await terminateSpawnedChild()
@@ -187,59 +229,47 @@ public actor DSHProcessManager {
                 await terminateSpawnedChild()
                 throw DSHProcessError.spawnFailed(-1)
             default:
-                // The URL line can be late by 30s+ (dsh's own startup loader
-                // gates it) while the HTTP server is already up. With a fixed
-                // preferred port we race the URL line against a health probe
-                // of the known port and adopt whichever confirms first, so a
-                // slow loader never makes the user wait.
+                // The socket binds seconds before dsh's plugin Loader settles and
+                // prints the URL. Telling the two apart is the difference between
+                // "dsh is slow" and "dsh is broken" in the log — and it is the
+                // only thing a port probe is good for.
+                if !announcedListening, await probePortLiveness() {
+                    announcedListening = true
+                }
                 if Date() >= deadline {
-                    if let url = await adoptByProbe() {
-                        return url
-                    }
                     await terminateSpawnedChild()
                     throw DSHProcessError.timedOutWaitingForURL(settings.spawnTimeoutSeconds)
                 }
-                if let url = await probeFixedPort() {
-                    return url
-                }
-                try? await Task.sleep(nanoseconds: 200_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(settings.pollIntervalSeconds * 1_000_000_000))
             }
         }
     }
 
-    /// One-shot health probe of the fixed preferred port. Returns the URL
-    /// when the endpoint already serves the dsh SPA; nil when not applicable
-    /// or not yet up.
-    private func probeFixedPort() async -> URL? {
-        guard settings.preferredPort > 0,
-              ["127.0.0.1", "localhost"].contains(settings.listenHost) else {
-            return nil
+    /// Ask the port we asked for whether anything is listening, purely to log
+    /// it. This can never produce a URL.
+    ///
+    /// The earlier implementation adopted a probed `http://host:port/` as the
+    /// endpoint. That URL has no `?token=`, and `authorizeIndex` answers `401`
+    /// to it — verified against real dsh — so the feature could only ever
+    /// produce a white window. Against a dsh that requires the token it was
+    /// silently inert; against one that does not, it worked. The behaviour of
+    /// the app therefore depended on the dsh version, which is the worst
+    /// possible place for it.
+    private func probePortLiveness() async -> Bool {
+        guard settings.preferredPort > 0, Preflight.isLoopback(settings.listenHost) else {
+            return false
         }
-        guard let process, process.isRunning else { return nil }
-        guard let url = URL(string: "http://\(settings.listenHost):\(settings.preferredPort)/") else { return nil }
+        guard let process, process.isRunning else { return false }
+        guard let url = URL(string: "http://\(settings.listenHost):\(settings.preferredPort)/") else {
+            return false
+        }
         let probe = HealthProbe()
-        if await probe.probe(url: url).isAdoptable {
-            logger.debug("adopted endpoint by probe (URL line not yet emitted): \(url.absoluteString, privacy: .public)")
-            state = .ready(url)
-            broadcast(.endpointResolved(url))
-            return url
+        let result = await probe.probe(url: url, timeout: 1.0)
+        if result.reachable {
+            logger.info("port \(self.settings.preferredPort, privacy: .public) is listening (HTTP \(result.statusCode, privacy: .public)); still waiting for the authenticated URL line")
+            return true
         }
-        return nil
-    }
-
-    /// When the child printed no URL line but we know its expected port, wait
-    /// for the HTTP endpoint to come up and adopt it. `dsh web` takes 1-60s+
-    /// to settle depending on startup work; the probe tolerates that latency
-    /// while the URL-line parse alone would give up.
-    private func adoptByProbe() async -> URL? {
-        let deadline = Date().addingTimeInterval(30)
-        while Date() < deadline {
-            if let url = await probeFixedPort() {
-                return url
-            }
-            try? await Task.sleep(nanoseconds: 500_000_000)
-        }
-        return nil
+        return false
     }
 
     /// Best-effort teardown of the just-spawned child when startup fails
@@ -298,7 +328,10 @@ public actor DSHProcessManager {
         appendLog(line)
         broadcast(.stdoutLine(line))
         if case .ready = state { return }
-        if let url = resolver.resolveURL(in: line) {
+        // Only stdout is a URL source. stderr carries dsh's `bili` proxy URL,
+        // which is not the UI.
+        if let url = resolver.resolveURL(in: line, expectedPort: settings.preferredPort) {
+            noteEndpointResolved()
             state = .ready(url)
             broadcast(.endpointResolved(url))
         }
@@ -314,49 +347,94 @@ public actor DSHProcessManager {
         if lastLogLines.count > 200 { lastLogLines.removeFirst(lastLogLines.count - 200) }
     }
 
+    /// The child died. This is the single place that decides whether the shell
+    /// tries again or gives up, and every outcome is broadcast — including the
+    /// ones that used to be silent.
     private func handleChildExit(status: Int32) {
         lastSpawnedPID = nil
         appendLog("[exit] status=\(status)")
         broadcast(.childExited(status: status))
         if case .shuttingDown = state { return }
-        if settings.autoRestartOnCrash && restartAttempts == 0 {
+
+        if settings.autoRestartOnCrash, restartAttempts < Self.maxRestartAttempts {
             restartAttempts += 1
-            let delay: TimeInterval = min(30, pow(2.0, Double(restartAttempts)))
+            // A real exponential ladder. The previous code incremented a counter
+            // that was never reset and guarded on it being zero, so exactly one
+            // restart ever happened, always after 2s, and both the cap and the
+            // exponential shape were unreachable.
+            let delay = min(Self.maxRestartDelay, pow(2.0, Double(restartAttempts)))
             broadcast(.autoRestartScheduled(after: delay))
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 guard let self else { return }
                 await self.attemptAutoRestart()
             }
-        } else {
-            state = .failed(reason: "Child exited with status \(status).")
+            return
         }
+
+        // Out of attempts. Say so, and say why — a window still showing the
+        // last conversation over a dead server is the failure this exists to
+        // prevent.
+        let reason = status == 0
+            ? "dsh exited normally while the window was still open."
+            : "dsh exited with status \(status)"
+            + " and the shell did not restart it (\(restartAttempts)/\(Self.maxRestartAttempts) attempts)."
+        state = .failed(reason: reason)
+        broadcast(.connectionLost(reason: reason))
+    }
+
+    /// A successful endpoint resets the ladder, so a dsh that crashes once an
+    /// hour is not treated as a crash loop.
+    private func noteEndpointResolved() {
+        restartAttempts = 0
     }
 
     private func attemptAutoRestart() async {
+        if case .shuttingDown = state { return }
         broadcast(.autoRestartAttempted)
         process = nil
         do {
             _ = try await startSpawn()
         } catch {
-            state = .failed(reason: "Auto-restart failed: \(error.localizedDescription)")
-            broadcast(.autoRestartAborted(reason: error.localizedDescription))
+            let reason = "dsh could not be restarted: \(error.localizedDescription)"
+            state = .failed(reason: reason)
+            broadcast(.autoRestartAborted(reason: reason))
+            broadcast(.connectionLost(reason: reason))
         }
     }
 
     // MARK: - Attach
 
     private func startAttach() async throws -> URL {
-        let probe = AttachProbe()
+        // Only the configured port. The previous implementation swept all 16384
+        // macOS ephemeral ports with 32-way concurrency, ignored `preferredPort`
+        // entirely, and could adopt a dsh belonging to a different session —
+        // then, by design, never kill it.
+        //
+        // Note what attach can and cannot do: the URL it adopts has no token, so
+        // the index answers 401. That is not a defect to work around — it is
+        // information. Attaching to a token-fenced dsh requires that dsh's
+        // authenticated URL, which only its owner can print. `attach` therefore
+        // suits a dsh started with the fence already satisfied (a LaunchAgent,
+        // or one whose cookie jar is shared); for a fresh `dsh web` the answer
+        // is to print its URL line and paste it into Preferences.
+        guard settings.preferredPort > 0 else {
+            state = .failed(
+                reason: "attach mode needs a fixed port. Set `preferredPort` in Preferences.")
+            throw DSHProcessError.attachNeedsFixedPort
+        }
+        let probe = AttachProbe(host: settings.listenHost, port: settings.preferredPort)
         inFlightAttach?.cancel()
         let task = Task<URL?, Error> { await probe.findExisting() }
         inFlightAttach = task
-        state = .connecting(host: "127.0.0.1", port: 0)
+        state = .connecting(host: settings.listenHost, port: settings.preferredPort)
         do {
             guard let url = try await task.value else {
-                state = .failed(reason: "No dsh instance found on loopback ports.")
+                state = .failed(
+                    reason: "Nothing is listening on \(settings.listenHost):\(settings.preferredPort).")
                 throw DSHProcessError.noExistingEndpointFound
             }
+            noteEndpointResolved()
             state = .ready(url)
             broadcast(.endpointResolved(url))
             return url
@@ -370,19 +448,42 @@ public actor DSHProcessManager {
 
     public func stop() async {
         state = .shuttingDown
-        guard let process else { return }
-        let pid = process.processIdentifier
+
+        // Signal the child first, and always — the previous version returned
+        // early when there was no process, which skipped the reader-task
+        // cancellation and the listener teardown below, leaving the event
+        // stream open forever so any `for await` on it hung.
+        if let process, process.isRunning {
+            let pid = process.processIdentifier
+            process.terminate()
+            let deadline = Date().addingTimeInterval(Self.terminationGrace)
+            while process.isRunning && Date() < deadline {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            if process.isRunning {
+                logger.warning("dsh pid \(pid, privacy: .public) ignored SIGTERM for \(Int(Self.terminationGrace))s; sending SIGKILL")
+                kill(pid, SIGKILL)
+                // Give the kernel a moment to reap so the port is actually free
+                // by the time we return; the app's exit path depends on it.
+                let hard = Date().addingTimeInterval(2)
+                while process.isRunning && Date() < hard {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+            }
+        }
+        // Clear the record only after the child is gone, so a concurrent
+        // teardown path that reads `currentChildPID()` never sees a stale PID
+        // it could signal twice — or misses the one it needed.
         lastSpawnedPID = nil
-        process.terminate()
-        let deadline = Date().addingTimeInterval(5)
-        while process.isRunning && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-        if process.isRunning {
-            kill(pid, SIGKILL)
-        }
+        process = nil
+
         stdoutTask?.cancel()
         stderrTask?.cancel()
+        stdoutTask = nil
+        stderrTask = nil
+        inFlightAttach?.cancel()
+        inFlightAttach = nil
+
         for c in listeners.values { c.finish() }
         listeners.removeAll()
     }
@@ -411,7 +512,11 @@ public actor DSHProcessManager {
         // the shell's own surface, so never hand off to an external browser.
         argv.append("--no-open")
         argv.append(contentsOf: ["--host", settings.listenHost])
-        if settings.preferredPort >= 0 {
+        // 0 means "let the OS pick", so the flag is omitted entirely rather
+        // than passed as `--port 0`. A literal 0 is ambiguous — whether dsh
+        // treats it as "kernel assigns" has never been verified against a real
+        // dsh, and omitting the flag is the spelling that cannot be misread.
+        if settings.preferredPort > 0 {
             argv.append(contentsOf: ["--port", String(settings.preferredPort)])
         }
         for host in settings.trustedHosts {
@@ -420,50 +525,45 @@ public actor DSHProcessManager {
         return argv
     }
 
-    /// Kills whatever process listens on `port` when it serves the dsh SPA.
-    /// This is the orphan reaper: `dsh web` spawned by a previous app session
-    /// survives `pkill`/crashes (SIGTERM does not run our cleanup), and with a
-    /// fixed preferred port a leftover instance would make the next spawn die
-    /// with EADDRINUSE. We only touch listeners that pass the dsh probe, so a
-    /// user service squatting on the same port is left alone.
-    static func reclaimPort(host: String, port: Int) async {
-        guard port > 0, ["127.0.0.1", "localhost"].contains(host) else { return }
-        guard let url = URL(string: "http://\(host):\(port)/") else { return }
-        let probe = HealthProbe()
-        guard await probe.probe(url: url, timeout: 0.8).isAdoptable else { return }
+    // NOTE: the orphan reaper that used to live here has been removed. It ran
+    // `lsof` to find whoever held the configured port and killed it, which is
+    // wrong twice over:
+    //
+    //   - It destroyed a `dsh web` the operator started by hand — possibly one
+    //     they were actively using — merely by opening the app.
+    //   - Its identification test could not work. It only killed a port owner
+    //     that answered an *unauthenticated* request with the dsh SPA, and a
+    //     token-fenced dsh answers `401` to exactly that. So against a current
+    //     dsh the reaper never fired, and the orphan scenario it was sold as
+    //     solving could not occur through it either.
+    //
+    // `Preflight.checkPortOwnership` replaces it: refuse to start, and name
+    // `attach` as the alternative. A second dsh cannot share a port anyway, and
+    // the user's alternative is already implemented.
 
-        let lsof = Process()
-        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        lsof.arguments = ["-tiTCP:\(port)", "-sTCP:LISTEN"]
-        let pipe = Pipe()
-        lsof.standardOutput = pipe
-        lsof.standardError = Pipe()
-        do {
-            try lsof.run()
-        } catch {
-            return
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        lsof.waitUntilExit()
-        for raw in String(data: data, encoding: .utf8)?.split(separator: "\n") ?? [] {
-            guard let pid = Int32(raw) else { continue }
-            kill(pid, SIGTERM)
-            let deadline = Date().addingTimeInterval(2)
-            while Date() < deadline, kill(pid, 0) == 0 {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-            if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
-        }
-    }
-
-    /// PATH for the child process. Launching the app from Finder gives the
-    /// process a minimal PATH (no Homebrew or npm locations), while `dsh` is a
-    /// node script whose shebang is `#!/usr/bin/env node`; without `node` on
-    /// the PATH the exec fails and the app reports "Failed to spawn dsh".
-    /// Rebuild a sane PATH from common node install locations plus the
-    /// app's own PATH.
+    /// Environment for the child process.
+    ///
+    /// Two jobs, and the second is the one that used to be missing.
+    ///
+    /// **PATH.** Launching the app from Finder gives the process a minimal PATH
+    /// (no Homebrew or npm locations), while `dsh` is a node script whose
+    /// shebang is `#!/usr/bin/env node`; without `node` on the PATH the exec
+    /// fails and the app reports "Failed to spawn dsh".
+    ///
+    /// **Strip the harness markers.** The previous version copied the entire
+    /// parent environment, so a `DSH_SESSION_ID` / `DSH_PROFILE` / `DSH_WEB_URL`
+    /// belonging to an *enclosing* harness session was handed to the child dsh.
+    /// That child would then believe it is inside a session, contend for the
+    /// same ports and session store, and the damage lands on the outer session.
+    /// We never *set* a `DSH_*` variable to mark our own child: the same
+    /// scrubbing that makes the markers trustworthy would strip it before dsh
+    /// ever saw it.
     static func childEnvironment(dshBinaryPath: String) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+        for key in Preflight.harnessMarkers {
+            env.removeValue(forKey: key)
+        }
+
         var dirs: [String] = []
         dirs.append((dshBinaryPath as NSString).deletingLastPathComponent)
         dirs.append(contentsOf: ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"])

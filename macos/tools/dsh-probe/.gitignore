@@ -1,0 +1,3 @@
+# The compiled probe. Build with the DEVELOPER_DIR prefix documented in
+# docs/dsh-desktop-contract.md §7; never commit the binary.
+dsh-probe

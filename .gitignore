@@ -1,9 +1,15 @@
-# Editor and OS noise only. Build output is ignored by each implementation's
-# own .gitignore (windows/.gitignore, macos/.gitignore).
-
+# Repository-root ignore rules.
+#
+# `macos/.gitignore` covers the Swift build products; these are the leftovers
+# that a restructure can strand at the root. They are build output, not source,
+# and must never reach a commit.
 .DS_Store
-Thumbs.db
-desktop.ini
-*.swp
-.idea/
-.vscode/
+.build/
+.swiftpm/
+build/
+DerivedData/
+
+# Stray files from ad-hoc shell work. If one of these turns out to be real
+# source, it belongs in a directory with a README, not loose at the root.
+l
+*.icns

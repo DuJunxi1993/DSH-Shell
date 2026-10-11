@@ -27,12 +27,24 @@ public final class SettingsStore: @unchecked Sendable {
     public func load() -> ShellSettings {
         queue.sync {
             if let cached { return cached }
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                let defaults = ShellSettings.default
+                cached = defaults
+                return defaults
+            }
             do {
                 let data = try Data(contentsOf: fileURL)
                 let decoded = try JSONDecoder().decode(ShellSettings.self, from: data)
                 cached = decoded
                 return decoded
             } catch {
+                // Previously this returned defaults with no log line at all, so
+                // a corrupt or incompatible settings file was indistinguishable
+                // from a first launch — and the user's configuration simply
+                // stopped applying.
+                logger.error(
+                    "settings at \(self.fileURL.path, privacy: .public) could not be decoded, falling back to defaults: \(error.localizedDescription, privacy: .public)"
+                )
                 let defaults = ShellSettings.default
                 cached = defaults
                 return defaults

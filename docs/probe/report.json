@@ -1,0 +1,852 @@
+{
+  "dshPid" : 12523,
+  "dshVersion" : "0.2.0-rc.2",
+  "modes" : {
+    "baseline" : {
+      "appRegion" : {
+        "computed" : null,
+        "supports" : false,
+        "webkitSupported" : false
+      },
+      "bootCardText" : null,
+      "bootScreenPresent" : false,
+      "bootWaitAttempts" : 1,
+      "bootWaitTimedOut" : false,
+      "bridgeLog" : [
+
+      ],
+      "columns" : [
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 0,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 280,
+          "width" : 280
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 276,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "absolute",
+          "readsTopClearance" : null,
+          "right" : 284,
+          "width" : 8
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 280,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 280,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "relative",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        }
+      ],
+      "contentBelowStrip" : null,
+      "dragRegionCount" : 3,
+      "dragRegionSample" : {
+        "h" : 60,
+        "text" : "",
+        "w" : 256,
+        "x" : 12,
+        "y" : 6
+      },
+      "frameReservingTop" : null,
+      "fullscreen" : {
+        "chromeTop" : "",
+        "leading" : "",
+        "overlay" : "",
+        "paddingTop" : "0px",
+        "top" : ""
+      },
+      "htmlAttrs" : {
+        "data-ds-theme-source" : "system",
+        "lang" : "zh-CN",
+        "style" : "color-scheme: light;"
+      },
+      "leadingSeat" : null,
+      "mode" : "baseline",
+      "pageErrors" : [
+
+      ],
+      "readyState" : "complete",
+      "topStrip" : [
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 5
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 30
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 60
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 90
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 120
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 200
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 640
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 1160
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "x" : 1270
+        }
+      ],
+      "vars" : {
+        "--dsh-frame-chrome-top" : "",
+        "--dsh-frame-leading-clearance" : "",
+        "--dsh-frame-overlay-top" : "",
+        "--dsh-frame-top-clearance" : "",
+        "--dsh-windows-content-radius" : "",
+        "--dsh-windows-sidebar-width" : "",
+        "--dsh-windows-titlebar-height" : ""
+      },
+      "vh" : 800,
+      "vw" : 1280
+    },
+    "darwin" : {
+      "appRegion" : {
+        "computed" : null,
+        "supports" : false,
+        "webkitSupported" : false
+      },
+      "bootCardText" : "HARNESS Failed to load plugins @deepseek-ai\/dsh-client-shortcuts web boot: 24 entries did not activate @deepseek-ai\/dsh-client-ui-open-in-app: pending (waiting for services: shortcuts, layout) @deepseek-ai\/dsh-client-shortcuts: failed @deepseek-ai\/dsh-client-ui-shortcuts: pending (waiting for service: shortcuts) @deepseek-ai\/dsh-client-ui-layout: pending (waiting for service: shortcuts) @deepseek-",
+      "bootScreenPresent" : true,
+      "bootWaitAttempts" : 87,
+      "bootWaitTimedOut" : true,
+      "bridgeLog" : [
+
+      ],
+      "columns" : [
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 0,
+          "left" : 0,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 1275,
+          "width" : 1275
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 0,
+          "left" : 0,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 1275,
+          "width" : 1275
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 0,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 1275,
+          "width" : 1275
+        }
+      ],
+      "contentBelowStrip" : [
+        {
+          "h" : 960,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 480,
+          "y" : 4
+        },
+        {
+          "h" : 960,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 480,
+          "y" : 16
+        },
+        {
+          "h" : 960,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 480,
+          "y" : 32
+        },
+        {
+          "h" : 22,
+          "tag" : "div",
+          "text" : "Failed to load plugins",
+          "w" : 480,
+          "y" : 40
+        },
+        {
+          "h" : 22,
+          "tag" : "div",
+          "text" : "Failed to load plugins",
+          "w" : 480,
+          "y" : 48
+        },
+        {
+          "h" : 920,
+          "tag" : "div",
+          "text" : "Failed to load plugins\n@",
+          "w" : 480,
+          "y" : 64
+        }
+      ],
+      "dragRegionCount" : 0,
+      "frameReservingTop" : null,
+      "fullscreen" : {
+        "chromeTop" : "0px",
+        "leading" : "",
+        "overlay" : "20px",
+        "paddingTop" : "0px",
+        "top" : "48px"
+      },
+      "htmlAttrs" : {
+        "data-ds-theme-source" : "system",
+        "data-platform" : "darwin",
+        "lang" : "zh-CN"
+      },
+      "leadingSeat" : null,
+      "mode" : "darwin",
+      "pageErrors" : [
+        "console.error: eM@http:\/\/127.0.0.1:3080\/assets\/index-5SrrfWpU.js:124:62223\nJS@http:\/\/127.0.0.1:3080\/assets\/index-5SrrfWpU.js:124:61680\nasync run@http:\/\/127.0.0.1:3080\/assets\/index-5SrrfWpU.js:126:4429"
+      ],
+      "readyState" : "complete",
+      "topStrip" : [
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 1275,
+          "x" : 5
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 1275,
+          "x" : 30
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 1275,
+          "x" : 60
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 1275,
+          "x" : 90
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 1275,
+          "x" : 120
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 1275,
+          "x" : 200
+        },
+        {
+          "h" : 24,
+          "tag" : "div",
+          "text" : "HARNESS",
+          "w" : 85,
+          "x" : 640
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 1275,
+          "x" : 1160
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "HARNESS\nFailed to load p",
+          "w" : 1275,
+          "x" : 1270
+        }
+      ],
+      "vars" : {
+        "--dsh-frame-chrome-top" : "",
+        "--dsh-frame-leading-clearance" : "",
+        "--dsh-frame-overlay-top" : "calc(48px + 20px)",
+        "--dsh-frame-top-clearance" : "48px",
+        "--dsh-windows-content-radius" : "",
+        "--dsh-windows-sidebar-width" : "",
+        "--dsh-windows-titlebar-height" : ""
+      },
+      "vh" : 800,
+      "vw" : 1280
+    },
+    "darwinProxy" : {
+      "appRegion" : {
+        "computed" : null,
+        "supports" : false,
+        "webkitSupported" : false
+      },
+      "bootCardText" : null,
+      "bootScreenPresent" : false,
+      "bootWaitAttempts" : 1,
+      "bootWaitTimedOut" : false,
+      "bridgeLog" : [
+        "get dshDesktopBoot.ready",
+        "call dshDesktopBoot.ready()",
+        "get dshDesktop.keyboard",
+        "get dshDesktop.shortcuts",
+        "get dshDesktop.keyboard.subscribe",
+        "call dshDesktop.keyboard.subscribe\/1",
+        "get dshDesktop.shortcuts.subscribe",
+        "call dshDesktop.shortcuts.subscribe\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.protocolVersion",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1"
+      ],
+      "columns" : [
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 0,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 280,
+          "width" : 280
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 276,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "absolute",
+          "readsTopClearance" : null,
+          "right" : 284,
+          "width" : 8
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 280,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 281,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "relative",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        }
+      ],
+      "contentBelowStrip" : [
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "y" : 4
+        },
+        {
+          "h" : 30,
+          "tag" : "div",
+          "text" : "",
+          "w" : 952,
+          "y" : 16
+        },
+        {
+          "h" : 30,
+          "tag" : "div",
+          "text" : "",
+          "w" : 952,
+          "y" : 32
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 40
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 48
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 64
+        }
+      ],
+      "dragRegionCount" : 4,
+      "dragRegionSample" : {
+        "h" : 52,
+        "text" : "",
+        "w" : 280,
+        "x" : 0,
+        "y" : 0
+      },
+      "frameReservingTop" : null,
+      "fullscreen" : {
+        "chromeTop" : "0px",
+        "leading" : "",
+        "overlay" : "20px",
+        "paddingTop" : "0px",
+        "top" : "48px"
+      },
+      "htmlAttrs" : {
+        "data-ds-theme-source" : "system",
+        "data-platform" : "darwin",
+        "lang" : "zh-CN",
+        "style" : "color-scheme: light;"
+      },
+      "leadingSeat" : null,
+      "mode" : "darwinProxy",
+      "pageErrors" : [
+
+      ],
+      "readyState" : "complete",
+      "topStrip" : [
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 5
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 30
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 60
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 90
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 120
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 200
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 640
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 1160
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 1270
+        }
+      ],
+      "vars" : {
+        "--dsh-frame-chrome-top" : "",
+        "--dsh-frame-leading-clearance" : "",
+        "--dsh-frame-overlay-top" : "calc(48px + 20px)",
+        "--dsh-frame-top-clearance" : "48px",
+        "--dsh-windows-content-radius" : "",
+        "--dsh-windows-sidebar-width" : "",
+        "--dsh-windows-titlebar-height" : ""
+      },
+      "vh" : 800,
+      "vw" : 1280
+    },
+    "windows" : {
+      "appRegion" : {
+        "computed" : null,
+        "supports" : false,
+        "webkitSupported" : false
+      },
+      "bootCardText" : null,
+      "bootScreenPresent" : false,
+      "bootWaitAttempts" : 1,
+      "bootWaitTimedOut" : false,
+      "bridgeLog" : [
+
+      ],
+      "columns" : [
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 0,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 280,
+          "width" : 280
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 276,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "absolute",
+          "readsTopClearance" : null,
+          "right" : 284,
+          "width" : 8
+        },
+        {
+          "borderTopLeftRadius" : "16px",
+          "cls" : 1,
+          "left" : 280,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 280,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "relative",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        }
+      ],
+      "contentBelowStrip" : [
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "y" : 4
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "y" : 16
+        },
+        {
+          "h" : 768,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "y" : 32
+        },
+        {
+          "h" : 768,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "y" : 40
+        },
+        {
+          "h" : 768,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "y" : 48
+        },
+        {
+          "h" : 768,
+          "tag" : "div",
+          "text" : "",
+          "w" : 1280,
+          "y" : 64
+        }
+      ],
+      "dragRegionCount" : 3,
+      "dragRegionSample" : {
+        "h" : 40,
+        "text" : "",
+        "w" : 256,
+        "x" : 12,
+        "y" : 38
+      },
+      "frameReservingTop" : {
+        "height" : 800,
+        "left" : 0,
+        "paddingTop" : "32px",
+        "top" : 0,
+        "width" : 1280
+      },
+      "fullscreen" : {
+        "chromeTop" : "0px",
+        "leading" : "",
+        "overlay" : "20px",
+        "paddingTop" : "0px",
+        "top" : "32px"
+      },
+      "htmlAttrs" : {
+        "data-ds-theme-source" : "system",
+        "data-windows-titlebar" : "",
+        "lang" : "zh-CN",
+        "style" : "--dsh-windows-titlebar-height: 32px; color-scheme: light;"
+      },
+      "leadingSeat" : null,
+      "mode" : "windows",
+      "pageErrors" : [
+
+      ],
+      "readyState" : "complete",
+      "topStrip" : [
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 5
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 30
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 60
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 90
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 120
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 200
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 640
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 1160
+        },
+        {
+          "h" : 800,
+          "tag" : "div",
+          "text" : "预览版说明\n\nDeepSeek Harness ",
+          "w" : 1280,
+          "x" : 1270
+        }
+      ],
+      "vars" : {
+        "--dsh-frame-chrome-top" : "32px",
+        "--dsh-frame-leading-clearance" : "",
+        "--dsh-frame-overlay-top" : "calc(32px + 20px)",
+        "--dsh-frame-top-clearance" : "32px",
+        "--dsh-windows-content-radius" : "",
+        "--dsh-windows-sidebar-width" : "",
+        "--dsh-windows-titlebar-height" : "32px"
+      },
+      "vh" : 800,
+      "vw" : 1280
+    }
+  },
+  "pidStillAliveAfterShutdown" : false,
+  "port" : 3080,
+  "portFreedAfterShutdown" : true,
+  "url" : "http:\/\/127.0.0.1:3080\/?token=TfV6CwCAO5vm05NbLm3cQOllg7JHmZDxIdO4bUc3yfI",
+  "urlAcceptedBecause" : "dsh web: line, loopback, port 3080, token present"
+}

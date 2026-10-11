@@ -22,6 +22,18 @@ struct WebSurfaceView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var bridge: WebBridge?
+        /// Strong owner of the `WKUIDelegate`.
+        ///
+        /// `WKWebView.UIDelegate` is declared `weak` (see `WKWebView.h`:
+        /// `@property (nullable, nonatomic, weak) id <WKUIDelegate> UIDelegate;`),
+        /// so the delegate must be retained by someone else. It used to be a
+        /// local `let` in `makeNSView`, which meant it deallocated at the end of
+        /// that function's scope and `uiDelegate` silently became nil —
+        /// `confirm`/`alert`/`prompt` stopped being routed and every JS dialog
+        /// vanished. `navigationDelegate` is weak too, but the Coordinator is
+        /// retained by SwiftUI, so that one was never at risk. This is the
+        /// reason the whole `DSHShellBridge` ObjC framework exists.
+        let uiDelegate = DSHObjCWebUIDelegate()
 
         let uiLogger = Logger(subsystem: "ai.deepseek.dsh-shell", category: "WebUIDialog")
     }
@@ -52,9 +64,11 @@ struct WebSurfaceView: NSViewRepresentable {
         // are visible to the ObjC runtime regardless of Swift 6 strict
         // concurrency settings — a Swift-only conformance silently dropped
         // every confirm, breaking dsh-session-manager's delete button.
-        let objcDelegate = DSHObjCWebUIDelegate()
-        context.coordinator.uiLogger.notice("objcDelegate init — class=\(String(describing: type(of: objcDelegate)), privacy: .public) isWKUIDelegate=\(objcDelegate is WKUIDelegate ? "true" : "false", privacy: .public)")
-        view.uiDelegate = objcDelegate
+        //
+        // The instance is owned by the Coordinator, not by this scope: the
+        // property is weak, so a local would be gone before the first dialog.
+        context.coordinator.uiLogger.notice("objcDelegate installed — class=\(String(describing: type(of: context.coordinator.uiDelegate)), privacy: .public) owner=\(context.coordinator)")
+        view.uiDelegate = context.coordinator.uiDelegate
         view.navigationDelegate = context.coordinator
         context.coordinator.uiLogger.notice("webView installed — uiDelegate=\(String(describing: view.uiDelegate), privacy: .public) navDelegate=\(String(describing: view.navigationDelegate), privacy: .public) url=\(url.absoluteString, privacy: .public)")
 
@@ -78,13 +92,12 @@ struct WebSurfaceView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        // SwiftUI may reuse the WKWebView across state transitions and drop
-        // delegate references. The ObjC WKUIDelegate is owned by SwiftUI once
-        // assigned, but re-assert it cheaply so a fresh instance is in place
-        // if anything replaced it; the WKNavigationDelegate must follow our
-        // Coordinator (used for diagnostic logs only).
-        if !(webView.uiDelegate is DSHObjCWebUIDelegate) {
-            webView.uiDelegate = DSHObjCWebUIDelegate()
+        // SwiftUI may reuse the WKWebView across state transitions. Both
+        // delegate properties are weak, so re-assert ours each time: if the
+        // webview was recreated, or anything replaced either delegate, the
+        // dialogs and the diagnostic log would go quiet without any error.
+        if webView.uiDelegate !== context.coordinator.uiDelegate {
+            webView.uiDelegate = context.coordinator.uiDelegate
         }
         if webView.navigationDelegate !== context.coordinator {
             webView.navigationDelegate = context.coordinator
