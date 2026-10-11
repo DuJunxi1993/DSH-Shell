@@ -7,8 +7,34 @@ app under `windows/`). The macOS implementation keeps its own history under
 The format is [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Releases are tagged with a `windows-` prefix (`windows-v0.1.0`) because Git tags
+Releases are tagged with a `windows-` prefix (`windows-v0.1.1`) because Git tags
 share one namespace with the macOS implementation's tags.
+
+## [0.1.1] - 2026-10-11
+
+### Fixed
+
+- The window buttons are now legible on a dark page. The glyphs are
+  `currentColor` and resolve to the bar's `color: var(--dsw-alias-label-primary,
+  #16181d)`; that fallback is near-black, so on a dark dsh page — which does not
+  always define the alias — the buttons disappeared. The chrome now measures the
+  surface the bar sits on and picks a foreground with contrast against it, so it
+  follows a theme switch without knowing anything about dsh's theme tokens.
+- Clicking one of the shell's own toasts (a failed startup, a dsh that exited on
+  its own) now raises the window. `tauri-plugin-notification` shows the toast and
+  drops the handle, so the activation handler dies with it and the click was
+  swallowed; the shell's toasts now keep the handle and act on the click.
+
+### Known limitations
+
+- Click-to-focus requires an **installed** build. An unregistered AUMID makes a
+  toast fail to appear at all, so a `cargo run` / `target\release` build claims no
+  AUMID and its toasts are shown without an activation path. Launch from the Start
+  Menu shortcut after installing.
+- A **dsh plugin's** notifications (`new Notification(...)`, e.g.
+  dsh-notification) cannot be made clickable from here. The plugin owns that toast
+  end to end, the packaged-app activation APIs are absent from every available
+  `windows` crate, and the toast carries no launch argument to fall back on.
 
 ## [0.1.0] - 2026-10-04
 
@@ -58,4 +84,5 @@ First release.
 - Layout avoidance is skipped when the page has not changed, and is forced
   after a zoom change; a continuously mutating page can no longer starve it.
 
+[0.1.1]: https://github.com/DuJunxi1993/DSH-Shell/releases/tag/windows-v0.1.1
 [0.1.0]: https://github.com/DuJunxi1993/DSH-Shell/releases/tag/windows-v0.1.0
