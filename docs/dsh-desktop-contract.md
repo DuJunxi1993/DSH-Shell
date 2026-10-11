@@ -11,8 +11,8 @@
 ## 结论摘要
 
 1. **Windows 侧：现有的几何避让大部分是多余的。** 只需设置 `html[data-windows-titlebar]` 与 `--dsh-windows-titlebar-height` 两个属性，dsh 自己完成 caption 预留、拖拽条绘制、内容列左上角圆角、以及全屏 modal 的顶部避让。`platform_adapt.js` 中 `insetColumn` / `clearCorner` / `gutterTopRow` / `layoutSignature` 四套避让应降级为「契约不成立时的兜底」。
-2. **macOS 侧不同：`data-platform` 不是 CSS 钩子，而是运行时开关。** 单独设置会让 dsh Web UI **启动失败**；必须同时提供 `window.dshDesktop` 预加载桥接。实测所需的桥接面只有 **5 个入口**，因此路线可行，但工作量不是「设两个属性」。
-3. **`-webkit-app-region` 在 WKWebView 中不受支持**（四种模式实测均为 `false`）。dsh 的 `data-window-drag` 行在 macOS 下不会自拖，壳必须转发原生拖拽。
+2. **macOS 侧：`data-platform` 不是 CSS 钩子，而是运行时开关。** 单独设置会让 dsh Web UI **启动失败**；必须同时提供 `window.dshDesktopBoot` 与 `window.dshDesktop` 预加载桥接。实测桥接面为 **5 个入口**，并已用手写实现验证：**Web UI 完整启动、48px 顶部预留生效、快捷键输入被 dsh 的真实 listener 接受、零页面错误**。工作量不是「设两个属性」，但也不是 Electron——是一个五个方法的小适配层。
+3. **`-webkit-app-region` 在 WKWebView 中不受支持**（五种模式实测均为 `false`）。dsh 的 `data-window-drag` 行在 macOS 下不会自拖，壳必须转发原生拖拽。这是 macOS 侧采用桌面契约后的唯一新增工作。
 
 ---
 
@@ -36,24 +36,28 @@ dsh web: http://127.0.0.1:3080/?token=<token>
 
 ---
 
-## 二、四模式实测结果
+## 二、五模式实测结果
 
 注入方式统一为 `WKUserScript(.atDocumentStart, mainFrameOnly: true)`。
 
 ### 2.1 汇总
 
-| 指标 | A 基线 | B `data-platform=darwin` | C `data-windows-titlebar` | D darwin + 桥接 |
-|---|---|---|---|---|
-| **Web UI 启动成功** | ✅ | ❌ **启动失败** | ✅ | ✅ |
-| `--dsh-frame-top-clearance` | — | `48px` | `32px` | `48px` |
-| `--dsh-frame-overlay-top` | — | `calc(48px + 20px)` | `calc(32px + 20px)` | `calc(48px + 20px)` |
-| `--dsh-frame-chrome-top` | — | — | `32px` | — |
-| **frame 自留顶部 padding** | 无 | 无（未渲染） | ✅ **`padding-top: 32px`** | 无（侧栏走 52px 顶条路径） |
-| **内容列左上圆角** | `0px` | `0px` | ✅ **`16px`** | `0px` |
-| 内容起始 y | ~0 | — | **32** | ~40（侧栏顶条） |
-| `[data-window-drag]` 元素数 | 3 | 0（未渲染） | 3 | **4** |
-| `CSS.supports('-webkit-app-region','drag')` | **false** | **false** | **false** | **false** |
-| `shell.leading` seat | 未挂载 | 未挂载 | 未挂载 | 未挂载（侧栏展开时不挂载） |
+| 指标 | A 基线 | B `data-platform=darwin` | C `data-windows-titlebar` | D darwin + Proxy 桩 | E darwin + 真实桥接 |
+|---|---|---|---|---|---|
+| **Web UI 启动成功** | ✅ | ❌ **启动失败** | ✅ | ✅ | ✅ |
+| `--dsh-frame-top-clearance` | — | `48px` | `32px` | `48px` | `48px` |
+| `--dsh-frame-overlay-top` | — | `calc(48px + 20px)` | `calc(32px + 20px)` | `calc(48px + 20px)` | `calc(48px + 20px)` |
+| `--dsh-frame-chrome-top` | — | — | `32px` | — | — |
+| **frame 自留顶部 padding** | 无 | 无（未渲染） | ✅ **`padding-top: 32px`** | 无（侧栏走 52px 顶条路径） | 无（同左） |
+| **内容列左上圆角** | `0px` | `0px` | ✅ **`16px`** | `0px` | `0px` |
+| 内容起始 y | ~0 | — | **32** | ~40（侧栏顶条） | ~40 |
+| `[data-window-drag]` 元素数 | 3 | 0（未渲染） | 3 | **4** | **4** |
+| `CSS.supports('-webkit-app-region','drag')` | **false** | **false** | **false** | **false** | **false** |
+| `shell.leading` seat | 未挂载 | 未挂载 | 未挂载 | 未挂载 | 未挂载 |
+| 快捷键输入被 dsh 的真实 listener 接受 | — | — | — | — | ✅ `Code+Meta` |
+| 页面错误数 | 0 | 1 | 0 | 0 | **0** |
+
+D 与 E 的截图**逐字节相同**：布局不取决于桩的保真度，只取决于 dsh 是否应答契约。
 
 全屏态收敛（`html[data-fullscreen]`）：Windows 模式 `--dsh-frame-chrome-top` 由 `32px` → `0px`，`--dsh-frame-overlay-top` 由 `calc(32px + 20px)` → `20px`；darwin 模式同样收敛。**契约在进入全屏时自动处理，壳无需干预。**
 
@@ -132,23 +136,47 @@ BOOT CARD: HARNESS / Failed to load plugins
 
 ---
 
-## 四、macOS 桌面宿主需要实现什么（Proxy 实测枚举）
+## 四、macOS 桌面宿主需要实现什么（实测枚举 + 真实实现验证）
 
-D 模式用 Proxy 记录 dsh 对预加载的全部访问，67 次访问收敛为 **5 个入口**：
+D 模式用 Proxy 记录 dsh 对预加载的全部访问，67 次访问收敛为 **5 个入口**。
+E 模式则按发布的类型声明手写实现，验证它不是「理论上可实现」而是**真的能跑**。
 
-| # | 入口 | 调用次数 | 说明 |
-|---|---|---|---|
-| 1 | `dshDesktopBoot.ready()` | 1 | 返回 `{ injections, streamBaseUrl }`；dsh 据此设 `window.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl }` 并应用注入行（`global` / `script` / `script-src` / `style` / `html`） |
-| 2 | `dshDesktop.keyboard.subscribe(listener)` | 1 | 订阅原生键盘/menu/iframe/webview 输入；`DesktopKeyboardApi` 实测类型只有 2 个方法：`subscribe(listener)` 与 `closeWindow(revision)` |
-| 3 | `dshDesktop.shortcuts.get(definitions)` | 29 | 读取当前快捷键配置快照 |
-| 4 | `dshDesktop.shortcuts.subscribe(...)` | 1 | 订阅配置变更 |
-| 5 | `dshDesktop.protocolVersion` | 1 | 版本协商 |
+| # | 入口 | 实测调用 | 返回值形状 | 来源 |
+|---|---|---|---|---|
+| 1 | `dshDesktopBoot.ready()` | 1 | `Promise<{ injections: InjectionRow[], streamBaseUrl: string }>`；dsh 随后设 `window.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl }` 并应用注入行 | `dsh-web-frontend/dist/assets/index-*.js` |
+| 2 | `dshDesktop.keyboard.subscribe(listener)` | 1 | 返回取消函数。`DesktopShortcutApi` 只有 `subscribe` 与 `closeWindow(revision)` 两个方法 | `dsh-client-shortcuts/lib/types/native.d.ts` |
+| 3 | `dshDesktop.shortcuts.get(definitions)` | **28**（每条已注册命令一次） | `ShortcutPersistence` 快照：`{ revision: uuid, sequence, document: { schemaVersion, profiles }, status, error, usingDefaults }` | 同上 + `lib/client.js` |
+| 4 | `dshDesktop.shortcuts.subscribe(...)` | 1 | 取消函数 | 同上 |
+| 5 | `dshDesktop.protocolVersion` | 1 | 版本协商值 | 实测 |
 
-对应能力声明见 `dsh-client-shortcuts/lib/types/native.d.ts` 与 `lib/types/protocol.d.ts`。
+E 模式结果：**Web UI 首次轮询即启动成功**（`attempts: 1`，未超时），零页面错误，`--dsh-frame-top-clearance: 48px` 生效，`[data-window-drag]` 由 3 增至 4，并合成一个 `Code+Meta` 的 `DesktopShortcutInput` 推过 dsh 真实注册的 listener，**未被拒绝**。
 
-**结论**：macOS 桌面运行时是可达的，且桥接面很小——不需要 Electron。但它**不是**「设两个属性」，而是「成为真正的桌面宿主」。
+### 4.1 一个必须记录的坑
 
----
+第一次手写尝试定义了 `dshDesktop` 却**漏了 `dshDesktopBoot`**，Web UI 卡在启动屏 90 秒超时。真正抛错的是后者——dsh 在挂载任何东西之前先 `await` 它的 `ready()`，所以没有预加载桥接的文档根本不会启动完。
+
+`DesktopShortcutInput` 的形状（实测由类型声明确认）：
+
+```ts
+{ revision } & (
+  { kind: 'menu', commandId } |
+  { kind: 'keyboard' | 'iframe' | 'webview',
+    frameName, code, secondCode?, control, alt, shift, meta, repeat }
+)
+```
+
+### 4.2 桥接能换来什么
+
+| 能力 | 说明 |
+|---|---|
+| dsh 自留 48px 顶部 | `ShellScene.swift` 里 1.5 秒 `Timer` 轮询重断言 `fullSizeContentView` 的整段 workaround 可以退休——它当初是在和 AppKit 打架，而 dsh 那边本来就有答案 |
+| macOS vibrancy 侧栏样式 | dsh 自己的 `[data-platform=darwin]` 侧栏渐变 |
+| 原生快捷键走 dsh 的命令注册表 | 与 DOM 固定动作分层，`⌘`-family 键不再和浏览器冲突 |
+| `shell.leading` seat | 侧栏折叠时 dsh 自己挂载窗口 chrome 位（本次四轮侧栏均展开，未观测到挂载） |
+
+### 4.3 桥接**不能**解决的
+
+**`-webkit-app-region` 在 WKWebView 中不被支持**（五种模式实测全部 `false`），它是 Blink 属性。因此 dsh 的 `[data-window-drag]` 行在 macOS 下**不会自拖**，壳必须自己把 `mousedown` 转发到 `NSWindow.performDragOperation(_:)`。这是采用桌面契约后 macOS 侧唯一的新增工作，也是它与 Windows 侧的根本差异。
 
 ## 五、对现有实现的直接影响
 
@@ -163,11 +191,13 @@ D 模式用 Proxy 记录 dsh 对预加载的全部访问，67 次访问收敛为
 
 ## 六、未覆盖 / 待补测
 
-1. **WebView2 上的实测**。C 模式的预留与圆角结论可迁移，但 `-webkit-app-region` 在 WebView2 上是否生效、以及 wry 的无边框窗口边缘命中测试是否与之冲突，需在 Windows 上复测。
-2. **侧栏折叠态**。本轮四种模式下侧栏均为展开态，`shell.leading` seat（折叠时才挂载）与 `--dsh-frame-leading-clearance`（160px / 全屏 84px）未观测到。
-3. **`injections` 的实际内容**。D 模式用 Proxy 桩返回空 Promise，未验证 `dshDesktopBoot.ready()` 的真实注入行会加载什么。
-4. **`protocolVersion` 协商语义**。只观测到被读取，未确认版本不匹配时的降级行为。
-5. **DSH 版本绑定**。全部结论基于 `0.2.0-rc.2`。dsh 为 pre-1.0，契约可能变更；建议将本工具纳入回归。
+1. **WebView2 上的实测（最高优先级）。** C 模式的预留与圆角结论可迁移，但两点不可迁移：`-webkit-app-region` 在 WebView2 上是否生效，以及 wry 的无边框窗口边缘命中测试是否与之冲突。另外 Windows 侧走的是 `window.eval`（`initialization_script` 到不了远程 origin，受 dsh CSP 所限），也就是契约在**页面加载后**才声明，而本测量用 `WKUserScript(.atDocumentStart)`——需要实机确认没有可见跳变。
+2. **侧栏折叠态**。五轮测量中侧栏均为展开态，`shell.leading` seat（仅折叠时挂载）与 `--dsh-frame-leading-clearance`（160px / 全屏 84px）未观测到。
+3. **`injections` 的实际内容**。E 模式返回空数组，未验证真实注入行会加载什么（`global` / `script` / `script-src` / `style` / `html` 五种 kind）。
+4. **`protocolVersion` 协商语义**。只观测到被读取，未确认版本不匹配时的降级行为；E 模式返回 `1`。
+5. **原生拖拽的手感**。§4.3 的结论是机制层面的：`performDragOperation(_:)` 可用。未验证的是双击标题栏最大化、按住时的光标反馈、以及拖拽与页面文本选择的冲突消解——这些只能靠手测。
+6. **`shortcuts.edit` 与 `recording`**。E 模式提供了实现但未验证往返；真实宿主需要写入 `keybindings.json`（dsh 侧称之为 device-local `userData`）。
+7. **DSH 版本绑定**。全部结论基于 `0.2.0-rc.2`。dsh 为 pre-1.0，契约可能变更；建议将本工具纳入回归。
 
 ---
 

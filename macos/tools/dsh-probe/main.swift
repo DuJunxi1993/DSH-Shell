@@ -199,7 +199,7 @@ func portIsFree(_ port: Int) -> Bool {
 // MARK: - Injection
 
 enum Mode: String, CaseIterable {
-    case baseline, darwin, windows, darwinProxy
+    case baseline, darwin, windows, darwinProxy, darwinReal
 
     var script: String {
         switch self {
@@ -245,6 +245,118 @@ enum Mode: String, CaseIterable {
             document.documentElement.dataset.platform='darwin';
             window.dshDesktop = stub('dshDesktop');
             window.dshDesktopBoot = stub('dshDesktopBoot');
+            """
+        case .darwinReal:
+            // A hand-written bridge, as opposed to the Proxy above. The Proxy
+            // answers every property with another Proxy, which is how it proved
+            // the surface is only five entries wide; it cannot say whether a real
+            // implementation boots, because it never returns a well-typed value
+            // for any of them.
+            //
+            // Shapes taken from the shipped type declarations rather than guessed:
+            //   shortcuts.get  -> ShortcutPersistence's snapshot
+            //                       { revision: uuid, sequence, document, status, error, usingDefaults }
+            //   keyboard       -> DesktopKeyboardApi { subscribe(listener), closeWindow(revision) }
+            //   DesktopShortcutInput = { revision } & ({ kind:'menu', commandId }
+            //                       | { kind:'keyboard', frameName, code, secondCode?, control,
+            //                           alt, shift, meta, repeat })
+            //
+            // Note what the earlier hand-written attempt got wrong, because it is
+            // the kind of mistake that costs an afternoon: it defined `dshDesktop`
+            // and stopped. `dshDesktopBoot` is the one that actually throws —
+            // dsh awaits its `ready()` before mounting anything, so a document
+            // with no preload bridge never finishes booting at all.
+            return """
+            window.__PROBE_MODE__='darwinReal';
+            window.__PROBE_BRIDGE_LOG__=[];
+            document.documentElement.dataset.platform='darwin';
+            (function () {
+              const log = (m) => { (window.__PROBE_BRIDGE_LOG__ = window.__PROBE_BRIDGE_LOG__ || []).push(m); };
+
+              // 1. The boot bridge. dsh awaits this before mounting, so an
+              //    absent or rejecting `ready()` is a hard boot failure.
+              //    `injections` is a list of rows (kind: global|script|script-src|
+              //    style|html); none are needed when the host owns no assets.
+              window.dshDesktopBoot = {
+                ready: () => {
+                  log('dshDesktopBoot.ready() -> injections:[] streamBaseUrl:' + location.origin);
+                  return Promise.resolve({ injections: [], streamBaseUrl: location.origin });
+                },
+                failed: (err) => log('dshDesktopBoot.failed: ' + err)
+              };
+
+              let keyboardListener = null;
+              let shortcutListener = null;
+
+              window.dshDesktop = {
+                protocolVersion: 1,
+
+                // 2. Native keyboard. The host intercepts complete chords and
+                //    forwards them; DOM input keeps driving dsh's fixed actions.
+                keyboard: {
+                  subscribe: (listener) => {
+                    keyboardListener = listener;
+                    log('keyboard.subscribe registered');
+                    return () => { keyboardListener = null; };
+                  },
+                  closeWindow: (revision) => {
+                    log('keyboard.closeWindow rev=' + revision);
+                    return Promise.resolve();
+                  }
+                },
+
+                // 3./4. Shortcut preferences, persisted by the host rather than
+                //    in origin-local storage — "Desktop never falls back to
+                //    browser storage".
+                shortcuts: {
+                  get: (definitions) => {
+                    log('shortcuts.get definitions=' + (definitions ? definitions.length : 'null'));
+                    return Promise.resolve({
+                      revision: '00000000-0000-4000-8000-000000000000',
+                      sequence: 0,
+                      document: { schemaVersion: 1, profiles: {} },
+                      status: 'ready',
+                      error: null,
+                      usingDefaults: true
+                    });
+                  },
+                  edit: (edit, revision) => {
+                    log('shortcuts.edit type=' + (edit && edit.type) + ' rev=' + revision);
+                    return Promise.resolve({ status: 'saved', snapshot: null });
+                  },
+                  subscribe: (listener) => {
+                    shortcutListener = listener;
+                    log('shortcuts.subscribe registered');
+                    return () => { shortcutListener = null; };
+                  },
+                  recording: () => Promise.resolve({}),
+                  dispose: () => {}
+                },
+
+                deviceInfo: { platform: 'macos', runtime: 'desktop' }
+              };
+
+              // Lets the probe exercise the input path without a native bridge:
+              // shapes one DesktopShortcutInput exactly as the type declares it
+              // and pushes it through the registered listener.
+              window.__probeDispatchShortcut__ = (code, mods) => {
+                if (!keyboardListener) { log('shortcut dispatch with no listener'); return false; }
+                const m = mods || {};
+                keyboardListener({
+                  revision: '00000000-0000-4000-8000-000000000000',
+                  kind: 'keyboard',
+                  frameName: '__dsh_shell_top__',
+                  code: code,
+                  control: !!m.control,
+                  alt: !!m.alt,
+                  shift: !!m.shift,
+                  meta: !!m.meta,
+                  repeat: false
+                });
+                log('shortcut dispatched code=' + code);
+                return true;
+              };
+            })();
             """
         }
     }
@@ -608,6 +720,8 @@ var report: [String: Any] = [
 ]
 /// Held so no WKWebView is deallocated mid-run.
 var liveProbes: [Probe] = []
+var m2Dispatch = ""
+var m2DispatchExtra = ""
 
 for mode in Mode.allCases {
     logLine("--- mode \(mode.rawValue) ---")
@@ -622,6 +736,26 @@ for mode in Mode.allCases {
     // A cold profile loads its plugin graph on the first boot. Give every mode
     // the same budget so the comparison is not measuring warm-up.
     probe.measure(timeout: 90)
+
+if mode == .darwinReal {
+        // Declaring the bridge is not the same as implementing it: an
+        // unsubscribed listener that throws when fed a real input would be a
+        // bridge that looks fine until a user presses a shortcut. Push one
+        // DesktopShortcutInput through the listener dsh actually registered.
+        var dispatched = "not-run"
+        probe.webView.evaluateJavaScript(
+            "JSON.stringify({ ok: !!window.__probeDispatchShortcut__('KeyN', { meta: true }),"
+                + " listener: !!(window.__PROBE_BRIDGE_LOG__||[]).length })"
+        ) { res, err in
+            if let s = res as? String { dispatched = s } else { dispatched = "error: \(String(describing: err))" }
+        }
+        let wait = Date().addingTimeInterval(3)
+        while Date() < wait {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        logLine("darwinReal shortcut dispatch: \(dispatched)")
+        m2Dispatch = dispatched
+    }
 
     if let f = probe.failed { logLine("mode \(mode.rawValue) FAILED: \(f)") }
 
@@ -648,12 +782,14 @@ for mode in Mode.allCases {
     probe.screenshot(to: "\(outDir)/\(mode.rawValue).png")
     probe.finish()
 
+    if mode == .darwinReal { m2DispatchExtra = m2Dispatch }
     var m = probe.result
     m["fullscreen"] = fullscreen
     m["bootWaitAttempts"] = probe.bootWaitAttempts
     m["bootWaitTimedOut"] = probe.bootWaitTimedOut
     m["pageErrors"] = probe.drainPageErrors()
     m["bridgeLog"] = probe.drainBridgeLog()
+    if mode == .darwinReal { m["shortcutDispatch"] = m2DispatchExtra }
     if let f = probe.failed { m["probeFailure"] = f }
     if var modes = report["modes"] as? [String: Any] {
         modes[mode.rawValue] = m

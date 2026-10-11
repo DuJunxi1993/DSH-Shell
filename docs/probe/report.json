@@ -1,5 +1,5 @@
 {
-  "dshPid" : 12523,
+  "dshPid" : 33892,
   "dshVersion" : "0.2.0-rc.2",
   "modes" : {
     "baseline" : {
@@ -172,9 +172,9 @@
         "supports" : false,
         "webkitSupported" : false
       },
-      "bootCardText" : "HARNESS Failed to load plugins @deepseek-ai\/dsh-client-shortcuts web boot: 24 entries did not activate @deepseek-ai\/dsh-client-ui-open-in-app: pending (waiting for services: shortcuts, layout) @deepseek-ai\/dsh-client-shortcuts: failed @deepseek-ai\/dsh-client-ui-shortcuts: pending (waiting for service: shortcuts) @deepseek-ai\/dsh-client-ui-layout: pending (waiting for service: shortcuts) @deepseek-",
+      "bootCardText" : "HARNESS Failed to load plugins @deepseek-ai\/dsh-client-shortcuts web boot: 24 entries did not activate @deepseek-ai\/dsh-client-ui-sidebar-right: pending (waiting for services: layout, shortcuts) @deepseek-ai\/dsh-client-ui-open-in-app: pending (waiting for services: shortcuts, layout) @deepseek-ai\/dsh-client-shortcuts: failed @deepseek-ai\/dsh-client-ui-shortcuts: pending (waiting for service: short",
       "bootScreenPresent" : true,
-      "bootWaitAttempts" : 87,
+      "bootWaitAttempts" : 88,
       "bootWaitTimedOut" : true,
       "bridgeLog" : [
 
@@ -629,6 +629,247 @@
       "vh" : 800,
       "vw" : 1280
     },
+    "darwinReal" : {
+      "appRegion" : {
+        "computed" : null,
+        "supports" : false,
+        "webkitSupported" : false
+      },
+      "bootCardText" : null,
+      "bootScreenPresent" : false,
+      "bootWaitAttempts" : 1,
+      "bootWaitTimedOut" : false,
+      "bridgeLog" : [
+        "dshDesktopBoot.ready() -> injections:[] streamBaseUrl:http:\/\/127.0.0.1:3080",
+        "keyboard.subscribe registered",
+        "shortcuts.subscribe registered",
+        "shortcuts.get definitions=0",
+        "shortcuts.get definitions=1",
+        "shortcuts.get definitions=2",
+        "shortcuts.get definitions=3",
+        "shortcuts.get definitions=4",
+        "shortcuts.get definitions=5",
+        "shortcuts.get definitions=6",
+        "shortcuts.get definitions=7",
+        "shortcuts.get definitions=8",
+        "shortcuts.get definitions=9",
+        "shortcuts.get definitions=10",
+        "shortcuts.get definitions=11",
+        "shortcuts.get definitions=12",
+        "shortcuts.get definitions=13",
+        "shortcuts.get definitions=14",
+        "shortcuts.get definitions=15",
+        "shortcuts.get definitions=16",
+        "shortcuts.get definitions=17",
+        "shortcuts.get definitions=18",
+        "shortcuts.get definitions=19",
+        "shortcuts.get definitions=20",
+        "shortcuts.get definitions=21",
+        "shortcuts.get definitions=22",
+        "shortcuts.get definitions=23",
+        "shortcuts.get definitions=24",
+        "shortcuts.get definitions=25",
+        "shortcuts.get definitions=26",
+        "shortcuts.get definitions=27",
+        "shortcuts.get definitions=28",
+        "shortcut dispatched code=KeyN"
+      ],
+      "columns" : [
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 0,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 280,
+          "width" : 280
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 276,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "absolute",
+          "readsTopClearance" : null,
+          "right" : 284,
+          "width" : 8
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 280,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 281,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "relative",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        }
+      ],
+      "contentBelowStrip" : [
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "y" : 4
+        },
+        {
+          "h" : 30,
+          "tag" : "div",
+          "text" : "",
+          "w" : 952,
+          "y" : 16
+        },
+        {
+          "h" : 30,
+          "tag" : "div",
+          "text" : "",
+          "w" : 952,
+          "y" : 32
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 40
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 48
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 64
+        }
+      ],
+      "dragRegionCount" : 4,
+      "dragRegionSample" : {
+        "h" : 52,
+        "text" : "",
+        "w" : 280,
+        "x" : 0,
+        "y" : 0
+      },
+      "frameReservingTop" : null,
+      "fullscreen" : {
+        "chromeTop" : "0px",
+        "leading" : "",
+        "overlay" : "20px",
+        "paddingTop" : "0px",
+        "top" : "48px"
+      },
+      "htmlAttrs" : {
+        "data-ds-theme-source" : "system",
+        "data-platform" : "darwin",
+        "lang" : "zh-CN",
+        "style" : "color-scheme: light;"
+      },
+      "leadingSeat" : null,
+      "mode" : "darwinReal",
+      "pageErrors" : [
+
+      ],
+      "readyState" : "complete",
+      "shortcutDispatch" : "{\"ok\":true,\"listener\":true}",
+      "topStrip" : [
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 5
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 30
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 60
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 90
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 120
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 200
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 640
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 1160
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 1270
+        }
+      ],
+      "vars" : {
+        "--dsh-frame-chrome-top" : "",
+        "--dsh-frame-leading-clearance" : "",
+        "--dsh-frame-overlay-top" : "calc(48px + 20px)",
+        "--dsh-frame-top-clearance" : "48px",
+        "--dsh-windows-content-radius" : "",
+        "--dsh-windows-sidebar-width" : "",
+        "--dsh-windows-titlebar-height" : ""
+      },
+      "vh" : 800,
+      "vw" : 1280
+    },
     "windows" : {
       "appRegion" : {
         "computed" : null,
@@ -847,6 +1088,6 @@
   "pidStillAliveAfterShutdown" : false,
   "port" : 3080,
   "portFreedAfterShutdown" : true,
-  "url" : "http:\/\/127.0.0.1:3080\/?token=TfV6CwCAO5vm05NbLm3cQOllg7JHmZDxIdO4bUc3yfI",
+  "url" : "http:\/\/127.0.0.1:3080\/?token=qHtnDrH5y8ByhHPuJFPXasQQv-Z1hld4iWq7s6Zat8Q",
   "urlAcceptedBecause" : "dsh web: line, loopback, port 3080, token present"
 }
