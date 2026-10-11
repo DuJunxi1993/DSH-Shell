@@ -218,6 +218,18 @@ obvious and the Tauri docs do not put them together.
     for the origin from before the ACL was granted, and it is irrelevant once the
     shim is in play. `chrome_report`'s `notifications=` field is how to tell
     "granted" from "silently refused".
+11. **A toast whose handle is dropped cannot be clicked, and a page-owned toast
+    cannot be fixed from here.** `tauri-plugin-notification` calls
+    `notification.show()` and throws the `NotificationHandle` away; the WinRT
+    `ToastNotification` object holding the `Activated` handler dies with it, so
+    the click reaches a dead callback and the window is never raised. The shell's
+    own toasts therefore go through notify-rust directly and keep the handle
+    (`src/toast.rs`). A dsh plugin's toast cannot: the plugin owns it end to end,
+    `RegisterToastNotificationActivator` and `IToastNotificationActivator` exist
+    in **no** available `windows` crate version (they are the packaged-app API),
+    and the toast carries no launch argument to fall back on. Do not spend time
+    re-deriving this. Claim an AUMID only for an installed build, the way the
+    plugin does — an unregistered AUMID makes the toast fail to appear at all.
 
 ## The dsh page has no hook to grab on
 
