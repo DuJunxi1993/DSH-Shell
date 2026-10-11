@@ -24,8 +24,14 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | `launchMode == .attach` fallback (probe the configured loopback port only) | ✅ |
 | App icon, transparent titlebar, floating status badge | ✅ |
 | Preferences (binary path, listen host/port, trusted hosts, timeouts, auto-restart) | ✅ |
-| Unit tests for `DSHShellCore` | ✅ 63 passing, 0 failing |
+| Unit tests for `DSHShellCore` | ✅ 81 passing, 0 failing |
 | Hermetic lifecycle tests against `stub-dsh` | ✅ 13, every one ends by asserting the port is bindable again |
+| Single instance — a second launch raises the window, never fights for the port | ✅ `flock`, checked before anything else |
+| Menu-bar status item: show/hide, zoom reset, exit | ✅ carries the connection state |
+| External links go to the default browser; `target=_blank` handled | ✅ one origin allowed, `http(s)` only |
+| Page zoom 50–100% in 10% steps, persisted | ✅ menu + status item |
+| Daily rotating file log + `crash.log` | ✅ `~/Library/Application Support/DSHShell/logs/` |
+| dsh desktop-contract self-check reported to the log | ✅ `platform`, `--dsh-frame-*`, `-webkit-app-region` |
 | `swift build` and `xcodebuild` both clean | ✅ 0 errors |
 | Preflight: refuse to nest inside a harness session | ✅ |
 | Preflight: refuse a port someone else owns, never kill it | ✅ |

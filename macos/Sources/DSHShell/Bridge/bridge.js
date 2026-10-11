@@ -1,7 +1,6 @@
 // dsh-shell bridge — injected at documentStart into the dsh SPA.
 // Provides:
 //   window.__dshShell.do(action, arg)   — native -> web commands
-//   window.__dshShell.setCssShim(on)    — toggle the titlebar-safe-area CSS shim
 //   web -> native events via window.webkit.messageHandlers.dshBridge
 //
 // Everything here must be defensive: the SPA's DOM is not guaranteed to match
@@ -83,38 +82,31 @@
   }
 
   // ---- CSS shim: keep the SPA's top chrome clear of the traffic lights ----
-  // The shim is ON by default (the shell always runs a transparent titlebar)
-  // and self-heals: it is re-asserted on every heartbeat scan. Only the
-  // SIDEBAR column is pushed down (the badge floats over it); the main
-  // column keeps full height, so nothing clips at the window bottom.
+  // The titlebar shim has been REMOVED, and the reason is worth keeping.
   //
-  // Implementation: an inline style on the sidebar column itself. A <style>
-  // element in <head> proved unreliable — the dsh plugin runtime manages
-  // head styles and can drop unknown ones, and cascade battles can lose.
-  // Inline styles cannot be cleaned by head management, win any cascade,
-  // and React never touches this element's style attribute (the sidebar
-  // column has no style prop), so only the heartbeat re-assert matters.
-  // Selector uses dsh's own semantic markers (data-dsh-frame, data-pane),
-  // stable across builds unlike the hashed CSS-module classes; if dsh
-  // renames them the shim degrades to a no-op rather than breaking layout.
-  var shimSidebarSelector = '#root [data-dsh-frame] > [data-pane="sidebar"]';
-  var shimPaddingTop = '20px';
-  var shimMode = true;
-  function ensureCssShim() {
-    if (!shimMode) { return; }
-    try {
-      var col = document.querySelector(shimSidebarSelector);
-      if (col) { col.style.paddingTop = shimPaddingTop; }
-    } catch (e) { /* ignore */ }
-  }
-  function applyCssShim(on) {
-    shimMode = !!on;
-    try {
-      var col = document.querySelector(shimSidebarSelector);
-      if (col) { col.style.paddingTop = shimMode ? shimPaddingTop : ''; }
-      return { ok: !!col };
-    } catch (e) { return { ok: false }; }
-  }
+  // It padded the sidebar column by 20px so the transparent titlebar's traffic
+  // lights would not sit on top of it, targeting:
+  //
+  //     #root [data-dsh-frame] > [data-pane="sidebar"]
+  //
+  // Neither `data-dsh-frame` nor `data-pane` exists anywhere in
+  // @deepseek-ai/dsh@0.2.0-rc.2 — grepped across the whole package tree. The
+  // comment above the selector claimed they were "dsh's own semantic markers,
+  // stable across builds unlike the hashed CSS-module classes"; they were a
+  // guess that reads like a fact, and the shim has been a silent no-op ever
+  // since. A no-op is the right failure mode and the wrong feature.
+  //
+  // dsh does have a real mechanism for this, and it is not a selector: under
+  // `html[data-platform='darwin']` it publishes `--dsh-frame-top-clearance`
+  // and reserves the space itself. Claiming the desktop runtime is a separate
+  // decision — it requires the `window.dshDesktop` preload bridge — and is
+  // written up in docs/dsh-shell-contract.md §7. Until then the shell keeps
+  // the native titlebar and lets dsh lay out as a browser, which is what
+  // actually happens.
+  //
+  // What replaced the heartbeat call: nothing. The scan no longer writes to the
+  // page's style attributes on every tick, which was a forced style recalc up
+  // to 2.5 times a second during a conversation.
 
   // ---- probe: report DOM candidates for native-side selector tuning ----
   function probeCandidates() {
@@ -163,13 +155,22 @@
           el = el.firstElementChild;
         }
         out.layout = walk;
-        var shimHits = [];
-        var shimEls = document.querySelectorAll(shimSidebarSelector);
-        for (var s = 0; s < shimEls.length; s++) {
-          var cs2 = window.getComputedStyle ? window.getComputedStyle(shimEls[s]) : null;
-          shimHits.push({ inline: shimEls[s].style.paddingTop, bg: cs2 ? cs2.backgroundColor : '?', rect: (shimEls[s].getBoundingClientRect ? shimEls[s].getBoundingClientRect().height + 'x' + shimEls[s].getBoundingClientRect().width : '?') });
-        }
-        out.shim = shimHits;
+        // Replaced the old shim report. The question worth asking about the page
+        // is now the one that decides the route: does dsh know it is on a
+        // desktop, and what does it publish? Read from CSS rather than from
+        // class names, so it survives a dsh build.
+        var rootStyle = window.getComputedStyle(document.documentElement);
+        out.desktop = {
+          platform: document.documentElement.getAttribute('data-platform'),
+          titlebar: document.documentElement.hasAttribute('data-windows-titlebar'),
+          fullscreen: document.documentElement.hasAttribute('data-fullscreen'),
+          topClearance: rootStyle.getPropertyValue('--dsh-frame-top-clearance').trim(),
+          chromeTop: rootStyle.getPropertyValue('--dsh-frame-chrome-top').trim(),
+          leadingClearance: rootStyle.getPropertyValue('--dsh-frame-leading-clearance').trim(),
+          overlayTop: rootStyle.getPropertyValue('--dsh-frame-overlay-top').trim(),
+          dragRegions: document.querySelectorAll('[data-window-drag]').length,
+          appRegionSupported: !!(window.CSS && CSS.supports && CSS.supports('-webkit-app-region', 'drag'))
+        };
       }
     } catch (e) { /* ignore */ }
     return out;
@@ -198,7 +199,6 @@
         lastTitle = t;
         post('title', { text: t });
       }
-      ensureCssShim();
     } catch (e) { /* ignore */ }
   }
 
@@ -220,7 +220,6 @@
       case 'sendMessage': result = sendMessage(); break;
       case 'newSession': result = newSession(); break;
       case 'openWorkspace': result = openWorkspace(); break;
-      case 'setCssShim': result = applyCssShim(!!arg); break;
       case 'injectText': { var el = findComposer(); result = el ? (setNativeValue(el, String(arg || '')), { ok: true }) : { ok: false }; break; }
       default: result = { ok: false, reason: 'unknown action' };
     }
@@ -233,7 +232,6 @@
   window.__dshShell = bridge;
 
   // initial probe once the app shell has a chance to mount
-  ensureCssShim();
   setTimeout(function () {
     post('probe', probeCandidates());
     scanRunning();

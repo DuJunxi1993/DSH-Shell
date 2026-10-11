@@ -1,4 +1,5 @@
 import Foundation
+import DSHShellCore
 import WebKit
 import OSLog
 
@@ -34,7 +35,6 @@ enum WebAction {
     case newSession
     case openWorkspace
     case injectText(String)
-    case setCssShim(Bool)
 }
 
 /// Client of the bridge: receives events and the bridge instance itself.
@@ -49,6 +49,14 @@ protocol WebBridgeClient: AnyObject {
 /// `evaluateJavaScript`.
 @MainActor
 final class WebBridge: NSObject, WKScriptMessageHandler {
+    /// An absent value and an empty one read the same in a log line, and the
+    /// difference between "dsh published nothing" and "dsh published 0" is
+    /// exactly what the contract report is for.
+    private static func orDash(_ value: Any?) -> String {
+        guard let text = value as? String else { return String(describing: value ?? "-") }
+        return text.isEmpty ? "-" : text
+    }
+
     weak var webView: WKWebView?
     weak var client: WebBridgeClient?
 
@@ -82,9 +90,27 @@ final class WebBridge: NSObject, WKScriptMessageHandler {
                 }.joined(separator: " | ")
                 Logger(subsystem: "ai.deepseek.dsh-shell", category: "Bridge").debug("bridge layout — \(lines, privacy: .public)")
             }
-            if let shim = payload["shim"] as? [[String: Any]] {
-                let lines = shim.map { "inline=\($0["inline"] ?? "?") bg=\($0["bg"] ?? "?") rect=\($0["rect"] ?? "?")" }.joined(separator: " | ")
-                Logger(subsystem: "ai.deepseek.dsh-shell", category: "Bridge").debug("bridge shim — \(lines, privacy: .public)")
+            // What dsh thinks about being on a desktop, read from CSS rather
+            // than from class names. This is the single most decision-relevant
+            // thing the page can tell us: `--dsh-frame-top-clearance` being
+            // non-empty means dsh reserved the titlebar band itself, and the
+            // whole chrome question is settled. `appRegionSupported: false` is
+            // expected on WebKit — `-webkit-app-region` is a Blink property — so
+            // `data-window-drag` rows need native drag forwarding from here.
+            if let desktop = payload["desktop"] as? [String: Any] {
+                let summary = [
+                    "platform=\(Self.orDash(desktop["platform"]))",
+                    "titlebar=\(Self.orDash(desktop["titlebar"]))",
+                    "fullscreen=\(Self.orDash(desktop["fullscreen"]))",
+                    "topClearance=\(Self.orDash(desktop["topClearance"]))",
+                    "chromeTop=\(Self.orDash(desktop["chromeTop"]))",
+                    "leading=\(Self.orDash(desktop["leadingClearance"]))",
+                    "overlay=\(Self.orDash(desktop["overlayTop"]))",
+                    "dragRegions=\(Self.orDash(desktop["dragRegions"]))",
+                    "appRegion=\(Self.orDash(desktop["appRegionSupported"]))",
+                ].joined(separator: " ")
+                Log.debug("desktop contract — \(summary)")
+                FileLogger.shared.write("desktop contract — \(summary)", level: "contract")
             }
             client?.handleBridgeEvent(.probe(parseProbe(payload)))
         case "title":
@@ -119,8 +145,6 @@ final class WebBridge: NSObject, WKScriptMessageHandler {
         case .injectText(let text):
             let encoded = Self.jsonString(text)
             js = "window.__dshShell && window.__dshShell.do('injectText', \(encoded))"
-        case .setCssShim(let on):
-            js = "window.__dshShell && window.__dshShell.do('setCssShim', \(on))"
         }
         webView.evaluateJavaScript(js) { _, _ in }
     }

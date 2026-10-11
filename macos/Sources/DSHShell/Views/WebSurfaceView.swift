@@ -19,8 +19,16 @@ import DSHShellBridge
 struct WebSurfaceView: NSViewRepresentable {
     let url: URL
     weak var bridgeClient: WebBridgeClient?
+    /// Page zoom, 50–100 in 10% steps. Applied to the webview and remembered by
+    /// the coordinator; the webview's own ⌘+/- is deliberately left alone,
+    /// because WKWebView has no way to suppress it and a percentage that drifts
+    /// from the real zoom is worse than no percentage at all.
+    var zoomPercent: Int = 100
+    /// The origin the shell is allowed to show. Everything else is handed to the
+    /// system browser — see the coordinator for why that matters.
+    var allowedOrigin: String = ""
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var bridge: WebBridge?
         /// Strong owner of the `WKUIDelegate`.
         ///
@@ -33,7 +41,14 @@ struct WebSurfaceView: NSViewRepresentable {
         /// vanished. `navigationDelegate` is weak too, but the Coordinator is
         /// retained by SwiftUI, so that one was never at risk. This is the
         /// reason the whole `DSHShellBridge` ObjC framework exists.
+        ///
+        /// This coordinator also conforms to `WKUIDelegate` so `createWebViewWith`
+        /// is implemented: without it, `target="_blank"` and `window.open` return
+        /// nil and a link clicked in dsh does nothing at all.
         let uiDelegate = DSHObjCWebUIDelegate()
+
+        var allowedOrigin: String = ""
+        var onExternalURL: ((URL) -> Void)?
 
         let uiLogger = Logger(subsystem: "ai.deepseek.dsh-shell", category: "WebUIDialog")
     }
@@ -45,7 +60,11 @@ struct WebSurfaceView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
-        config.applicationNameForUserAgent = "dsh-swiftUI/0.1"
+        // The version used to be hard-coded as "dsh-swiftUI/0.1" while the
+        // bundle said 0.1.2, so anything reading the UA was told a lie.
+        let version = Bundle.main
+            .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0"
+        config.applicationNameForUserAgent = "DSHShell/\(version)"
 
         let bridge = WebBridge()
         bridge.client = bridgeClient
@@ -71,6 +90,9 @@ struct WebSurfaceView: NSViewRepresentable {
         view.uiDelegate = context.coordinator.uiDelegate
         view.navigationDelegate = context.coordinator
         context.coordinator.uiLogger.notice("webView installed — uiDelegate=\(String(describing: view.uiDelegate), privacy: .public) navDelegate=\(String(describing: view.navigationDelegate), privacy: .public) url=\(url.absoluteString, privacy: .public)")
+
+        context.coordinator.allowedOrigin = URLOrigin.of(url)
+        apply(zoomPercent, to: view)
 
         context.coordinator.bridge = bridge
         bridge.webView = view
@@ -102,21 +124,37 @@ struct WebSurfaceView: NSViewRepresentable {
         if webView.navigationDelegate !== context.coordinator {
             webView.navigationDelegate = context.coordinator
         }
+        context.coordinator.allowedOrigin = URLOrigin.of(url)
+        apply(zoomPercent, to: webView)
         if webView.url != url {
             webView.load(URLRequest(url: url))
         }
+    }
+
+    private func apply(_ percent: Int, to view: WKWebView) {
+        let clamped = min(100, max(50, percent))
+        let scale = CGFloat(clamped) / 100.0
+        guard abs(view.pageZoom - scale) > 0.001 else { return }
+        view.pageZoom = scale
+        Log.debug("page zoom -> \(clamped)%")
     }
 }
 
 // WKNavigationDelegate conformance — implemented in the same extension so the
 // protocol's `@MainActor` isolation (from `WK_SWIFT_UI_ACTOR` in the header)
-// is inferred correctly. The WKNavigationDelegate methods here are diagnostic
-// only: they fire unconditionally on every load, so seeing them in the log
-// proves the Coordinator is actually bound to the WKWebView.
+// is inferred correctly.
 //
-// `WKUIDelegate` is NOT conformed to here on purpose — it lives in pure ObjC
-// (DSHObjCWebUIDelegate) so the three optional `runJavaScript…` selectors
-// are visible to the ObjC runtime regardless of Swift 6 strict concurrency.
+// The two policy methods are not diagnostics. They are the difference between a
+// window that shows dsh and a window that has been navigated somewhere else.
+//
+// A link or a server-side redirect off dsh's origin would otherwise replace the
+// entire contents of the window with someone else's website — keeping the menu
+// bar, keeping the dsh process, and offering no way back. So exactly one origin
+// may be shown, and everything else is handed to the system browser.
+//
+// `target="_blank"` / `window.open` lands here too, via `createWebViewWith`.
+// Without it the call returns nil and the link does nothing at all, which is a
+// different failure with the same cause.
 extension WebSurfaceView.Coordinator {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         uiLogger.notice("nav.didStart — url=\(webView.url?.absoluteString ?? "<none>", privacy: .public)")
@@ -128,5 +166,47 @@ extension WebSurfaceView.Coordinator {
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
         uiLogger.notice("nav.didFail — url=\(webView.url?.absoluteString ?? "<none>", privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard let target = navigationAction.request.url else {
+            decisionHandler(.cancel)
+            return
+        }
+        if isInternal(target) {
+            decisionHandler(.allow)
+            return
+        }
+        uiLogger.notice("nav.external — \(target.absoluteString, privacy: .public)")
+        onExternalURL?(target)
+        decisionHandler(.cancel)
+    }
+
+    /// `target="_blank"` and `window.open`. Always cancelled; an internal URL is
+    /// *not* loaded here either — it would open a second webview with its own
+    /// bridge and its own window, which is the multi-window this shell does not
+    /// have. An external URL still goes to the browser.
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if let url = navigationAction.request.url, !isInternal(url) {
+            uiLogger.notice("nav.newWindow.external — \(url.absoluteString, privacy: .public)")
+            onExternalURL?(url)
+        }
+        return nil
+    }
+
+    /// Only `http(s)` is ever handed to the operating system. Anything else is a
+    /// way to make the OS launch something with this process's identity — a
+    /// `file:` URL, a custom scheme, `javascript:`.
+    private func isInternal(_ url: URL) -> Bool {
+        URLOrigin.isInternal(url, allowedOrigin: allowedOrigin)
     }
 }

@@ -34,6 +34,10 @@ public struct ShellSettings: Codable, Equatable, Sendable {
     public var pollIntervalSeconds: Double
     public var spawnTimeoutSeconds: Int
     public var autoRestartOnCrash: Bool
+    /// Page zoom, 50–100 in 10% steps. Carries a default on decode, so a
+    /// settings file written before this field existed still loads — the same
+    /// guard as every other field here.
+    public var zoomPercent: Int
 
     public init(
         dshBinaryPath: String = ShellSettings.defaultBinaryPath(),
@@ -43,7 +47,8 @@ public struct ShellSettings: Codable, Equatable, Sendable {
         trustedHosts: [String] = ["127.0.0.1", "localhost"],
         pollIntervalSeconds: Double = 0.5,
         spawnTimeoutSeconds: Int = 120,
-        autoRestartOnCrash: Bool = true
+        autoRestartOnCrash: Bool = true,
+        zoomPercent: Int = 100
     ) {
         self.dshBinaryPath = dshBinaryPath
         self.launchMode = launchMode
@@ -53,6 +58,7 @@ public struct ShellSettings: Codable, Equatable, Sendable {
         self.pollIntervalSeconds = pollIntervalSeconds
         self.spawnTimeoutSeconds = spawnTimeoutSeconds
         self.autoRestartOnCrash = autoRestartOnCrash
+        self.zoomPercent = zoomPercent
     }
 
     public init(from decoder: Decoder) throws {
@@ -68,6 +74,7 @@ public struct ShellSettings: Codable, Equatable, Sendable {
         pollIntervalSeconds = value(.pollIntervalSeconds, 0.5)
         spawnTimeoutSeconds = value(.spawnTimeoutSeconds, 120)
         autoRestartOnCrash = value(.autoRestartOnCrash, true)
+        zoomPercent = value(.zoomPercent, 100)
     }
 
     /// Discover `dsh` at runtime instead of shipping someone's home directory

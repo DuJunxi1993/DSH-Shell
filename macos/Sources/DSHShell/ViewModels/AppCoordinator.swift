@@ -3,6 +3,7 @@ import SwiftUI
 import DSHShellCore
 import OSLog
 import UserNotifications
+import AppKit
 
 /// State reported by the dsh SPA through the injected bridge script.
 struct WebSessionState: Equatable {
@@ -15,11 +16,27 @@ struct WebSessionState: Equatable {
 /// state to the view tree.
 @MainActor
 final class AppCoordinator: ObservableObject {
-    @Published var state: ConnectionState = .idle
+    @Published var state: ConnectionState = .idle {
+        didSet {
+            // Anything that is not directly observing the state — the status
+            // item — needs to be told, and a `didSet` on the single source of
+            // truth is the only place that cannot drift out of step with it.
+            NotificationCenter.default.post(name: .dshShellStateChanged, object: nil)
+        }
+    }
     @Published var settings: ShellSettings = .default
     @Published var consoleLines: [ConsoleLine] = []
     @Published var isPresentingPreferences: Bool = false
     @Published var webSession: WebSessionState = .init()
+    /// Page zoom, 50–100 in 10% steps. Persisted in settings so it survives a
+    /// relaunch, and read back from there rather than kept separately — two
+    /// copies of a preference is a preference that eventually disagrees with
+    /// itself.
+    @Published var zoomPercent: Int = 100
+    /// The window the web surface is attached to. Set by `WebSurfaceView`, read
+    /// by the status item and the title updater, neither of which may assume
+    /// `NSApp.windows.first` is the right one.
+    private(set) weak var mainWindow: NSWindow?
 
     private let store: SettingsStore
     private var manager: DSHProcessManager?
@@ -48,7 +65,12 @@ final class AppCoordinator: ObservableObject {
 
     init(store: SettingsStore = SettingsStore()) {
         self.store = store
-        self.settings = store.load()
+        let loaded = store.load()
+        self.settings = loaded
+        // Seed from the persisted value rather than defaulting to 100 and
+        // writing that back on the first zoom change, which would silently reset
+        // a user who had chosen 70%.
+        self.zoomPercent = ZoomLadder.snap(loaded.zoomPercent)
     }
 
     func start() {
@@ -142,6 +164,47 @@ final class AppCoordinator: ObservableObject {
 
     func showPreferences() {
         isPresentingPreferences = true
+    }
+
+    // MARK: - Window and page
+
+    func attach(window: NSWindow?) {
+        mainWindow = window
+    }
+
+    /// Step the page zoom, snapped to the ladder.
+    ///
+    /// The ladder lives here and nowhere else, for the reason it lives in
+    /// `config.rs` on the Windows side: the status item's "reset" item and the
+    /// menu's −/+ both need it, and a ladder written down twice is a ladder that
+    /// disagrees with itself. A *signed delta* rather than an absolute value, so
+    /// there is only one place that decides what "next" means.
+    func stepZoom(_ delta: Int) {
+        setZoom(ZoomLadder.next(from: zoomPercent, delta: delta))
+    }
+
+    func setZoom(_ percent: Int) {
+        let snapped = ZoomLadder.snap(percent)
+        guard snapped != zoomPercent else { return }
+        zoomPercent = snapped
+        var updated = settings
+        updated.zoomPercent = snapped
+        settings = updated
+        store.save(updated)
+        Log.info("page zoom -> \(snapped)%")
+    }
+
+    /// Hand a URL to the system browser.
+    ///
+    /// `http(s)` only. Anything else is a way to make the OS launch something
+    /// with this process's identity — a `file:` URL, a custom scheme.
+    func openExternally(_ url: URL) {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            Log.error("refused to open \(url.scheme ?? "<none>"):// externally")
+            return
+        }
+        NSWorkspace.shared.open(url)
+        Log.info("opened externally: \(url.absoluteString)")
     }
 
     // MARK: - Web bridge
@@ -299,8 +362,12 @@ extension AppCoordinator: WebBridgeClient {
     }
 
     func bridgeReady(_ bridge: WebBridge) {
+        // Note this fires *before* `view.load`, so anything evaluated here runs
+        // against an empty document. The previous version toggled the CSS shim
+        // from here, so the shim only ever applied because the page's heartbeat
+        // happened to re-assert it — an accident that looked like a working
+        // design. Nothing is invoked at this point any more.
         self.bridge = bridge
-        bridge.invoke(.setCssShim(true))
     }
 
     func webFocusComposer() {

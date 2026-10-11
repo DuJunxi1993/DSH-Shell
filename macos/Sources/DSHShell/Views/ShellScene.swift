@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import WebKit
 import DSHShellCore
 import OSLog
 
@@ -23,11 +25,14 @@ struct ShellScene: View {
             }
         }
         .onReceive(coordinator.$webSession) { session in
-            guard let window = NSApp.windows.first(where: { $0.isVisible }) else { return }
+            // The window this scene is actually in, not `NSApp.windows.first`:
+            // with a sessions panel open that lookup can return the panel, and
+            // the title would follow the wrong window.
+            guard let window = coordinator.mainWindow else { return }
             if let title = session.title, !title.isEmpty {
-                window.title = "\(title) — dsh"
+                window.title = "\(title) — DSH Shell"
             } else {
-                window.title = "dsh"
+                window.title = "DSH Shell"
             }
         }
     }
@@ -36,8 +41,11 @@ struct ShellScene: View {
     private var content: some View {
         switch coordinator.state {
         case .ready(let url):
-            WebSurfaceView(url: url, bridgeClient: coordinator)
+            WebSurfaceView(url: url, bridgeClient: coordinator,
+                           zoomPercent: coordinator.zoomPercent,
+                           allowedOrigin: URLOrigin.of(url))
                 .ignoresSafeArea(edges: [.top, .bottom])
+                .onAppear { attachWindow() }
         case .failed(let reason):
             ErrorView(reason: reason) {
                 coordinator.reload()
@@ -50,6 +58,20 @@ struct ShellScene: View {
             LoadingView(title: "Connecting to existing dsh instance…")
         case .idle:
             LoadingView(title: "Idle")
+        }
+    }
+
+    /// Hand the coordinator the window the web surface ended up in.
+    ///
+    /// `onAppear` rather than `onDisappear`-style teardown: closing the sessions
+    /// panel must not tear down the main window's dsh, which is what the
+    /// previous `onDisappear { coordinator.shutdown() }` did.
+    private func attachWindow() {
+        DispatchQueue.main.async {
+            guard let window = NSApp.windows.first(where: { $0.contentView != nil
+                && $0.contentView?.subviews.contains(where: { $0 is WKWebView }) == true })
+            else { return }
+            coordinator.attach(window: window)
         }
     }
 
