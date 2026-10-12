@@ -8,7 +8,7 @@ struct DSHShellApp: App {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup("dsh") {
+        WindowGroup(id: MainScene.id) {
             ShellScene()
                 .environmentObject(appDelegate.coordinator)
                 .frame(minWidth: 800, minHeight: 600)
@@ -27,7 +27,7 @@ struct DSHShellApp: App {
                 }
                 .keyboardShortcut("n", modifiers: .command)
                 Button("Sessions…") {
-                    openWindow(id: "sessions")
+                    openWindow(id: MainScene.sessionsID)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
             }
@@ -75,7 +75,7 @@ struct DSHShellApp: App {
             }
         }
 
-        WindowGroup(id: "sessions") {
+        WindowGroup(id: MainScene.sessionsID) {
             SessionPanelView()
         }
         .windowResizability(.contentMinSize)

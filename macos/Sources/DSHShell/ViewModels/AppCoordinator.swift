@@ -34,9 +34,23 @@ final class AppCoordinator: ObservableObject {
     /// itself.
     @Published var zoomPercent: Int = 100
     /// The window the web surface is attached to. Set by `WebSurfaceView`, read
-    /// by the status item and the title updater, neither of which may assume
-    /// `NSApp.windows.first` is the right one.
+    /// by the title updater, which may not assume `NSApp.windows.first` is the
+    /// right one.
+    ///
+    /// **Not** the way to get a window back. It is a `weak` reference to an
+    /// `NSWindow` a SwiftUI scene owns, and closing that window destroys the
+    /// object while the scene survives — so it is `nil` for as long as the user
+    /// has the window closed, and re-created from nothing afterwards. Anything
+    /// that needs "show the window" must go through ``showMainWindow()``.
     private(set) weak var mainWindow: NSWindow?
+
+    /// Brings the main scene back, whatever state it is in.
+    ///
+    /// Captured from `ShellScene`, where `@Environment(\.openWindow)` resolves
+    /// against the scene that owns the window. `openWindow(id:)` is idempotent
+    /// for an existing window — it orders it front rather than making a second
+    /// one — and it re-creates a window whose scene outlived it.
+    private var openMainScene: (() -> Void)?
 
     private let store: SettingsStore
     private var manager: DSHProcessManager?
@@ -175,6 +189,43 @@ final class AppCoordinator: ObservableObject {
 
     func attach(window: NSWindow?) {
         mainWindow = window
+    }
+
+    /// Adopts the scene's own `openWindow` action, supplied by `ShellScene`.
+    ///
+    /// The status item cannot build this itself: `OpenWindowAction` only exists
+    /// as an `Environment` value inside a view, and the status item is not in
+    /// one. Handing it up from the scene is the supported route.
+    func adopt(openMainScene: @escaping () -> Void) {
+        self.openMainScene = openMainScene
+    }
+
+    /// Put the main window on screen, creating it if the scene is closed.
+    ///
+    /// The menu-bar item and ⌘-click on the Dock icon are two ways to ask for
+    /// exactly this, and only one of them can reach the scene:
+    ///
+    /// - Clicking the Dock icon makes macOS send
+    ///   `applicationShouldHandleReopen`, which SwiftUI answers by rebuilding
+    ///   the scene. That is why the Dock icon always worked.
+    /// - The menu-bar item used to do `NSApp.windows.first?.makeKeyAndOrderFront`.
+    ///   A closed `WindowGroup` scene keeps no `NSWindow` — it is deallocated —
+    ///   so that lookup found nothing, or found the settings window, and the
+    ///   click did nothing at all. "It minimises instead of hiding" was the same
+    ///   bug seen from the other side: `orderOut` leaves the app with no key
+    ///   window, which looks like a minimise.
+    func showMainWindow() {
+        openMainScene?()
+        NSApp.activate()
+    }
+
+    /// Whether the main window is currently on screen.
+    ///
+    /// Read through ``mainWindow`` when it exists, and answered as `false` when
+    /// it does not: a scene with no window is not a window that is hidden.
+    var isMainWindowVisible: Bool {
+        guard let window = mainWindow else { return false }
+        return window.isVisible
     }
 
     /// Step the page zoom, snapped to the ladder.

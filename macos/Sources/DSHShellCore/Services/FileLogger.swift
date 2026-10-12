@@ -29,7 +29,14 @@ public final class FileLogger: @unchecked Sendable {
     public init(directory: URL? = nil, subsystem: String = "ai.deepseek.dsh-shell") {
         self.subsystem = subsystem
         if let directory {
+            // Created for every branch, including an explicitly passed one. An
+            // earlier version only created it on the default path, so a caller
+            // that supplied a directory got a logger that wrote nothing and
+            // reported nothing — the worst failure mode a logger can have.
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             self.directory = directory
+        } else if let scratch = Self.scratchDirectory() {
+            self.directory = scratch
         } else {
             let base = (try? FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask,
@@ -41,6 +48,41 @@ public final class FileLogger: @unchecked Sendable {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             self.directory = dir
         }
+    }
+
+    /// Where the log should go instead of Application Support, or nil to use
+    /// the real location.
+    ///
+/// `DSH_SHELL_LOG_DIR` is the explicit override. Failing that, a process
+    /// launched by the test harness is detected and given a scratch directory
+    /// instead — so no test can forget to opt out and no one has to remember an
+    /// environment variable.
+    ///
+    /// Both spellings are checked because the harness has used both: the current
+    /// SwiftPM runner sets `SWIFT_TESTING_ENABLED`, and the older XCTest bundle
+    /// loader sets `XCTestConfigurationFilePath`.
+    ///
+    /// This matters because `swift test` drives dozens of stub lifecycles whose
+    /// output deliberately mimics dsh: decoy proxy URLs, `token=stub-token`,
+    /// `boom: refusing to start because the profile could not be composed`. Those
+    /// lines were landing in the same daily file a person opens to diagnose a
+    /// real launch. A log that mixes the two is worse than no log, because the
+    /// fake lines read as evidence — and this file is exactly the one the
+    /// launch diagnostics exist to improve.
+    private static func scratchDirectory() -> URL? {
+        let environment = ProcessInfo.processInfo.environment
+        if let override = environment["DSH_SHELL_LOG_DIR"], !override.isEmpty {
+            let dir = URL(fileURLWithPath: override, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        let underTest = environment["SWIFT_TESTING_ENABLED"] != nil
+            || environment["XCTestConfigurationFilePath"] != nil
+        guard underTest else { return nil }
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("DSHShellTestLogs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
     }
 
     /// One file per day, named `dsh-shell.log.<yyyy-MM-dd>`.

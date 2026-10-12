@@ -44,6 +44,9 @@ let urlDelayMS = Int(knob("--url-delay-ms", "STUB_DSH_URL_DELAY_MS", "0")) ?? 0
 let token = knob("--token", "STUB_DSH_TOKEN", "stub-token")
 /// A ceiling on our own lifetime, so a leaked test child cannot outlive the run.
 let lifetimeMS = Int(knob("--lifetime-ms", "STUB_DSH_LIFETIME_MS", "120000")) ?? 120000
+/// Bytes of chatter printed before the URL line, to reproduce a dsh whose plugin
+/// loader is loud. Real dsh prints hundreds of lines while plugins activate.
+let chatterBytes = Int(knob("--chatter-bytes", "STUB_DSH_CHATTER_BYTES", "0")) ?? 0
 
 // MARK: - Output
 
@@ -153,6 +156,18 @@ func serve() -> Bool {
 }
 
 // MARK: - Announce
+
+if chatterBytes > 0 {
+    // One long run of realistic plugin-loader chatter, then the URL line —
+// i.e. exactly the shape that makes a byte-at-a-time reader fall behind.
+    let line = "plugin-loader: activating entry \(String(repeating: "x", count: 60))"
+    var written = 0
+    while written < chatterBytes {
+        out(line)
+        written += line.utf8.count + 1
+    }
+    fflush(stdout)
+}
 
 if urlDelayMS > 0 { Thread.sleep(forTimeInterval: Double(urlDelayMS) / 1000.0) }
 

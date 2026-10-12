@@ -32,6 +32,7 @@
 		AE58C654CF3732D5AAEC391B /* Preflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ABE07BD22C3D75328FF33D1 /* Preflight.swift */; };
 		AEE7D744DB0F13473BB0BCCF /* WebSurfaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6169E7629BEB3B0D2D74536 /* WebSurfaceView.swift */; };
 		AF054154979D72384C7F41E9 /* DSHShellBridge.h in Headers */ = {isa = PBXBuildFile; fileRef = 3E66FB254FE31F86C077CA57 /* DSHShellBridge.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B1E1DBB649361350A0C4F937 /* LineAccumulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BABEC72D98A6EDE5B7B3B0AD /* LineAccumulator.swift */; };
 		BD427EDF6ACBE3348C0693DB /* HealthProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94D81232BC0BF5DCC4FC75EA /* HealthProbe.swift */; };
 		BFB135906B4717202752F56A /* ErrorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DD14FD8BEB3964858ABE8A7 /* ErrorView.swift */; };
 		C8575216B576F633DD33F568 /* DSHShellBridge.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 13A91F246DD56B207C44B831 /* DSHShellBridge.framework */; };
@@ -100,6 +101,7 @@
 		894CD960891199B62E5A233E /* DSHObjCWebUIDelegate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DSHObjCWebUIDelegate.m; sourceTree = "<group>"; };
 		94D81232BC0BF5DCC4FC75EA /* HealthProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthProbe.swift; sourceTree = "<group>"; };
 		AF2B411DAC8CE05EF91F72F2 /* SessionPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPanelView.swift; sourceTree = "<group>"; };
+		BABEC72D98A6EDE5B7B3B0AD /* LineAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineAccumulator.swift; sourceTree = "<group>"; };
 		BD461005C588053EACCEBA44 /* EndpointResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointResolver.swift; sourceTree = "<group>"; };
 		BFE56A703547A47DF3A079F0 /* DshDesktopBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshDesktopBridge.swift; sourceTree = "<group>"; };
 		C39AB84883E1648B1A79CCEA /* ResourceLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceLocator.swift; sourceTree = "<group>"; };
@@ -168,6 +170,7 @@
 				CC660D37722DCCF3F66A5C21 /* FileLogger.swift */,
 				94D81232BC0BF5DCC4FC75EA /* HealthProbe.swift */,
 				6E728D8FBC067F96A7BBE37C /* KeyCode.swift */,
+				BABEC72D98A6EDE5B7B3B0AD /* LineAccumulator.swift */,
 				7ABE07BD22C3D75328FF33D1 /* Preflight.swift */,
 				C39AB84883E1648B1A79CCEA /* ResourceLocator.swift */,
 				7D3C253023D3FE2249D03789 /* SessionStore.swift */,
@@ -420,6 +423,7 @@
 				BD427EDF6ACBE3348C0693DB /* HealthProbe.swift in Sources */,
 				A9E3C5206326F89BF1992FC9 /* KeyCode.swift in Sources */,
 				7226723F560300B9A19DFE0A /* LaunchMode.swift in Sources */,
+				B1E1DBB649361350A0C4F937 /* LineAccumulator.swift in Sources */,
 				AE58C654CF3732D5AAEC391B /* Preflight.swift in Sources */,
 				F9D12D8E78F7608A7FE7E1B3 /* ResourceLocator.swift in Sources */,
 				989B23D3264C2D5CB447DF28 /* SessionStore.swift in Sources */,

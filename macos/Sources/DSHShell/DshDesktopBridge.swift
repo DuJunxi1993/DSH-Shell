@@ -389,7 +389,19 @@ extension DshDesktopBridge: WKScriptMessageHandler {
                 resolve(requestId: id, ok: true, value: outcome.resultDictionary)
 
             case "closeWindow":
-                webView?.window?.performClose(nil)
+                // dsh sends the revision and offers to close only "if its
+                // configuration is still current". We do not check it, and
+                // should not: the window is ours to close, and a stale
+                // revision here would only produce a window the user cannot
+                // get rid of by keyboard.
+                //
+                // Logged because this path is easy to break invisibly. dsh
+                // owns `meta+KeyW` on macOS, so the shell's own Close Window
+                // item never runs — if this stops firing, ⌘W is dead and
+                // nothing else would say so.
+                let window = webView?.window
+                Log.info("closeWindow: dsh requested it (revision \(payload["revision"] as? String ?? "-")), performing close on \(window?.windowNumber.description ?? "no window")")
+                window?.performClose(nil)
 
             case "beginWindowDrag":
                 beginWindowDrag(screenX: payload["screenX"] as? Double ?? 0,

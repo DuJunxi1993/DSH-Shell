@@ -10,7 +10,7 @@ public enum DSHProcessError: Error, LocalizedError, Sendable {
     case alreadyRunning
     case spawnFailed(Int32)
     case spawnFailedWithDetail(Int32, String)
-    case timedOutWaitingForURL(Int)
+    case timedOutWaitingForURL(Int, diagnostics: String)
     case noExistingEndpointFound
     case childExitedUnexpectedly(Int32, lastLogLines: [String])
     case nestedSession(vars: [String])
@@ -30,10 +30,14 @@ public enum DSHProcessError: Error, LocalizedError, Sendable {
             return "Failed to spawn dsh (errno \(code)). If dsh is a node script, ensure `node` is reachable from the app's PATH (e.g. /opt/homebrew/bin)."
         case .spawnFailedWithDetail(let code, let detail):
             return "Failed to spawn dsh (errno \(code)): \(detail)"
-        case .timedOutWaitingForURL(let seconds):
+        case .timedOutWaitingForURL(let seconds, let diagnostics):
+            // The old text pointed at "the console tab", which is a live UI that
+            // is useless here — the user cannot see it while a launch screen is
+            // up, and it is empty after a relaunch. The diagnosis has to be in
+            // the error itself.
             return "dsh web did not print its authenticated URL line within \(seconds)s. "
-                + "dsh's startup loader gates that line, and a port that answers is not enough — "
-                + "the index answers 401 without the token. See the console tab for dsh's own output."
+                + "dsh prints that line from a plugin lifecycle hook, so a silent "
+                + "dsh is stuck loading, not slow to listen.\n\n\(diagnostics)"
         case .noExistingEndpointFound:
             return "No dsh instance is listening on the configured port."
         case .childExitedUnexpectedly(let code, let lines):
@@ -90,8 +94,6 @@ public actor DSHProcessManager {
     private let resolver: EndpointResolver
 
     private var process: Process?
-    private var stdoutTask: Task<Void, Never>?
-    private var stderrTask: Task<Void, Never>?
     private var listeners: [UUID: AsyncStream<DSHProcessEvent>.Continuation] = [:]
     private var state: ConnectionState = .idle
     private var lastLogLines: [String] = []
@@ -141,6 +143,98 @@ public actor DSHProcessManager {
             return try await startSpawn()
         case .attach:
             return try await startAttach()
+        }
+    }
+
+        /// Who holds the port, what the child is doing, and what dsh last said.
+    ///
+    /// Assembled only once something has already gone wrong — every part of it
+    /// runs another process, and none of it should happen on a healthy start.
+    ///
+    /// No shell is involved: `Process` is invoked directly with an argument
+    /// vector built from integers we produced. The rule this class otherwise
+    /// holds to — "never invokes a shell, so user input cannot become argv
+    /// injection" — survives.
+    static func diagnostics(port: Int, pid: Int32, lines: [String], extra: String? = nil) async -> String {
+        var parts: [String] = []
+        if let extra { parts.append(extra) }
+
+        // dsh's own output, blank lines dropped. This is the reason the whole
+        // function exists: a stalled start used to leave the log holding
+        // nothing but the shell's own "starting" line.
+        let tail = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.suffix(20)
+        if tail.isEmpty {
+            parts.append("dsh produced no output at all")
+        } else {
+            parts.append("dsh's last \(tail.count) line(s):\n"
+                         + tail.map { "    \($0)" }.joined(separator: "\n"))
+        }
+
+        parts.append(await describePortHolder(port) ?? "nothing is bound to port \(port)")
+        parts.append(await describeChild(pid))
+        return parts.joined(separator: "\n")
+    }
+
+    /// `lsof` for whoever owns the port.
+    ///
+    /// A live listener is the interesting case. `Preflight` already refuses to
+    /// start when one exists, so reaching here with a holder means something
+    /// took the port between the preflight and dsh's own `listen` — the one race
+    /// the preflight cannot close, and the one this makes visible.
+    private static func describePortHolder(_ port: Int) async -> String? {
+        guard let output = await run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)"], timeout: 5),
+              !output.isEmpty
+        else { return nil }
+        let rows = output.split(separator: "\n").dropFirst().prefix(4)
+        guard !rows.isEmpty else { return nil }
+        return "port \(port) is in use by:\n"
+            + rows.map { "    \($0.trimmingCharacters(in: .whitespaces))" }.joined(separator: "\n")
+    }
+
+    /// What the spawned child is, and whether it is still alive.
+    ///
+    /// "Exited without printing a URL line" and "still running, silent" are the
+    /// two halves of the question, and they point at different bugs.
+    private static func describeChild(_ pid: Int32) async -> String {
+        guard let output = await run("/bin/ps",
+                                     ["-o", "pid,ppid,stat,etime,command", "-p", "\(pid)"],
+                                     timeout: 5),
+              !output.isEmpty
+        else {
+            return "dsh pid \(pid) is no longer running — it exited without printing a URL line"
+        }
+        let rows = output.split(separator: "\n").dropFirst()
+        guard !rows.isEmpty else {
+            return "dsh pid \(pid) is no longer running — it exited without printing a URL line"
+        }
+        return "child process:\n"
+            + rows.map { "    \($0.trimmingCharacters(in: .whitespaces))" }.joined(separator: "\n")
+    }
+
+    /// Run a diagnostic tool, bounded by `timeout`. Never throws: a diagnostic
+    /// that cannot be gathered reports nothing rather than replacing the real
+    /// error with a second one.
+    private static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) async -> String? {
+        guard FileManager.default.isExecutableFile(atPath: executable) else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do { try process.run() } catch { return nil }
+
+        return await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 
@@ -203,17 +297,19 @@ public actor DSHProcessManager {
         // can capture the local bindings without ceremony.
         let outHandle = stdoutPipe.fileHandleForReading
         let errHandle = stderrPipe.fileHandleForReading
-        stdoutTask = Task.detached(priority: .utility) { [weak self] in
-            await self?.drain(handle: outHandle, isErr: false)
-        }
-        stderrTask = Task.detached(priority: .utility) { [weak self] in
-            await self?.drain(handle: errHandle, isErr: true)
-        }
+        drain(handle: outHandle, isErr: false)
+        drain(handle: errHandle, isErr: true)
 
         // Wait for the authenticated URL line. The port is only ever logged,
         // never adopted: see `probePortLiveness`.
-        let deadline = Date().addingTimeInterval(TimeInterval(settings.spawnTimeoutSeconds))
-        var announcedListening = false
+        let startedAt = Date()
+        let deadline = startedAt.addingTimeInterval(TimeInterval(settings.spawnTimeoutSeconds))
+        // Reported once, well before the deadline, so a dsh that is wedged
+        // produces an explanation instead of a window that sits on
+        // "Launching dsh web…" for two minutes and then a bare timeout.
+        let stallAt = startedAt.addingTimeInterval(TimeInterval(settings.spawnStallReportSeconds))
+        var stallReported = false
+        var lastPhase: PortStatus?
         while true {
             if Task.isCancelled {
                 await terminateSpawnedChild()
@@ -229,18 +325,68 @@ public actor DSHProcessManager {
                 await terminateSpawnedChild()
                 throw DSHProcessError.spawnFailed(-1)
             default:
-                // The socket binds seconds before dsh's plugin Loader settles and
-                // prints the URL. Telling the two apart is the difference between
-                // "dsh is slow" and "dsh is broken" in the log — and it is the
-                // only thing a port probe is good for.
-                if !announcedListening, await probePortLiveness() {
-                    announcedListening = true
+                // Logged on *change*, not once. A start that is progressing
+                // produces one line; a start that is stuck produces one line
+                // naming which of the two stuck states it is in.
+                let status = await probePortLiveness()
+                if status != lastPhase {
+                    Log.info("startup: dsh pid \(pid) — port \(settings.preferredPort) \(status.summary); waiting for the URL line")
+                    lastPhase = status
+                }
+                if !stallReported, Date() >= stallAt {
+                    stallReported = true
+                    // Not a failure: the deadline below still decides. This only
+                    // stops the wait from being silent, and says which of the two
+                    // stuck states it is in.
+                    let waited = settings.spawnStallReportSeconds
+                    let budget = settings.spawnTimeoutSeconds
+                    let summary = """
+                        dsh has printed no URL line after \(waited)s and is not \
+                        being failed yet (deadline \(budget)s). Port \
+                        \(settings.preferredPort): \(status.summary).
+                        """
+                    let evidence = await Self.diagnostics(
+                        port: settings.preferredPort, pid: pid, lines: lastLogLines)
+                    Log.error(summary + "\n" + evidence)
                 }
                 if Date() >= deadline {
+                    // Gather the evidence *before* the teardown. Killing the
+                    // child first makes `ps` report nothing, and "the process
+                    // is gone" is the one thing this diagnosis must not be able
+                    // to say about a dsh that was alive the instant before.
+                    let diagnostics = await Self.diagnostics(
+                        port: settings.preferredPort, pid: pid, lines: lastLogLines,
+                        extra: "final port state: \(status.summary)")
                     await terminateSpawnedChild()
-                    throw DSHProcessError.timedOutWaitingForURL(settings.spawnTimeoutSeconds)
+                    throw DSHProcessError.timedOutWaitingForURL(
+                        settings.spawnTimeoutSeconds, diagnostics: diagnostics)
                 }
                 try? await Task.sleep(nanoseconds: UInt64(settings.pollIntervalSeconds * 1_000_000_000))
+            }
+        }
+    }
+
+    /// What the port we asked dsh for is doing right now.
+    ///
+    /// The distinction is the whole point. "dsh is slow" and "dsh is broken" are
+    /// different failures with the same symptom in the window, and they are
+    /// separable: dsh prints its URL from a plugin lifecycle hook
+    /// (`ctx.inject(["connection"], …)` in dsh-web-app), so a dsh that is
+    /// *listening* but silent is stuck resolving that dependency chain, while a
+    /// dsh that is not listening yet has not reached `server.listen()`.
+    enum PortStatus: Equatable {
+        /// No fixed port configured, or the child is gone — nothing to ask.
+        case notApplicable
+        case notListening
+        /// Answering. The status code is 401 without a token, which is expected
+        /// and still means "listening".
+        case listening(statusCode: Int)
+
+        var summary: String {
+            switch self {
+            case .notApplicable: return "not probed"
+            case .notListening: return "nothing listening"
+            case .listening(let code): return "listening (HTTP \(code))"
             }
         }
     }
@@ -255,21 +401,17 @@ public actor DSHProcessManager {
     /// silently inert; against one that does not, it worked. The behaviour of
     /// the app therefore depended on the dsh version, which is the worst
     /// possible place for it.
-    private func probePortLiveness() async -> Bool {
+    private func probePortLiveness() async -> PortStatus {
         guard settings.preferredPort > 0, Preflight.isLoopback(settings.listenHost) else {
-            return false
+            return .notApplicable
         }
-        guard let process, process.isRunning else { return false }
+        guard let process, process.isRunning else { return .notApplicable }
         guard let url = URL(string: "http://\(settings.listenHost):\(settings.preferredPort)/") else {
-            return false
+            return .notApplicable
         }
         let probe = HealthProbe()
         let result = await probe.probe(url: url, timeout: 1.0)
-        if result.reachable {
-            logger.info("port \(self.settings.preferredPort, privacy: .public) is listening (HTTP \(result.statusCode, privacy: .public)); still waiting for the authenticated URL line")
-            return true
-        }
-        return false
+        return result.reachable ? .listening(statusCode: result.statusCode) : .notListening
     }
 
     /// Best-effort teardown of the just-spawned child when startup fails
@@ -290,13 +432,37 @@ public actor DSHProcessManager {
         self.process = nil
     }
 
-    /// Reads one byte at a time from a `FileHandle.AsyncBytes` and accumulates
-    /// them into a `Data` buffer, splitting on `0x0A` (newline) and forwarding
-    /// each line to the actor. Marked `nonisolated` so it can run inside a
-    /// `Task.detached` without dragging the actor's executor.
-    private nonisolated func drain(handle: FileHandle, isErr: Bool) async {
-        var buffer = Data()
-        func emit(_ line: String) {
+    /// Reads one pipe and hands whole lines to the actor.
+    ///
+    /// ## The version this replaces was the bug
+    ///
+    /// It iterated `FileHandle.AsyncBytes`, which yields **one byte per
+    /// iteration** — a `read` syscall and a cooperative-pool hop per byte.
+    /// Measured against a dsh that prints a realistic plugin-loader log, that
+    /// sustains roughly 25 bytes/second. So a 20 KB startup log put the URL line
+    /// thirteen minutes behind the pipe, and 200 KB never arrived at all.
+    ///
+    /// That is the whole explanation for a launch that sits on "Launching dsh
+    /// web…" forever: dsh was healthy, the shell was reading its output at a
+    /// speed that made reaching the URL line impossible. It looked
+    /// "probabilistic" only because dsh's startup chatter varies — quiet
+    /// launches finished, loud ones wedged.
+    ///
+    /// ## Why `readabilityHandler` and not a blocking loop
+    ///
+    /// A blocking `read` loop is the obvious answer and it does not work: the
+    /// pipes `Process` hands back are non-blocking, so it returns EOF
+    /// immediately and reports a child that is alive and quiet as a child that
+    /// has exited. And parking a cooperative-pool thread for the life of the
+    /// shell is not acceptable anyway.
+    ///
+    /// `readabilityHandler` is the API that already solves both: the kernel
+    /// wakes it, `availableData` hands over everything buffered in one piece,
+    /// and an empty read is genuinely EOF. No thread is held, and throughput is
+    /// bounded by the pipe rather than by byte-by-byte iteration.
+    private nonisolated func drain(handle: FileHandle, isErr: Bool) {
+        let lines = LineAccumulator()
+        let emit: @Sendable (String) -> Void = { line in
             Task { [weak self] in
                 guard let self else { return }
                 if isErr {
@@ -306,26 +472,21 @@ public actor DSHProcessManager {
                 }
             }
         }
-        do {
-            for try await byte in handle.bytes {
-                if byte == 0x0A {
-                    let line = String(data: buffer, encoding: .utf8) ?? ""
-                    buffer.removeAll(keepingCapacity: true)
-                    emit(line)
-                } else {
-                    buffer.append(byte)
-                }
+        handle.readabilityHandler = { source in
+            let chunk = source.availableData
+            guard !chunk.isEmpty else {
+                // The child closed the pipe. Retire the handler and emit the
+                // partial line the loader may have left unterminated.
+                source.readabilityHandler = nil
+                if let last = lines.takeRemainder() { emit(last) }
+                return
             }
-            if !buffer.isEmpty, let last = String(data: buffer, encoding: .utf8) {
-                emit(last)
-            }
-        } catch {
-            // fd closed or read failed
+            for line in lines.takeCompletedLines(chunk) { emit(line) }
         }
     }
 
     private func consumeStdout(_ line: String) {
-        appendLog(line)
+        appendLog(line, isErr: false)
         broadcast(.stdoutLine(line))
         if case .ready = state { return }
         // Only stdout is a URL source. stderr carries dsh's `bili` proxy URL,
@@ -338,13 +499,27 @@ public actor DSHProcessManager {
     }
 
     private func consumeStderr(_ line: String) {
-        appendLog(line)
+        appendLog(line, isErr: true)
         broadcast(.stderrLine(line))
     }
 
-    private func appendLog(_ line: String) {
+    /// dsh's own output, to the log file as well as to memory.
+    ///
+    /// This used to live only in `lastLogLines`, which is in-memory and gone at
+    /// exit. So when dsh failed to print its URL line, the log contained exactly
+    /// one entry — the shell's own "starting" line — and nothing whatsoever about
+    /// what dsh was doing. Measured over one afternoon: 5 undiagnosable stalls
+    /// out of 12 launches, each of them this missing line.
+    ///
+    /// The file logger is async on its own queue, so this does not add latency to
+    /// the drain task that is racing dsh's startup.
+    private func appendLog(_ line: String, isErr: Bool) {
         lastLogLines.append(line)
         if lastLogLines.count > 200 { lastLogLines.removeFirst(lastLogLines.count - 200) }
+        // Blank lines are the majority of a plugin loader's chatter; keeping
+        // them makes the real lines unreadable in a text editor.
+        guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        Log.debug("\(isErr ? "stderr" : "stdout") │ \(line)")
     }
 
     /// The child died. This is the single place that decides whether the shell
@@ -352,7 +527,7 @@ public actor DSHProcessManager {
     /// ones that used to be silent.
     private func handleChildExit(status: Int32) {
         lastSpawnedPID = nil
-        appendLog("[exit] status=\(status)")
+        appendLog("[exit] status=\(status)", isErr: true)
         broadcast(.childExited(status: status))
         if case .shuttingDown = state { return }
 
@@ -477,10 +652,8 @@ public actor DSHProcessManager {
         lastSpawnedPID = nil
         process = nil
 
-        stdoutTask?.cancel()
-        stderrTask?.cancel()
-        stdoutTask = nil
-        stderrTask = nil
+        // The drain loops end on their own: they are blocked in `read` on a
+        // pipe whose write end died with the child. There is nothing to cancel.
         inFlightAttach?.cancel()
         inFlightAttach = nil
 

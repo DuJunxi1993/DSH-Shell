@@ -61,8 +61,8 @@ final class LifecycleTests: XCTestCase {
 
     /// Settings pointed at the stub, on a port nothing else owns.
     private func stubSettings(
-        port: Int? = nil, mode: String, urlDelayMS: Int = 0,
-        spawnTimeoutSeconds: Int = 20
+        port: Int? = nil, mode: String, urlDelayMS: Int = 0, chatterBytes: Int = 0,
+        spawnTimeoutSeconds: Int = 20, stallReportSeconds: Int = 20
     ) -> ShellSettings {
         var settings = ShellSettings.default
         settings.dshBinaryPath = Self.stubURL.path
@@ -72,15 +72,18 @@ final class LifecycleTests: XCTestCase {
         settings.autoRestartOnCrash = false
         settings.pollIntervalSeconds = 0.2
         settings.spawnTimeoutSeconds = spawnTimeoutSeconds
+        settings.spawnStallReportSeconds = stallReportSeconds
         // The knobs `buildArgv` cannot pass, so they travel by environment.
         setenv("STUB_DSH_MODE", mode, 1)
         setenv("STUB_DSH_URL_DELAY_MS", String(urlDelayMS), 1)
+        setenv("STUB_DSH_CHATTER_BYTES", String(chatterBytes), 1)
         return settings
     }
 
     private func clearStubEnv() {
         unsetenv("STUB_DSH_MODE")
         unsetenv("STUB_DSH_URL_DELAY_MS")
+        unsetenv("STUB_DSH_CHATTER_BYTES")
     }
 
     override func tearDown() {
@@ -159,6 +162,92 @@ final class LifecycleTests: XCTestCase {
             XCTAssertFalse(message.contains("pkill"), "must not suggest a name-based kill")
         }
         assertPortFree(settings.preferredPort)
+    }
+
+    /// A timeout that says only "dsh did not answer in time" is indistinguishable
+    /// from every other timeout, which is how 5 stalls in 12 real launches went
+    /// undiagnosed. The error has to carry the evidence.
+    func testATimeoutCarriesTheEvidenceAndNotJustAnElapsedTime() async throws {
+        let settings = stubSettings(mode: "no-url-line", spawnTimeoutSeconds: 3)
+        let manager = DSHProcessManager(settings: settings)
+        defer { Task { await manager.stop() } }
+
+        do {
+            let url = try await manager.start()
+            return XCTFail("expected a timeout, got \(url)")
+        } catch {
+            guard case DSHProcessError.timedOutWaitingForURL(_, let diagnostics) = error else {
+                return XCTFail("expected a timeout, got \(error)")
+            }
+            // dsh's own output, not the shell's opinion about it.
+            XCTAssertTrue(diagnostics.contains("printUrl disabled"),
+                          "must quote what dsh actually said: \(diagnostics)")
+            XCTAssertTrue(diagnostics.contains("child process:"),
+                          "must say whether the child is alive: \(diagnostics)")
+            // The stale advice this replaced: a live console tab the user cannot
+            // see while a launch screen is up, and which is empty after relaunch.
+            let message = (error as? DSHProcessError)?.errorDescription ?? ""
+            XCTAssertFalse(message.contains("console tab"),
+                           "the diagnosis must not defer to a UI that is not reachable")
+            XCTAssertTrue(message.contains(diagnostics.prefix(80)),
+                          "the visible error must carry the evidence itself")
+        }
+        assertPortFree(settings.preferredPort)
+    }
+
+    func testTheStallIsReportedLongBeforeTheDeadline() async throws {
+        // A dsh that never announces itself used to produce silence for the whole
+        // 120s. `spawnStallReportSeconds` is what turns that into an explanation
+        // while the user is still looking at it — and it must stay well inside
+        // the timeout, or the explanation arrives with the failure it was
+        // supposed to precede.
+        XCTAssertLessThan(ShellSettings.default.spawnStallReportSeconds,
+                          ShellSettings.default.spawnTimeoutSeconds,
+                          "the stall report is pointless if it lands at the deadline")
+
+        // 6s deadline with a 1s stall report: if the report ever became the
+        // thing that decides, this would return in ~1s instead of ~6s.
+        let settings = stubSettings(mode: "no-url-line",
+                                    spawnTimeoutSeconds: 6, stallReportSeconds: 1)
+        let manager = DSHProcessManager(settings: settings)
+        defer { Task { await manager.stop() } }
+
+        let started = Date()
+        do {
+            _ = try await manager.start()
+            XCTFail("expected a timeout")
+        } catch {
+            let elapsed = Date().timeIntervalSince(started)
+            XCTAssertGreaterThan(elapsed, 4, "the deadline should still be what decides")
+            XCTAssertLessThan(elapsed, 12, "and it should be honoured, not extended")
+        }
+    }
+
+    /// The regression test for the launch that never leaves "Launching dsh web…".
+    ///
+    /// The reader used to iterate the pipe one byte at a time, which sustained
+    /// about 25 bytes/second. dsh prints its URL line *last*, after the plugin
+    /// loader has been chatty, so the volume of chatter before it decided whether
+    /// the app would ever start. 20 KB was enough to make it impossible; the
+    /// symptom looked probabilistic only because a quiet dsh boots fine.
+    func testALoudStartupLogDoesNotDelayTheURLLine() async throws {
+        for chatter in [0, 20_000, 200_000] {
+            let settings = stubSettings(mode: "ok", chatterBytes: chatter, spawnTimeoutSeconds: 30)
+            let manager = DSHProcessManager(settings: settings)
+            let started = Date()
+            do {
+                let url = try await manager.start()
+                let elapsed = Date().timeIntervalSince(started)
+                XCTAssertEqual(url.port, settings.preferredPort)
+                XCTAssertLessThan(elapsed, 10,
+                                  "chatter=\(chatter): the reader is volume-dependent again")
+            } catch {
+                await manager.stop()
+                return XCTFail("chatter=\(chatter): \(error)")
+            }
+            await manager.stop()
+            assertPortFree(settings.preferredPort)
+        }
     }
 
     func testSurfacesAnEarlyExitWithStderr() async throws {

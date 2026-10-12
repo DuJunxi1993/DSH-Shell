@@ -109,16 +109,35 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     // MARK: - Actions
 
+    /// Show or hide the main window.
+    ///
+    /// Restoring goes through ``AppCoordinator/showMainWindow``, not through
+    /// `NSWindow`. That is the whole fix for the item that "minimised instead of
+    /// hiding, and could not bring the window back after ⌘W":
+    ///
+    /// - The window belongs to a SwiftUI `WindowGroup` scene. Closing it — red
+    ///   button, ⌘W, or dsh's own `closeWindow` — destroys the `NSWindow` object
+    ///   while the scene survives. A `weak` reference to it is `nil` from that
+    ///   moment on.
+    /// - The old code then fell back to `NSApp.windows.first`, which by then is
+    ///   either empty or the settings window, and called
+    ///   `makeKeyAndOrderFront` on it. That cannot re-create a window whose scene
+    ///   has no window.
+    /// - Hiding with `orderOut` is also what produced the "it minimised"
+    ///   impression: an app with no key window and a live Dock icon looks
+    ///   exactly like a minimise.
+    ///
+    /// So there is one restore path, and it is the one macOS itself uses for
+    /// ⌘-clicking the Dock icon — which is why that always worked.
     @objc private func toggleWindow() {
-        guard let window = mainWindow else {
-            NSApp.windows.first?.makeKeyAndOrderFront(nil)
-            return
-        }
-        if window.isVisible {
-            window.orderOut(nil)
+        guard let coordinator else { return }
+        if coordinator.isMainWindowVisible {
+            // Deliberately `orderOut` and not `miniaturize`: minimising leaves a
+            // window in the Dock's window list, which is a different thing and
+            // harder to get back than this one.
+            coordinator.mainWindow?.orderOut(nil)
         } else {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            coordinator.showMainWindow()
         }
     }
 
@@ -138,8 +157,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// the sessions panel or a sheet. `AppCoordinator.mainWindow` is set by the
     /// web surface when it is attached to a window, which is what "the main
     /// window" actually means here.
+    ///
+    /// Kept for callers that need the live `NSWindow` — hiding is an `NSWindow`
+    /// operation and cannot be expressed as "show", so the two directions
+    /// legitimately differ. What must not happen is *restoring* through this:
+    /// see `toggleWindow`.
     var mainWindow: NSWindow? {
-        coordinator?.mainWindow ?? NSApp.mainWindow
+        coordinator?.mainWindow
     }
 }
 

@@ -4,11 +4,19 @@ import WebKit
 import DSHShellCore
 import OSLog
 
+/// Identifies the main scene across the app: `WindowGroup(id:)` here, and
+/// `openWindow(id:)` from the status item.
+enum MainScene {
+    static let id = "dsh"
+    static let sessionsID = "sessions"
+}
+
 /// Top-level scene. Shows one of three states: a loading overlay, the WKWebView,
 /// or an error view with a retry button. The connection status badge floats in
 /// the middle of the (transparent) titlebar, without a toolbar or any material.
 struct ShellScene: View {
     @EnvironmentObject private var coordinator: AppCoordinator
+    @Environment(\.openWindow) private var openWindow
     @State private var showReadyToast = false
     @State private var toastTask: Task<Void, Never>?
 
@@ -19,6 +27,12 @@ struct ShellScene: View {
             readyToast
         }
         .background(TitlebarConfiguringView())
+        .onAppear {
+            // The scene is the only place `openWindow` resolves correctly, so
+            // the coordinator borrows it rather than trying to find a window by
+            // itself. See `AppCoordinator.showMainWindow`.
+            coordinator.adopt { openWindow(id: MainScene.id) }
+        }
         .onChange(of: coordinator.state) { _, newState in
             if case .ready = newState {
                 presentReadyToast()

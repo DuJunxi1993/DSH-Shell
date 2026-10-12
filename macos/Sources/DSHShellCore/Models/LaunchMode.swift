@@ -33,6 +33,16 @@ public struct ShellSettings: Codable, Equatable, Sendable {
     public var trustedHosts: [String]
     public var pollIntervalSeconds: Double
     public var spawnTimeoutSeconds: Int
+    /// Seconds of silence from dsh after which the log explains itself.
+    ///
+    /// Separate from `spawnTimeoutSeconds` because the two answer different
+    /// questions. The timeout decides success or failure; this only decides how
+    /// long a user watches a launch screen before something explains itself. It
+    /// is a setting because 20s is right for a machine with a warm cache and
+    /// wrong for one where dsh genuinely needs half a minute to load plugins —
+    /// and a value that is wrong in that direction should be adjustable, not
+    /// argued with.
+    public var spawnStallReportSeconds: Int
     public var autoRestartOnCrash: Bool
     /// Page zoom, 50–100 in 10% steps. Carries a default on decode, so a
     /// settings file written before this field existed still loads — the same
@@ -47,6 +57,7 @@ public struct ShellSettings: Codable, Equatable, Sendable {
         trustedHosts: [String] = ["127.0.0.1", "localhost"],
         pollIntervalSeconds: Double = 0.5,
         spawnTimeoutSeconds: Int = 120,
+        spawnStallReportSeconds: Int = 20,
         autoRestartOnCrash: Bool = true,
         zoomPercent: Int = 100
     ) {
@@ -57,6 +68,7 @@ public struct ShellSettings: Codable, Equatable, Sendable {
         self.trustedHosts = trustedHosts
         self.pollIntervalSeconds = pollIntervalSeconds
         self.spawnTimeoutSeconds = spawnTimeoutSeconds
+        self.spawnStallReportSeconds = spawnStallReportSeconds
         self.autoRestartOnCrash = autoRestartOnCrash
         self.zoomPercent = zoomPercent
     }
@@ -73,6 +85,7 @@ public struct ShellSettings: Codable, Equatable, Sendable {
         trustedHosts = value(.trustedHosts, ["127.0.0.1", "localhost"])
         pollIntervalSeconds = value(.pollIntervalSeconds, 0.5)
         spawnTimeoutSeconds = value(.spawnTimeoutSeconds, 120)
+        spawnStallReportSeconds = value(.spawnStallReportSeconds, 20)
         autoRestartOnCrash = value(.autoRestartOnCrash, true)
         zoomPercent = value(.zoomPercent, 100)
     }

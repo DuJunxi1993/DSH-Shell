@@ -29,13 +29,15 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | Native shortcuts — only the chords dsh actually has bound | ✅ 17 chords across 28 commands; everything else stays with AppKit/WebKit, so ⌘C/⌘V/⌘X and typing still work |
 | Device-local shortcut preferences, dsh's real document/edit shapes | ✅ `keybindings.json`, conflict-checked, corrupt files reported not overwritten |
 | One-command Release `.app` | ✅ `./scripts/build-app.sh`, ad-hoc signed, arm64 |
-| Unit tests for `DSHShellCore` | ✅ 146 passing, 0 failing |
+| A launch that never leaves "Launching dsh web…" | ✅ was the pipe reader, not dsh — see below |
+| dsh's own stdout/stderr in the log, plus a diagnosis on timeout | ✅ previously the log held one line and nothing about dsh |
+| Unit tests for `DSHShellCore` | ✅ 153 passing, 0 failing |
 | Hermetic lifecycle tests against `stub-dsh` | ✅ 13, every one ends by asserting the port is bindable again |
 | Single instance — a second launch raises the window, never fights for the port | ✅ `flock`, checked before anything else |
-| Menu-bar status item: show/hide, zoom reset, exit | ✅ carries the connection state |
+| Menu-bar status item: show/hide, zoom reset, exit | ✅ carries the connection state; restores the window through the SwiftUI scene, not by hunting for an `NSWindow` that a closed scene no longer owns |
 | External links go to the default browser; `target=_blank` handled | ✅ one origin allowed, `http(s)` only |
 | Page zoom 50–100% in 10% steps, persisted | ✅ menu + status item |
-| Daily rotating file log + `crash.log` | ✅ `~/Library/Application Support/DSHShell/logs/` |
+| Daily rotating file log + `crash.log`, dsh's own output included | ✅ `~/Library/Application Support/DSHShell/logs/`; the test suite logs elsewhere so stub output cannot be mistaken for evidence |
 | dsh desktop-contract self-check reported to the log | ✅ `platform`, `--dsh-frame-*`, `-webkit-app-region` |
 | `swift build` and `xcodebuild` both clean | ✅ 0 errors; both are run by `build-app.sh` because `swift test` alone never compiles the app target |
 | Preflight: refuse to nest inside a harness session | ✅ |
@@ -114,11 +116,13 @@ Then ⌘R. The generated **shared scheme is committed**, which is what makes `-s
 ### Testing
 
 ```sh
-swift test      # 146 hermetic tests
+swift test      # 153 hermetic tests
 swift build     # compiles the app target too — `swift test` does NOT
 ```
 
 `swift test` only reaches `DSHShellCore`, the bridge shim and `stub-dsh`. It never compiles `Sources/DSHShell`, which is how `Bundle.module` — a SwiftPM-only accessor that does not exist in the Xcode target — survived to the Xcode build. Both commands are part of `build-app.sh` for that reason.
+
+`stub-dsh` can print startup chatter before its URL line (`--chatter-bytes`), which is what makes a launch's dependence on output volume testable rather than anecdotal.
 
 No test boots a real dsh: the lifecycle tests drive `stub-dsh`, a purpose-built test double.
 
@@ -148,7 +152,8 @@ Settings live at `~/Library/Application Support/dsh-swiftUI/settings.json`. Defa
 | `listenHost` | Local host passed to `dsh web --host`. `0.0.0.0` is **not** supported (mirrors dsh's own policy). |
 | `preferredPort` | Fixed port forwarded to `dsh web --port`. A fixed port lets preflight refuse to start over somebody else's listener instead of killing it, and lets `attach` know where to look. `0` → the flag is omitted entirely and the OS assigns a port. |
 | `trustedHosts` | Hosts appended to `dsh web --trusted-host` (repeatable). |
-| `spawnTimeoutSeconds` | How long to wait for the `dsh web:` URL line on stdout before probing the fixed port as a fallback. |
+| `spawnTimeoutSeconds` | How long to wait for the `dsh web:` URL line on stdout before failing. Decides success or failure. |
+| `spawnStallReportSeconds` | How long dsh may be silent before the log explains what it is doing. **Not** a timeout — the one above still decides. Raise it if your dsh legitimately needs longer to load plugins. |
 | `autoRestartOnCrash` | Bounded exponential back-off restart on unexpected child exit: 3 attempts at 2s, 4s and 8s. The counter resets once an endpoint resolves, so a dsh that crashes once an hour is not treated as a crash loop. |
 
 The shell forwards no working directory to `dsh web` — the dsh SPA picks its own workspace inside the browser UI.
@@ -190,10 +195,33 @@ There is a plain log file, one per day:
 ~/Library/Application Support/DSHShell/logs/dsh-shell.log.YYYY-MM-DD
 ```
 
-The one line worth knowing about is the keyboard filter, logged whenever dsh's command catalog grows:
+`swift test` writes to a scratch directory instead (`$TMPDIR/DSHShellTestLogs`), detected automatically — the suite drives dozens of stub lifecycles whose output deliberately mimics dsh, and those lines must not end up in the file a person reads to diagnose their own launch.
+
+### Reading a launch
+
+dsh's own output goes to the file, both streams, prefixed by origin:
 
 ```
-[info] desktop bridge ready — host=true webkit-app-region=false (expected: WebKit has no such property, so drag rows need native forwarding)
+[info] startup: dsh pid 64379 — port 3080 nothing listening; waiting for the URL line
+[info] startup: dsh pid 64379 — port 3080 listening (HTTP 200); waiting for the URL line
+[debug] stdout │ dsh web: http://127.0.0.1:3080/?token=…
+```
+
+The port transitions are the interesting part. dsh prints its URL from a plugin lifecycle hook, so the two stuck states are separable and say different things:
+
+| What you see | What it means |
+|---|---|
+| `nothing listening`, no URL | dsh has not reached `server.listen` — starting, or failing to start |
+| `listening (HTTP 200)`, no URL | dsh is alive but stuck resolving its plugin chain. This used to be undiagnosable |
+| a `timedOutWaitingForURL` error | Carries dsh's last 20 lines, `lsof` on the port, and `ps` on the child |
+
+Two failures look identical from the window and are now told apart in the log: a dsh that is slow to start, and a shell that is slow to *read* it.
+
+If `spawnTimeoutSeconds` feels too long, `spawnStallReportSeconds` (default 20) makes the shell explain itself well before the timeout. It is a separate setting because it answers a different question — the timeout decides success or failure, this only decides how long a launch screen sits there unexplained.
+
+The one line worth knowing about for shortcuts, logged whenever dsh's command catalog grows:
+
+```
 [info] keyboard filter: 17 bound chord(s) across 28 command(s) — alt+meta+Enter, alt+meta+KeyB, …, meta+Slash
 ```
 
