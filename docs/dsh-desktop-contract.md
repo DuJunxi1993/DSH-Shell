@@ -59,7 +59,17 @@ dsh web: http://127.0.0.1:3080/?token=<token>
 
 D 与 E 的截图**逐字节相同**：布局不取决于桩的保真度，只取决于 dsh 是否应答契约。
 
-全屏态收敛（`html[data-fullscreen]`）：Windows 模式 `--dsh-frame-chrome-top` 由 `32px` → `0px`，`--dsh-frame-overlay-top` 由 `calc(32px + 20px)` → `20px`；darwin 模式同样收敛。**契约在进入全屏时自动处理，壳无需干预。**
+全屏态（`html[data-fullscreen]`）**只收敛两个变量**：Windows 模式 `--dsh-frame-chrome-top` 由 `32px` → `0px`，`--dsh-frame-overlay-top` 由 `calc(32px + 20px)` → `20px`；darwin 模式同样。
+
+**`--dsh-frame-top-clearance` 不收敛**，全屏时仍是 `32px`。三个变量平时同源，全屏是它们唯一分岔的状态，实测：
+
+```
+chromeTop = 0px     ← 已复位
+overlay   = 20px    ← 已复位
+top       = 32px    ← 未复位
+```
+
+所以"壳无需干预"只在**读对变量**时成立：消费 `--dsh-frame-chrome-top`（窗口边缘避让）或 `--dsh-frame-overlay-top`（弹层避让）的地方都是自动的；任何读 `--dsh-frame-top-clearance` 的代码会在全屏时多留 32px。**读 `chrome-top`，不要读 `top-clearance`。**
 
 ### 2.2 A 基线（= 当前 macOS 壳的真实行为）
 
@@ -83,7 +93,20 @@ html[data-windows-titlebar]       { --dsh-frame-top-clearance: var(--dsh-windows
 
 实测确认：frame `padding-top` = `32px`；内容列 `border-top-left-radius` = `16px`；内容起始 y = 32。截图 `probe/windows.png` 可见白色内容面板从 y≈32 开始、左上角有明显圆角，侧栏侧色块铺满整列高度至窗口底部。
 
-全屏 modal overlay 同样 `[data-windows-titlebar] .overlay{padding-top:var(--dsh-windows-titlebar-height)}`，一并被覆盖。
+全屏 modal overlay 也被覆盖 —— 但**不是**靠某条 `[data-windows-titlebar] .overlay{padding-top:…}` 规则（dsh 里没有这条）。弹层的两层各自消费一个变量：
+
+```
+/* 遮罩层从标题栏下沿开始 */
+._mask_o6lrb_18   { position:absolute; inset: var(--dsh-frame-chrome-top, 0px) 0 0; … }
+
+/* 弹层本体的上下留白 */
+._root_o6lrb_6    { padding: max(24px, var(--dsh-frame-overlay-top, 24px)) 24px; … }
+
+/* 弹层内可滚动区的高度上限 */
+._scrollable_4ub78_19 { max-height: calc(100vh - 12px - max(12px, var(--dsh-frame-overlay-top, 12px))); … }
+```
+
+三者都带 `var(…, <兜底值>)`，所以契约缺席时它们退回一个合理值而不是归零 —— 这也是为什么 A 基线（不下发任何变量）看起来仍然正常。
 
 > **测量环境限制**：C 模式在 WKWebView 中测量，而非 WebView2。预留与圆角来自 dsh 的 React/CSS 代码，与引擎无关，结论可迁移。**唯一不可迁移的是 `-webkit-app-region`**：见 §3。
 
