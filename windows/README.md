@@ -29,10 +29,10 @@ Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
 | File drag-and-drop onto the page | `disable_drag_drop_handler()`; needs your eyes on a real drop |
 | Frameless window with an injected title bar | injected, geometry asserted against the live DOM |
 | Content column inset so nothing is occluded | verified: `inset centerCol by 32px`, sidebar left at full height |
-| Page zoom 50–100% in 10% steps, persisted | verified: bar measures 32 logical px at 100% *and* at 50% |
+| Page zoom 50–200% in 10% steps, persisted | verified: bar measures 32 logical px at 100% *and* at 50% |
 | Anti-nest guard (refuses to run inside a harness session) | verified |
 | Port-ownership guard (points at `attach` instead of dying) | verified |
-| `cargo test` → 65 hermetic tests against `stub-dsh` | green |
+| `cargo test` → 82 hermetic tests against `stub-dsh` | green |
 | `cargo clippy --all-targets -- -D warnings` | clean |
 | `cargo build --release` | clean |
 | `.msi` + `.nsis` bundles | built |
@@ -91,8 +91,8 @@ it; the defaults below apply when it is missing.
 | `trusted_hosts` | Repeated as `--trusted-host <host>`; they feed dsh's `/api` browser-trust fence. |
 | `poll_interval_seconds` | How often the liveness probe asks the port. |
 | `spawn_timeout_seconds` | How long to wait for dsh's URL line. dsh's Loader can take that long on a cold profile, so this is generous. |
-| `auto_restart_on_crash` | Accepted for schema compatibility. The shell does not restart dsh: a restart loop would fight the "close the window, dsh dies" contract. |
-| `zoom_percent` | Page zoom, 50–100 in steps of 10. Normalised on read, so a hand-edited 57 behaves like 60. Carries a serde default, so a settings file written before this field existed still loads. |
+| `auto_restart_on_crash` | Restart dsh if it dies on its own. Bounded: three attempts, backing off 2s → 4s → 8s, and the budget resets only after dsh has been up a full minute. After that it stops and tells you, rather than respawning forever. |
+| `zoom_percent` | Page zoom, 50–200 in steps of 10. Normalised on read, so a hand-edited 57 behaves like 60. Carries a serde default, so a settings file written before this field existed still loads. |
 
 ## How the endpoint is found
 
@@ -212,7 +212,7 @@ surface colour read from the page's own CSS variables, so it follows the dsh
 light/dark theme.
 
 - **Drag** the strip, or double-click it to maximize.
-- **− / +** and the percentage step the page zoom, 50–100% in 10% steps, and the
+- **− / +** and the percentage step the page zoom, 50–200% in 10% steps, and the
   choice is remembered. `Ctrl+Alt+↑` / `Ctrl+Alt+↓` do the same. Chromium's own
   `Ctrl+=` zoom is disabled so the percentage cannot drift from the real zoom.
 - The bar keeps its 32 logical pixels at every zoom level, so the buttons stay

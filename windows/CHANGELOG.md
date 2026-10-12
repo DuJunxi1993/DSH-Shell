@@ -10,6 +10,41 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases are tagged with a `windows-` prefix (`windows-v0.1.1`) because Git tags
 share one namespace with the macOS implementation's tags.
 
+## [Unreleased]
+
+### Added
+
+- `auto_restart_on_crash` is no longer a dead config field. A dsh that dies on its
+  own is restarted, bounded to three attempts with a 2s → 4s → 8s backoff. The
+  budget resets only after dsh has stayed up a full minute, so a crash at lunchtime
+  and again at nine are two failures rather than one long one. After the budget is
+  spent the shell stops and says so, instead of respawning forever.
+- A dsh orphaned by an **earlier** run — a crash, a kill, an upgrade from under a
+  running dsh — is now reclaimed instead of making the next launch refuse to start
+  and point at `attach`. Because it means killing a process this shell never
+  spawned, a candidate has to satisfy three independent facts: it owns our port,
+  its parent is PID 1 (orphaned, not in use), and it is the `dsh_binary_path` we
+  are configured to run.
+
+### Fixed
+
+- The zoom ladder is consistent again at its new 200% ceiling. The script's
+  fallback still said 100 while `config.rs` said 200, and two tests had the old
+  ceiling written in as literals — which is the assertion shape the zoom tests
+  exist to avoid, since they stated the old ladder rather than the rule.
+- The port probe is proven able to see a live server, not merely its own socket.
+  The macOS shell shipped a probe that could not fail and thirteen green tests
+  asserting a property that could not hold; Windows passed here for the wrong
+  reason and nobody checked.
+
+### Known limitations
+
+- The desktop contract (`data-windows-titlebar`) is **not implemented by dsh
+  `0.2.0-rc.2`**, so the chrome continues to compensate geometrically. This is the
+  fallback working, not a regression: the chrome declares the contract, reads back
+  whether dsh answered, logs `contractMissing` and carries on. When dsh ships it,
+  the switch is automatic.
+
 ## [0.1.1] - 2026-10-11
 
 ### Fixed
