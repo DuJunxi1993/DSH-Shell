@@ -67,9 +67,10 @@ struct ShellScene: View {
                            onWindowResolved: { coordinator.attach(window: $0) })
                 .ignoresSafeArea(edges: [.top, .bottom])
         case .failed(let reason):
-            ErrorView(reason: reason) {
-                coordinator.reload()
-            }
+            ErrorView(reason: reason,
+                      orphans: coordinator.leftoverProcesses,
+                      onRetry: { coordinator.reload() },
+                      onCloseOrphans: { coordinator.closeLeftoversAndRetry() })
         case .shuttingDown:
             LoadingView(title: "Shutting down dsh…")
         case .launching:

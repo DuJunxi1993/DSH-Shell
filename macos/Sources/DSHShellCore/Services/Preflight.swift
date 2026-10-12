@@ -44,13 +44,32 @@ public enum Preflight {
             vars: nestedSessionMarkers(environment: environment))
     }
 
-    /// Whether `port` can be bound right now.
+    /// Whether anything is listening on `port` right now.
     ///
-    /// Tested by *binding*, not by scraping `lsof`/`netstat`, so it observes
-    /// what dsh's own bind would observe. `SO_REUSEADDR` is set, because that
-    /// is what a listening server sets: without it a socket lingering in
-    /// `TIME_WAIT` from a previous run reports "in use" long after the listener
-    /// is gone, which would refuse every launch after the first.
+    /// Tested by *connecting*, not by binding and not by scraping `lsof`.
+    ///
+    /// The binding probe this replaces looked correct and was not. It set
+    /// `SO_REUSEADDR` so that a socket lingering in `TIME_WAIT` would not report
+    /// "in use" long after the listener was gone — and in exchange it could not
+    /// see a live listener at all, because `bind` succeeds in that case too.
+    /// Measured against a port a real `dsh web` was listening on:
+    ///
+    ///     bind with SO_REUSEADDR -> SUCCESS (errno=0)
+    ///
+    /// So `Preflight` waved dsh through onto an occupied port, dsh came back
+    /// with `EADDRINUSE`, and every `assertPortFree` built on this function
+    /// passed on a port that was still held. The guard and its tests agreed with
+    /// each other and were both wrong.
+    ///
+    /// `connect` separates the two cases exactly. It succeeds only against
+    /// something that is actually accepting connections, and a `TIME_WAIT`
+    /// socket answers `ECONNREFUSED` like an unused port does — which is the
+    /// behaviour the original `SO_REUSEADDR` was there to obtain, arrived at
+    /// without the blind spot.
+    ///
+    /// Anything other than a refusal counts as "not free": the question this
+    /// guards is whether dsh can take the port, and an answer we cannot read is
+    /// not permission.
     public static func isPortFree(host: String, port: Int) -> Bool {
         guard port > 0, isLoopback(host) else { return true }
 
@@ -58,22 +77,24 @@ public enum Preflight {
         guard fd >= 0 else { return false }
         defer { close(fd) }
 
-        var on: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
-
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = UInt16(truncatingIfNeeded: port).bigEndian
-        // INADDR_ANY rather than the specific loopback address: a listener on
-        // 127.0.0.1:port still makes this bind fail, which is the collision we
-        // are looking for, and it also catches a wildcard listener.
-        addr.sin_addr.s_addr = INADDR_ANY.bigEndian
+        // The host under test rather than INADDR_ANY: we want to know whether
+        // *this address* is taken, which is what dsh will try to bind. A name
+        // that does not resolve falls back to the wildcard, so an odd `host`
+        // answers "probably busy" rather than probing something meaningless.
+        let resolved = inet_addr(host)
+        addr.sin_addr.s_addr = resolved == INADDR_NONE ? INADDR_ANY : resolved
 
-        return withUnsafePointer(to: &addr) { pointer in
+        errno = 0
+        let connected = withUnsafePointer(to: &addr) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+        if connected == 0 { return false }          // something is listening
+        return errno == ECONNREFUSED               // nothing is; anything else is unknown
     }
 
     /// Refuse to spawn over a port someone else owns, and say what to do

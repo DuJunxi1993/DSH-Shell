@@ -26,8 +26,16 @@ public enum DSHProcessError: Error, LocalizedError, Sendable {
             return "dsh binary at \(path) is not executable. Run `chmod +x \(path)`."
         case .alreadyRunning:
             return "A dsh process is already running under this manager."
-        case .spawnFailed(let code):
-            return "Failed to spawn dsh (errno \(code)). If dsh is a node script, ensure `node` is reachable from the app's PATH (e.g. /opt/homebrew/bin)."
+        case .spawnFailed:
+            // The associated code is -1 on every path that reaches here without a real errno —
+            // the child exited before it could report anything. Printing "errno
+            // -1" is a lie the user cannot act on, and so is the `node`/PATH
+            // advice that used to follow it: dsh is launched from an absolute
+            // configured path and its own output goes to the log. Point at both
+            // instead.
+            return "dsh did not start, and did not say why. Its own output is in the "
+                + "log file (see Preferences → Diagnostics), and it is also the first "
+                + "thing to look for there."
         case .spawnFailedWithDetail(let code, let detail):
             return "Failed to spawn dsh (errno \(code)): \(detail)"
         case .timedOutWaitingForURL(let seconds, let diagnostics):
@@ -366,7 +374,14 @@ public actor DSHProcessManager {
         }
     }
 
-    /// What the port we asked dsh for is doing right now.
+    /// A `weak` reference that can be carried by a `@Sendable` closure.
+private final class WeakActor: @unchecked Sendable {
+    private weak var ref: DSHProcessManager?
+    init(_ value: DSHProcessManager?) { ref = value }
+    var value: DSHProcessManager? { ref }
+}
+
+/// What the port we asked dsh for is doing right now.
     ///
     /// The distinction is the whole point. "dsh is slow" and "dsh is broken" are
     /// different failures with the same symptom in the window, and they are
@@ -462,9 +477,13 @@ public actor DSHProcessManager {
     /// bounded by the pipe rather than by byte-by-byte iteration.
     private nonisolated func drain(handle: FileHandle, isErr: Bool) {
         let lines = LineAccumulator()
+        // A weak box, because the actor outlives every drain and must not be kept
+        // alive by one, while the closure itself has to be `@Sendable` — and a
+        // `@Sendable` closure may not capture a `weak var`.
+        let owner = WeakActor(self)
         let emit: @Sendable (String) -> Void = { line in
-            Task { [weak self] in
-                guard let self else { return }
+            Task {
+                guard let self = owner.value else { return }
                 if isErr {
                     await self.consumeStderr(line)
                 } else {
@@ -550,12 +569,41 @@ public actor DSHProcessManager {
         // Out of attempts. Say so, and say why — a window still showing the
         // last conversation over a dead server is the failure this exists to
         // prevent.
+        //
+        // dsh's own last words go with it. A dsh that dies on `EADDRINUSE`
+        // says exactly that, on stderr, and it is the entire difference
+        // between a user who knows what happened and one reading "dsh exited
+        // with status 1 and the shell did not restart it". Only the lines that
+        // carry an actual error are quoted: a plugin loader's progress output
+        // is hundreds of lines of noise that buries the one line that matters.
         let reason = status == 0
             ? "dsh exited normally while the window was still open."
             : "dsh exited with status \(status)"
             + " and the shell did not restart it (\(restartAttempts)/\(Self.maxRestartAttempts) attempts)."
-        state = .failed(reason: reason)
-        broadcast(.connectionLost(reason: reason))
+        let explanation = Self.failureExplanation(from: lastLogLines)
+        state = .failed(reason: explanation.isEmpty ? reason : reason + "\n\n" + explanation)
+        broadcast(.connectionLost(reason: explanation.isEmpty ? reason : reason + "\n\n" + explanation))
+    }
+
+    /// The part of dsh's output that says what went wrong.
+    ///
+    /// Only lines that look like an error, so the message carries the cause and
+    /// not the load. Falls back to the tail when nothing matched, because a
+    /// silent unexplained exit is exactly the case where *something* is better
+    /// than nothing — but the caller is told which of the two it got.
+    static func failureExplanation(from lines: [String]) -> String {
+        let errors = lines.filter { line in
+            let lower = line.lowercased()
+            return lower.contains("error") || lower.contains("failed")
+                || lower.contains("eaddrinuse") || lower.contains("refused")
+                || lower.contains("boom")
+        }
+        if !errors.isEmpty {
+            return errors.suffix(6).map { "    \($0)" }.joined(separator: "\n")
+        }
+        let tail = lines.suffix(6)
+        guard !tail.isEmpty else { return "" }
+        return "dsh's last output:\n" + tail.map { "    \($0)" }.joined(separator: "\n")
     }
 
     /// A successful endpoint resets the ladder, so a dsh that crashes once an

@@ -32,8 +32,9 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | A launch that never leaves "Launching dsh web…" | ✅ was the pipe reader, not dsh — see below |
 | dsh's own stdout/stderr in the log, plus a diagnosis on timeout | ✅ previously the log held one line and nothing about dsh |
 | Page notifications from dsh plugins (`dsh-notification` etc.) | ✅ via a `Notification` shim — see "Notifications" below |
-| Launch smoke test in `build-app.sh` | ✅ catches "builds fine, crashes on launch", which `swift test` structurally cannot |
-| Unit tests for `DSHShellCore` | ✅ 155 passing, 0 failing |
+| Launch smoke test in `build-app.sh` | ✅ catches both "crashes on launch" and "leaves its dsh behind", which `swift test` structurally cannot |
+| Leftovers from a forced quit are identified and closable | ✅ only provable ones — see "Leftover processes" |
+| Unit tests for `DSHShellCore` | ✅ 168 passing, 0 failing |
 | Hermetic lifecycle tests against `stub-dsh` | ✅ 13, every one ends by asserting the port is bindable again |
 | Single instance — a second launch raises the window, never fights for the port | ✅ `flock`, checked before anything else |
 | Menu-bar status item: show/hide, zoom reset, exit | ✅ carries the connection state; restores the window through the SwiftUI scene, not by hunting for an `NSWindow` that a closed scene no longer owns |
@@ -44,7 +45,7 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | `swift build` and `xcodebuild` both clean | ✅ 0 errors; both are run by `build-app.sh` because `swift test` alone never compiles the app target |
 | Preflight: refuse to nest inside a harness session | ✅ |
 | Preflight: refuse a port someone else owns, never kill it | ✅ |
-| Preflight: `SO_REUSEADDR` on the port probe | ✅ so `TIME_WAIT` cannot fake a collision |
+| Preflight: port probe uses `connect`, not `bind` | ✅ and the previous `bind`+`SO_REUSEADDR` probe is what made the guard see nothing — see below |
 | Git / File tree / Terminal panels | ⏳ Roadmap only |
 
 ---
@@ -118,7 +119,7 @@ Then ⌘R. The generated **shared scheme is committed**, which is what makes `-s
 ### Testing
 
 ```sh
-swift test      # 155 hermetic tests
+swift test      # 168 hermetic tests
 swift build     # compiles the app target too — `swift test` does NOT
 ```
 
@@ -177,6 +178,22 @@ Past ~150% you are choosing to read dsh as a small window, not a bigger one — 
 Reachable three ways: ⌘+/⌘- and ⌘0 in the main menu bar, the **Zoom** submenu of the status item (every rung, check-marked), and the settings field. The submenu lives there rather than in the main menu bar because SwiftUI's main menu bar cannot host a nested menu — a `Menu` is a `View`, not `Commands`.
 
 WebKit's own ⌘+ and ⌘-pinch still work and are not overridden: the shell only pushes a zoom when the preference changed, not on every view update. The previous unconditional write silently undid the page's own zoom on the next state change, which is what made ⌘+ look stuck.
+
+### Leftover processes
+
+Killing the app without letting it quit — ⌘⌥Esc, a `kill -9`, a crash — leaves its `dsh web` running, holding the port. dsh has no parent-death detection, so nothing cleans it up, and the next launch fails with `EADDRINUSE`.
+
+The error screen finds those and offers to close them. It closes **only what can be shown to be this app's own leftovers**, all three required:
+
+1. it is listening on the port this app asked for;
+2. its parent is `1` — nothing is supervising it, which is what makes it a leftover rather than something a terminal or another app still owns;
+3. its command line runs *this app's configured* `dshBinaryPath`.
+
+Anything else is reported with a reason and left alone — including a `dsh web` you started yourself in a terminal on the same port, which has that terminal as its parent and is holding live work. The PID and the full command line are shown either way, because deciding what to do about a process is the user's call.
+
+This is narrower than "kill whatever is on the port" on purpose. `docs/dsh-shell-contract.md` §9 prohibits killing by name, and for a reason recorded there: a previous agent ran `pkill -f dsh` and destroyed the harness hosting it.
+
+A configured **absolute** path is matched exactly; a bare `"dsh"` (the default when nothing is found on disk) matches by name, because nothing stricter is available. Deciding that by the last path component would be wrong in the dangerous direction — `/Users/me/.npm-global/bin/dsh` also ends in `dsh`, and a resolved path would then accept any dsh on the machine.
 
 ### Notifications
 
@@ -248,6 +265,15 @@ There is a plain log file, one per day:
 
 ### Reading a launch
 
+A launch that fails now says why in dsh's own words. The previous message was
+`Failed to spawn dsh (errno -1). If dsh is a node script, ensure node is reachable
+from the app's PATH` — a number that was never an errno, attached to advice about
+a PATH the shell does not use, while the actual cause (`EADDRINUSE`) sat in the
+log. Failures now quote the error lines dsh printed, and the port-collision case
+offers the cleanup above.
+
+### Reading a launch
+
 dsh's own output goes to the file, both streams, prefixed by origin:
 
 ```
@@ -288,7 +314,22 @@ Or read the last minute:
 log show --predicate 'subsystem == "ai.deepseek.dsh-shell"' --last 1m --info --debug
 ```
 
-If the configured port is already owned, the shell **refuses to start and names `attach`** as the alternative. It never kills a process it did not spawn: that would destroy a `dsh web` you started by hand, possibly one you were using, merely by opening the app.
+If the configured port is already owned, the shell **refuses to start and names `attach`** as the alternative. It never kills a process it did not spawn: that would destroy a `dsh web` you started by hand, possibly one you were using, merely by opening the app. The only exception is a leftover of its own, and that one is shown to you first — see "Leftover processes".
+
+### The port probe was not seeing anything
+
+This guard was in the codebase, had tests, and did not work. It probed by calling `bind` with `SO_REUSEADDR`, so that a socket lingering in `TIME_WAIT` would not report "in use" long after its listener was gone — and in exchange it could not see a live listener either, because `bind` succeeds in that case too:
+
+```
+$ (against a port a real dsh web was listening on)
+bind with SO_REUSEADDR -> SUCCESS (errno=0)
+```
+
+So `Preflight` waved dsh onto an occupied port, dsh came back `EADDRINUSE`, and every `assertPortFree` built on the same function passed on a port that was still held. The guard and its tests agreed with each other and were both wrong.
+
+`connect` separates the two cases exactly: it succeeds only against something actually accepting connections, and a `TIME_WAIT` socket answers `ECONNREFUSED` like an unused port does — the behaviour the original `SO_REUSEADDR` was there to obtain, arrived at without the blind spot.
+
+With the probe fixed, the 13 lifecycle tests began checking "the port is released after shutdown" for the first time. They all passed, so that contract was already true; it just had never actually been tested.
 
 The error message deliberately does not suggest `pkill`. Killing dsh by name is forbidden throughout this repository — see [`AGENTS.md` in the Windows implementation](../../windows/AGENTS.md) rule 1, which records what happened when a previous agent did it.
 

@@ -120,7 +120,7 @@ final class DshDesktopBridge: NSObject {
     private var cachedNotificationPermission = "denied"
 
     /// A JS string literal, quotes and all.
-    private static func jsString(_ value: String) -> String {
+    nonisolated private static func jsString(_ value: String) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: [value]),
               let text = String(data: data, encoding: .utf8),
               text.count >= 2
@@ -149,7 +149,9 @@ final class DshDesktopBridge: NSObject {
         }
     }
 
-    private static func permission(for status: UNAuthorizationStatus) -> String {
+    /// Pure mapping, called from `UNUserNotificationCenter`'s own queue, so it
+    /// must not inherit main-actor isolation.
+    nonisolated private static func permission(for status: UNAuthorizationStatus) -> String {
         switch status {
         case .authorized, .provisional, .ephemeral: return "granted"
         case .denied, .notDetermined: return "denied"

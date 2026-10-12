@@ -158,31 +158,117 @@ done
 # `UNUserNotificationCenter.requestAuthorization`'s completion, which arrives on
 # an internal queue rather than the main thread, so the isolation assertion
 # trapped before the window existed.
-echo "==> smoke test: launching for 8s and checking it stays up"
+# Two properties, because one is not enough:
+#
+#   1. It stays up. A crash during launch produces a valid bundle, green tests
+#      and no window.
+#   2. Quitting it releases the port. That is the shell's core promise — closing
+#      the app ends the dsh session — and `swift test` verifies it against a
+#      stub only.
+#
+# The first version of this check sent SIGTERM. On macOS that terminates a GUI
+# app outright: `applicationWillTerminate` never runs, so `shutdownBlocking()`
+# never runs, and the `dsh web` it started is orphaned holding the port. It left
+# one behind every time, which is exactly how a later launch found 3080 occupied
+# and died with EADDRINUSE. Quitting through AppleScript instead takes the same
+# path ⌘Q does, and the port assertion below is what catches a regression in it.
+#
+# Everything is keyed to PIDs this script recorded itself. Nothing here kills by
+# name — see docs/dsh-shell-contract.md §9, rule 1.
+echo "==> smoke test: launch, then quit and check the port is released"
 SMOKE_LOG="$(mktemp -t dsh-shell-smoke)"
-SMOKE_PID=""
+SMOKE_HOME="$(mktemp -d -t dsh-shell-smoke-home)"
+SMOKE_APP_PID=""
+SMOKE_CHILD_PID=""
 cleanup_smoke() {
-  if [[ -n "$SMOKE_PID" ]]; then kill "$SMOKE_PID" 2>/dev/null || true; fi
-  rm -f "$SMOKE_LOG"
+  # Only ever the two PIDs recorded above, never a name.
+  [[ -n "$SMOKE_CHILD_PID" ]] && kill -KILL "$SMOKE_CHILD_PID" 2>/dev/null
+  [[ -n "$SMOKE_APP_PID" ]] && kill -KILL "$SMOKE_APP_PID" 2>/dev/null
+  rm -rf "$SMOKE_LOG" "$SMOKE_HOME"
 }
 trap cleanup_smoke EXIT
 
-DSH_HOME="$(mktemp -d -t dsh-shell-smoke-home)"
-DSH_HOME="$DSH_HOME" "$APP/Contents/MacOS/DSHShell" >"$SMOKE_LOG" 2>&1 &
-SMOKE_PID=$!
+port_is_free() {
+  /usr/bin/nc -z -G 1 127.0.0.1 "$1" >/dev/null 2>&1 && return 1 || return 0
+}
+
+# Read the configured port rather than hard-coding 3080, so this keeps working
+# if the default ever moves.
+PORT="$(/usr/libexec/PlistBuddy -c 'Print :DSHShellPort' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+PORT="${PORT:-3080}"
+# The real port comes from settings; read the file the app would read.
+SETTINGS="$HOME/Library/Application Support/dsh-swiftUI/settings.json"
+if [[ -f "$SETTINGS" ]]; then
+  PORT="$(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("preferredPort",3080))' "$SETTINGS" 2>/dev/null || echo "$PORT")"
+fi
+
+DSH_HOME="$SMOKE_HOME" "$APP/Contents/MacOS/DSHShell" >"$SMOKE_LOG" 2>&1 &
+SMOKE_APP_PID=$!
+
 sleep 8
-if ! kill -0 "$SMOKE_PID" 2>/dev/null; then
+if ! kill -0 "$SMOKE_APP_PID" 2>/dev/null; then
   echo "error: the app exited within 8s of launch — it crashes on startup." >&2
   echo "       Output was:" >&2
   sed 's/^/         /' "$SMOKE_LOG" >&2
   exit 7
 fi
-kill -TERM "$SMOKE_PID" 2>/dev/null || true
-wait "$SMOKE_PID" 2>/dev/null || true
-SMOKE_PID=""
-rm -f "$SMOKE_LOG"
-rm -rf "$DSH_HOME"
 echo "    ok   stayed up"
+
+# Whose dsh is this? Ask the app, not the port.
+#
+# An earlier version took whatever was listening on $PORT and called it its own.
+# With the port already held by someone else, the app never spawned a dsh at all
+# — so the check adopted a stranger's process, declared it orphaned, and killed
+# it on the way out. The port is the symptom; parentage is the fact.
+SMOKE_CHILD_PID=""
+for _ in $(seq 1 40); do
+  SMOKE_CHILD_PID="$(/usr/bin/pgrep -P "$SMOKE_APP_PID" 2>/dev/null | head -1)"
+  [[ -n "$SMOKE_CHILD_PID" ]] && break
+  sleep 0.5
+done
+if [[ -n "$SMOKE_CHILD_PID" ]]; then
+  echo "    ..   the app spawned dsh pid $SMOKE_CHILD_PID"
+else
+  # No child. Either the port was already taken so it refused to spawn (the
+  # thing Preflight exists for), or it is in attach mode. Either way there is
+  # nothing of ours to clean up, and claiming otherwise would mean killing
+  # something that is not ours.
+  PRE="$(/usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)"
+  if [[ -n "$PRE" ]]; then
+    echo "    --   the app spawned no dsh; port $PORT is held by pid $PRE (not ours — left alone)"
+  else
+    echo "    --   the app spawned no dsh (attach mode?); nothing to verify"
+  fi
+fi
+
+# Quit the way a user does, so the real teardown path runs.
+osascript -e "tell application id \"ai.deepseek.dsh-shell\" to quit" >/dev/null 2>&1 ||   kill -TERM "$SMOKE_APP_PID" 2>/dev/null || true
+for _ in $(seq 1 20); do
+  kill -0 "$SMOKE_APP_PID" 2>/dev/null || break
+  sleep 0.5
+done
+kill -0 "$SMOKE_APP_PID" 2>/dev/null && kill -KILL "$SMOKE_APP_PID" 2>/dev/null
+wait "$SMOKE_APP_PID" 2>/dev/null || true
+SMOKE_APP_PID=""
+
+if [[ -n "$SMOKE_CHILD_PID" ]]; then
+  for _ in $(seq 1 20); do
+    kill -0 "$SMOKE_CHILD_PID" 2>/dev/null || break
+    sleep 0.5
+  done
+  # The child itself, not the port: a dsh that exited but somehow left a socket
+  # behind is a different bug, and "is the process gone" is the promise this file
+  # is actually able to keep.
+  if kill -0 "$SMOKE_CHILD_PID" 2>/dev/null; then
+    echo "error: dsh pid $SMOKE_CHILD_PID outlived the app that started it." >&2
+    echo "       Closing the window must end the dsh session (docs/dsh-shell-contract.md)." >&2
+    echo "       Cleaning up the orphan this run created." >&2
+    kill -KILL "$SMOKE_CHILD_PID" 2>/dev/null || true
+    exit 8
+  fi
+  echo "    ok   dsh pid $SMOKE_CHILD_PID ended with the app"
+fi
+SMOKE_CHILD_PID=""
 
 cat <<EOF
 

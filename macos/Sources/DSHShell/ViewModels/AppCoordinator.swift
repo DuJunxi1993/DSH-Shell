@@ -27,6 +27,10 @@ final class AppCoordinator: ObservableObject {
     @Published var settings: ShellSettings = .default
     @Published var consoleLines: [ConsoleLine] = []
     @Published var isPresentingPreferences: Bool = false
+    /// Leftovers from an earlier run that would block a launch, offered to the
+    /// user on the error screen. Empty unless the failure was a port collision
+    /// and something is genuinely provably ours — see `PortOccupant`.
+    @Published var leftoverProcesses: [PortOccupant] = []
     @Published var webSession: WebSessionState = .init()
     /// Page zoom, 50–100 in 10% steps. Persisted in settings so it survives a
     /// relaunch, and read back from there rather than kept separately — two
@@ -171,9 +175,53 @@ final class AppCoordinator: ObservableObject {
             self.state = .shuttingDown
             await self.stopLifecycle()
             self.consoleLines.removeAll()
+            self.leftoverProcesses = []
             self.state = .idle
             self.start()
         }
+    }
+
+    /// Look for leftovers and publish the ones that can be shown to be ours.
+    ///
+    /// Called only on a failed start, so two runs of `lsof` cost nothing next
+    /// to a launch the user is watching fail.
+    func refreshLeftoverProcesses() {
+        let occupants = PortOccupant.occupants(ofPort: settings.preferredPort,
+                                                binaryPath: settings.dshBinaryPath)
+        let orphans = occupants.filter(\.isOrphan)
+        leftoverProcesses = orphans
+        guard !occupants.isEmpty else { return }
+        // Named in the log whether or not anything qualifies: "something holds
+        // the port but it is not ours" is what stops a user retrying forever.
+        Log.info("port \(settings.preferredPort) is held by \(occupants.count) process(es); "
+                 + "\(orphans.count) are this app's own leftovers")
+        for occupant in occupants where !occupant.isOrphan {
+            Log.info("not touching pid \(occupant.pid): \(explanation(of: occupant))")
+        }
+    }
+
+    private func explanation(of occupant: PortOccupant) -> String {
+        switch occupant.verdict {
+        case .orphan: return "provably this app's leftover"
+        case .notOrphan(let reason): return reason.explanation
+        }
+    }
+
+    /// Close the leftovers the user has been shown, then start again.
+    ///
+    /// Signals nothing but the PIDs `PortOccupant` proved are leftovers, and
+    /// says so before doing it. If one refuses to close the retry is attempted
+    /// anyway: the screen simply comes back listing whatever is left.
+    func closeLeftoversAndRetry() {
+        let targets = leftoverProcesses
+        guard !targets.isEmpty else { reload(); return }
+        for occupant in targets {
+            let stopped = PortOccupant.terminate(pid: occupant.pid)
+            Log.info(stopped
+                     ? "closed leftover pid \(occupant.pid)"
+                     : "could not close leftover pid \(occupant.pid); it may already be gone")
+        }
+        reload()
     }
 
     func saveSettings(_ new: ShellSettings) {
@@ -388,6 +436,10 @@ final class AppCoordinator: ObservableObject {
                 self.state = .failed(reason: error.localizedDescription)
                 self.appendConsole(.shell, text: "[error] \(error.localizedDescription)")
                 self.notify(title: "DSH Shell 无法启动", body: error.localizedDescription)
+                // Whatever took the port, work out what it is now that there is
+                // time for `lsof`. The error screen offers to close it only if
+                // it can be shown to be a leftover of ours.
+                self.refreshLeftoverProcesses()
             }
         }
     }
