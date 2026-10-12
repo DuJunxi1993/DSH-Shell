@@ -1,0 +1,437 @@
+# Cross-platform lessons
+
+Implementation experience from building both shells. Not a contract — that is
+[`dsh-shell-contract.md`](dsh-shell-contract.md), which says what dsh does and
+what both shells must agree about. Not platform facts either — that is
+`windows/AGENTS.md`, which owns everything specific to Tauri and WebView2.
+
+This file is the third thing: **what went wrong while building it, and which of
+it is portable.** Both shells are independent implementations that share
+nothing but the idea, so a lesson only pays for itself if the other side can
+act on it.
+
+Every claim here is measured against real dsh `0.2.0-rc.2`, or it is marked as
+a question. Measurements live in [`dsh-desktop-contract.md`](dsh-desktop-contract.md)
+with raw JSON under `docs/probe/`.
+
+Sections are written so that "Windows already does this, and here is why" is
+just as findable as "Windows should check this". A guide that only lists
+problems stops being read once its author stops finding new ones.
+
+---
+
+## 1. Taking resources from dsh — the whale logo
+
+The menu bar shows dsh's own mark rather than a stand-in. The asset is not a
+file: it is a path inside dsh's `dsh-client-ui-primitives` package.
+
+```
+<install>/lib/node_modules/@deepseek-ai/dsh/node_modules/
+  @deepseek-ai/dsh-client-ui-primitives/lib/types/FishLogo.d.ts   # the path
+  @deepseek-ai/dsh-client-ui-primitives/lib/index.js              # the viewBox
+```
+
+### Both are needed, and they disagree
+
+`FISH_LOGO_PATH` is in the `.d.ts` next to its sibling declaration.
+`FISH_LOGO_VIEWBOX` is **not**: the type file declares it as
+`{width: number; height: number}` and never fills in the numbers, so only the
+bundled `index.js` has them. A script that reads one file for both gets a
+compile-shaped empty result rather than an error.
+
+**Use dsh's viewBox. Do not compute the path's bounding box.** Measured:
+
+| Source | Width × height |
+|---|---|
+| `FISH_LOGO_VIEWBOX` in `index.js` | 23.16 × 17.04 |
+| Bounding box of the path's own points | 23.3967 × 17.1921 |
+
+The path's extremes fall *outside* the canvas dsh chose — its minimum x is
+negative. Fitting the bounds instead of the viewBox draws the whale a percent
+or two larger than the web UI does and nudges it off centre. dsh renders the
+overflowing path mapped onto the viewBox, so matching that is what "the same
+logo" means.
+
+### Extract at build time, commit the result
+
+`macos/tools/extract-dsh-logo.swift` runs before the build and writes
+`DSHFishLogo.generated.swift`. Three rules, all of them about not making the
+build depend on the user's machine:
+
+- **The generated file is committed.** A machine without dsh installed must
+  still build. That is not hypothetical: `dsh` resolves through `PATH` at
+  runtime and the app is expected to work where the CLI is absent or somewhere
+  unusual.
+- **Extraction failure is not build failure.** Missing dsh, an older dsh without
+  the logo, an unparseable path — all print one line and keep the committed
+  file. Only "no dsh *and* no committed file to fall back on" fails.
+- **Rewrite only on a real change.** An unchanged extraction leaves no git diff,
+  so `git status` never lies about whether the logo moved.
+
+The Windows tray icon is the same asset and the same three rules. The only
+platform-specific part is rendering: macOS draws the path into an `NSImage` with
+`isTemplate`; Windows needs an `.ico` at several DPI levels, and if it is ever
+coloured, a light and a dark variant.
+
+### The one thing to get wrong quietly
+
+SVG y grows **downwards**. AppKit's and most toolkits' contexts grow **upwards**.
+Miss the flip and nothing errors — the whale renders upside down, which reads as
+a bug in dsh's artwork rather than in the renderer. macOS therefore does the
+coordinate conversion in exactly one function, with a comment saying why.
+
+There is a second, subtler trap: the eye. In the whale it sits at `v = 0.48` of
+the viewBox height. Flipped into y-up it lands at `0.52 × height` — the upper
+half, where an eye belongs. Unflipped it lands at `0.48`, the lower half. That
+asymmetry is a cheap geometric check that does not need a screenshot.
+
+---
+
+## 2. What the desktop contract covers for free
+
+Setting the contract properties on `<html>` makes dsh do a surprising amount of
+window-chrome work itself. On darwin that includes **48px of top clearance** and
+a **fourth drag region** that yields to the traffic lights.
+
+That clearance is why the macOS window can have no title bar at all
+(`.windowStyle(.hiddenTitleBar)`) and still be usable: the traffic lights float
+over the page's own reserved strip, and the region dsh reserved for them is
+draggable.
+
+### dsh owns ⌘W
+
+Not obvious, and it changes what "close" means. On darwin, dsh registers
+`meta+KeyW` as part of its desktop contract:
+
+```
+keyboard filter: 7 bound chord(s) across 10 command(s) — …, meta+KeyW, …
+```
+
+So ⌘W is delivered to the page, never to the shell's own Close Window item. The
+page then calls `closeWindow` over the bridge. The macOS log says so every time
+it happens:
+
+```
+closeWindow: dsh requested it (revision 4A47A842-…), hiding 13796
+```
+
+**Windows: check this against your own key bindings before wiring a caption
+button.** The tray shell uses a DOM caption and `Alt+F4`, so it may simply not
+be exposed — but if dsh's `meta+KeyW` ever reaches a WebView2 window, whatever
+handles `closeWindow` must hide rather than close, for the reason in §3.
+
+### The contract's cost is not optional on darwin
+
+Worth remembering when the two sides are compared. `dataset.platform` on darwin
+is a **runtime switch**, not a CSS hook: its presence puts dsh into the desktop
+runtime, which then requires a trusted preload (`window.dshDesktop` /
+`window.dshDesktopBoot`). Setting it alone makes the Web UI fail to boot with 24
+entries never activating. The measured preload surface is five entry points —
+see [`dsh-shell-contract.md`](dsh-shell-contract.md) §7.
+
+---
+
+## 3. In a host with a background process, "close" must mean "hide"
+
+The single most expensive macOS bug of the day, and the most portable.
+
+**Symptom:** ⌘W quit the app. So did the status item's Show/Hide. Everything that
+touched a window seemed to end the process.
+
+**Cause,** from the log — one line between start and exit:
+
+```
+closeWindow: dsh requested it (revision 4A47A842-…), performing close on 13634
+DSH Shell exiting
+```
+
+Three routes, one outcome:
+
+1. dsh owns `meta+KeyW` (§2), so ⌘W arrives at the page.
+2. The page calls `closeWindow`; the bridge ran `performClose`.
+3. `performClose` destroys a SwiftUI `Window` scene's window. **Destroying the
+   last window ends the process.**
+
+The status item looked like a separate bug and was not. Its toggle used
+`orderOut`, which only hides — so the window stayed alive, and the next
+`closeWindow` still had something to destroy.
+
+**Windows already gets this right**: the caption's ✕ calls `window.hide()`,
+`Alt+F4` and the tray's 退出 are the real exits, and `windows/AGENTS.md` states
+the invariant. This is a confirmation, not a to-do.
+
+The transferable part is the trap itself. A menu-bar host has a window, but it
+does not *have* a window in the way a document app does — closing the last one
+is not a reason to end the process, and dsh's `closeWindow` is a page-initiated
+request that must not be able to take the whole app down. If the Windows shell
+ever routes dsh's `closeWindow`, it belongs on `hide`.
+
+Also worth keeping: **hide rather than close, because the window is the
+session.** One WKWebView holds the live bridge, the scroll position and the
+composed draft. Destroying it tears all of that down and rebuilds it on the next
+show, which is both slower and visibly lossy.
+
+---
+
+## 4. Startup hangs and orphans
+
+The heaviest debugging of the day, and the part most likely to reach Windows.
+
+### A port probe that lies makes every test a false positive
+
+macOS asked "is the port free?" by binding to it with `SO_REUSEADDR`. The kernel
+agreed, the check returned true, and dsh — which does *not* set that option —
+then failed to bind. Nothing reported the contradiction.
+
+The damage was not one wrong boolean. **Thirteen lifecycle tests were asserting
+a property that could not fail.** They were green because the probe said so.
+
+macOS now probes with `connect` instead: a real attempt to reach something on
+that address, which reports what an actual server would see.
+
+`windows/src-tauri/src/preflight.rs` has this:
+
+```rust
+/// Whether we can bind `host:port` right now. Checked by binding, not by
+/// scraping `netstat`, so it sees the same thing dsh's own bind would see.
+pub fn port_is_free(host: &str, port: u16) -> bool {
+    TcpListener::bind((host, port)).is_ok()
+}
+```
+
+The reasoning is sound and the choice over `netstat` is right — scraping a
+process table tells you a PID, not whether *that* PID is dsh. But the bind-based
+probe still has the shape that failed on macOS: it answers "could *this* socket
+have bound", not "is anything listening". No `SO_REUSEADDR` here, so the exact
+failure does not reproduce — and that is the point. **The test should be checked
+against that question rather than assumed safe from the absence of one option.**
+
+The check that distinguishes the two: make the test bind the port, then assert
+that a *second* probe while it is held reports occupied. If both report free,
+the probe cannot detect a live listener, and every test built on it is
+decorative.
+
+### Orphan identification needs three independent facts
+
+macOS's `PortOccupant` kills nothing on suspicion. A candidate must satisfy all
+three:
+
+1. the port is the one our config asked for;
+2. the occupying process's parent is PID 1 — i.e. it was orphaned, not something
+   the operator is using;
+3. its command line matches the configured `dsh_binary_path`.
+
+Rule 2 is what makes this safe. On a developer machine, ports get occupied by
+processes that are very much in use, and the operator is usually sitting in one
+of them. A dsh orphaned by a previous run and a dsh the operator launched from a
+terminal both hold a port and both are named `node`. The difference is the
+parent, and it is measurable.
+
+The general rule behind it: **never act on a name.** This is already rule 1 in
+`windows/AGENTS.md` for a much worse reason — killing `node.exe` by name kills
+the harness the agent is running inside — but it applies to identification too.
+"Exit（关闭 dsh）" is only safe when the process has been positively attributed.
+
+### Closing during startup is its own hole
+
+Independent of any crash, there is a window between "spawn returned a PID" and
+"the process handle is owned by the app". Close the window in that gap and
+nothing terminates the child.
+
+Windows closes it with `starting_pid`, recorded the moment the PID exists and
+deliberately **not** cleared on success — clearing it at the wrong moment opens
+a second gap between the launch returning and the handle being stored. The
+comment at `main.rs:185` spells out that reasoning and is worth reading.
+
+macOS found the same hole from the other end: it never recorded the PID early,
+so the fix was added afterwards as `PortOccupant`, which can find and clean up an
+orphan left by *any* interrupted run — including runs of the previous shell
+version. The two are complementary rather than competing, and the differences
+are worth knowing:
+
+| | Windows `starting_pid` | macOS `PortOccupant` |
+|---|---|---|
+| Catches an orphan from this run | yes | yes |
+| Catches one left by a crash | no | yes |
+| Catches one left by an older version | no | yes |
+| Needs an external attribution check | no | yes (3 facts) |
+
+A shell that has shipped is likely to want both eventually; a new one wants the
+early record.
+
+---
+
+## 5. Zoom: the decision must be about the host's intent
+
+macOS zoom stopped working after the first step. Every subsequent ⌘− was
+dropped, the page sat at 60% while `settings.json` already recorded 100, and a
+restart appeared to fix it.
+
+The rule was:
+
+```swift
+if let applied = coordinator.appliedZoom,
+   abs(view.pageZoom - applied) <= 0.01 {
+    return          // skip
+}
+```
+
+which reads as "skip if the page already holds the value we last applied". That
+condition describes **nothing having changed** — so it skipped exactly when a new
+preference arrived. The log showed the gap plainly: a settings write at
+16:37:59, and no `page zoom -> 100%` between it and the previous `60%`.
+
+macOS now decides on the preference alone (`ZoomDecision` in
+`DSHShellCore/Services/ZoomDecision.swift`, with the rule stated as a pure
+function so it can be tested).
+
+**Windows already does this.** `apply_zoom` compares `next` against
+`state.zoom_percent`, an `AtomicU8` holding the host's own intent:
+
+```rust
+let current = state.zoom_percent.load(Ordering::Relaxed);
+if next != current {
+    window.set_zoom(config::zoom_scale(next))?;
+    state.zoom_percent.store(next, Ordering::Relaxed);
+```
+
+Nothing consults the webview. That is the whole rule, and it is why the macOS
+variant failed — its `appliedZoom` was standing in for a page value, and a page
+value cannot distinguish "the user did nothing" from "something else changed it".
+
+The side effect is worth having too. Because the decision never reads the page,
+a pinch-to-zoom inside the webview is left alone, and the next menu step takes
+control back. Keying on the page instead forces a choice between clobbering the
+pinch and never applying a preference — a choice that does not need to exist.
+
+### The ladder belongs in one place
+
+macOS raised its ceiling from 100% to 200% and had to change two files; Windows
+has `ZOOM_MIN` / `ZOOM_MAX` / `ZOOM_STEP` / `ZOOM_DEFAULT` in `config.rs` and
+injects the ladder into the page rather than restating it. `windows/AGENTS.md`
+fact 7 already records why a second literal copy drifts. Same reason, same fix.
+
+---
+
+## 6. Do not race the platform at runtime
+
+The titlebar flashed a light band across the top of the window on every switch
+and minimise. The fix was attempted twice and failed twice:
+
+1. re-assert the configuration from `didBecomeKey` / `didResignKey` /
+   `didResize`, plus a 1.5s timer;
+2. move that to a `.confirmationAction` toolbar on a parent view.
+
+Both failed because the premise was wrong. AppKit **resets**
+`titlebarAppearsTransparent` during key-state transitions — measurable, and the
+reason a re-assertion timer existed at all. But:
+
+- a main-queue notification callback runs *after* the frame has composited, so
+  the band is already on screen before the correction lands;
+- writing `window.styleMask` is itself what makes AppKit rebuild the window's
+  chrome, so **the repair caused the condition it was repairing**.
+
+What worked was making the question disappear: `.windowStyle(.hiddenTitleBar)`
+hands the configuration to SwiftUI when the window is created, leaving no
+window in which AppKit has a state to undo. About 80 lines of workaround went
+with it — an `NSViewRepresentable`, three observers, a timer.
+
+**The portable shape:** if a platform API needs to be kept in a particular state
+and something else resets it, re-asserting is a losing position. Find the moment
+the state is *established* and set it once there.
+
+Windows already reasons this way about the chrome — `windows/AGENTS.md` is
+explicit that the geometric fallback is a fallback and not the strategy, and says
+to check `contract=` before adding a fourth pass. Same instinct, different API.
+
+---
+
+## 7. The two false signals that cost the most
+
+Both are macOS, both are about a test or a log that should have caught something
+and did not. Both apply anywhere.
+
+### Green tests over a probe that cannot fail
+
+Covered in §4. Worth restating as its own lesson because the shape generalises:
+when a test asserts the output of a helper, the helper's *correctness* is part of
+what is under test. If the probe is wrong in a way that makes the assertion
+vacuous, the suite is decoration — and it is decoration precisely when the thing
+it watches is broken.
+
+### A log that only goes to a place nobody reads
+
+The titlebar repair logged through a bare `Logger`. `os_log` with no file
+redirection is not a diagnostic you can hand to anybody, and none of it appeared
+in the app's log file. For several iterations the conclusion drawn from the log
+was "no re-assertions are happening, so the fix worked" — when the truth was
+"nothing is written there, so this tells us nothing".
+
+macOS now uses `Log.debug`, which writes both. The same pass established the
+measurement that finally located the flash: over eight window switches, the
+repair ran 11 times and wrote 10 property assignments, down from 33 — because
+only `titlebarAppearsTransparent` was ever reverted, while `styleMask` was being
+rewritten every time for no reason.
+
+Two rules:
+
+- **A log line nobody has read is not evidence.** Before concluding "the code
+  path did not run", confirm the path writes somewhere observable.
+- **When a repair is measured, measure the thing that was wrong**, not the
+  activity of the repair. "Fewer writes" was the intermediate number; "the band
+  is gone" was the claim, and it needed a screenshot.
+
+### The screenshot has to contain the thing
+
+The recording used to diagnose the flash had 310px cut off the top — the window's
+upper edge was outside the frame. Every pixel measurement taken from it described
+the wrong region, and it took a while to notice that a "menu bar" being analysed
+was not a menu bar at all. Worth checking the framing before drawing conclusions
+from a recording.
+
+---
+
+## 8. Smaller ones, kept because they will recur
+
+**The traffic lights are the only part of the caption that talks to the window
+manager.** dsh reserves the space and offers a drag region; it does not supply
+the buttons. Both shells keep that part native.
+
+**Shell chrome is not a place to reimplement dsh.** The macOS sessions panel
+listed `~/.dsh/sessions` for search, reveal and delete. dsh's own web UI lists
+the same sessions, live, from the same data — and can open one, which the panel
+could not. It was deleted. A shell's job is to get out of the way; the test is
+whether the feature exists in the Web UI already.
+
+**A toolbar inside a `Settings` scene is not a window toolbar.** `Apply` was a
+`.confirmationAction`, which belongs bottom-right. Attached to one tab it became
+a fourth tab beside the other three; hoisted onto the parent it still rendered
+inside the tab strip, overlapping the labels. It is now a plain `HStack` under a
+`Divider`. The SwiftUI-specific outcome matters less than the defect underneath:
+the toolbar was attached to *one* tab, so the other two had **no way to save at
+all** — their edits lived in `@State` and were discarded on close.
+
+**Put the judgement in a testable function.** The zoom rule shipped broken
+because it was two lines inside `updateNSView` and nothing covered it. Extracted
+to `ZoomDecision.decide(percent:appliedPercent:)`, seven tests pin the states
+that must behave differently, including the one that was wrong.
+
+**An SVG path parser for a known asset does not need to be general.** dsh's whale
+uses only `M`, `L`, `C` and `Z` — 4 moves, 71 cubics, 1 line, 4 closes. ~50 lines
+covers it; a real SVG parser is hundreds and covers curves the brand mark never
+uses. It returns `nil` for anything else, so an unsupported future dsh degrades
+to "keep the committed artwork" rather than a whale missing half its curves.
+
+---
+
+## Where to look next
+
+| Question | File |
+|---|---|
+| What dsh guarantees, and what both shells must agree about | [`dsh-shell-contract.md`](dsh-shell-contract.md) |
+| Measured dsh behaviour, with screenshots and raw JSON | [`dsh-desktop-contract.md`](dsh-desktop-contract.md), `docs/probe/` |
+| Windows/Tauri/WebView2 specifics, 11 windowing facts | `windows/AGENTS.md` |
+| macOS architecture and ADRs | `macos/docs/ARCHITECTURE.md`, `macos/docs/adr/` |
+
+When a lesson here turns out to be wrong, delete it rather than softening it. A
+guide that hedges is one nobody can act on.

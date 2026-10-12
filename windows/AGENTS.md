@@ -243,6 +243,14 @@ When you change a rule there, change both sides and add a test on each. The
 measurements behind the current rules are in `docs/dsh-desktop-contract.md`,
 with screenshots and raw JSON under `docs/probe/`.
 
+A third file sits beside those two:
+**`docs/cross-platform-lessons.md`** — what went wrong building either shell, and
+which parts of it are portable. Read it before designing anything that touches
+dsh's desktop contract, the tray/caption icon, close-window semantics, port
+probes, or orphans; it records both the failures and the places where this
+implementation already got it right, which is the quickest way to know whether a
+macOS lesson is a to-do or a confirmation.
+
 ## The dsh page has a hook — use it before you guess
 
 dsh ships a **desktop-host contract**. Setting two properties on `<html>` is
