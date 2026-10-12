@@ -65,7 +65,7 @@
      handler needs the step to ask for and clampZoom needs both ends, and a ladder
      written down twice is a ladder that disagrees with itself. */
   var ZOOM_MIN = num(CFG.zoomMin, 50);
-  var ZOOM_MAX = num(CFG.zoomMax, 100);
+  var ZOOM_MAX = num(CFG.zoomMax, 200);
   var ZOOM_STEP = num(CFG.zoomStep, 10);
 
   /* Narrowest thing that counts as a column. The sidebar's resize handle is 8px

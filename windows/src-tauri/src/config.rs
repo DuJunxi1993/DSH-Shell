@@ -231,12 +231,24 @@ mod tests {
 
     #[test]
     fn zoom_clamps_to_the_ladder() {
+        // Written against the ladder's ends, not against literal percentages:
+        // the ceiling is deliberately raisable, and hardcoding it here made these
+        // assert the old ladder rather than the rule.
         assert_eq!(normalize_zoom(0), ZOOM_MIN);
-        assert_eq!(normalize_zoom(49), ZOOM_MIN);
-        assert_eq!(normalize_zoom(50), 50);
-        assert_eq!(normalize_zoom(100), ZOOM_MAX);
-        assert_eq!(normalize_zoom(200), ZOOM_MAX);
-        assert_eq!(normalize_zoom(255), ZOOM_MAX);
+        assert_eq!(normalize_zoom(ZOOM_MIN - 1), ZOOM_MIN);
+        assert_eq!(normalize_zoom(ZOOM_MIN), ZOOM_MIN);
+        assert_eq!(normalize_zoom(u8::MAX), ZOOM_MAX);
+    }
+
+    #[test]
+    fn the_ladder_spans_100_percent() {
+        // 100% was the original ceiling and is now a rung in the middle of it. A
+        // page value must survive normalization unchanged, or every window
+        // rendered at the wrong scale after a restart.
+        assert_eq!(normalize_zoom(100), 100);
+        // The ceiling leaving room above 100% is a property of the ladder, not of
+        // this test, so it is checked where it cannot be optimized away.
+        const _: () = assert!(ZOOM_MAX > 100, "the ceiling must leave room above 100%");
     }
 
     #[test]
@@ -259,10 +271,22 @@ mod tests {
 
     #[test]
     fn next_zoom_walks_the_ladder() {
-        assert_eq!(next_zoom(100, -10), 90);
-        assert_eq!(next_zoom(90, 10), ZOOM_MAX);
-        assert_eq!(next_zoom(100, 10), ZOOM_MAX);
-        assert_eq!(next_zoom(60, -10), 50);
+        // Rung-to-rung from a mid-ladder value, and against the ends for the
+        // clamps. A literal "90 + 10 is the top" silently stopped being true when
+        // the ceiling moved, which is exactly the class of assertion that should
+        // not survive a ladder change.
+        //
+        // The start is snapped to a rung first: an off-ladder midpoint would be
+        // normalized on the way in, and the arithmetic would compare against a
+        // value the caller never held.
+        let mid = normalize_zoom(((u32::from(ZOOM_MIN) + u32::from(ZOOM_MAX)) / 2) as u8);
+        assert_eq!(u32::from(mid) % u32::from(ZOOM_STEP), 0, "the midpoint must be a rung");
+        assert_eq!(i32::from(next_zoom(mid, ZOOM_STEP as i16)), i32::from(mid) + i32::from(ZOOM_STEP));
+        assert_eq!(
+            i32::from(next_zoom(mid, -(ZOOM_STEP as i16))),
+            i32::from(mid) - i32::from(ZOOM_STEP)
+        );
+        assert_eq!(next_zoom(mid, 0), mid);
     }
 
     #[test]
