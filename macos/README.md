@@ -31,6 +31,8 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | One-command Release `.app` | ✅ `./scripts/build-app.sh`, ad-hoc signed, arm64 |
 | A launch that never leaves "Launching dsh web…" | ✅ was the pipe reader, not dsh — see below |
 | dsh's own stdout/stderr in the log, plus a diagnosis on timeout | ✅ previously the log held one line and nothing about dsh |
+| Page notifications from dsh plugins (`dsh-notification` etc.) | ✅ via a `Notification` shim — see "Notifications" below |
+| Launch smoke test in `build-app.sh` | ✅ catches "builds fine, crashes on launch", which `swift test` structurally cannot |
 | Unit tests for `DSHShellCore` | ✅ 155 passing, 0 failing |
 | Hermetic lifecycle tests against `stub-dsh` | ✅ 13, every one ends by asserting the port is bindable again |
 | Single instance — a second launch raises the window, never fights for the port | ✅ `flock`, checked before anything else |
@@ -175,6 +177,33 @@ Past ~150% you are choosing to read dsh as a small window, not a bigger one — 
 Reachable three ways: ⌘+/⌘- and ⌘0 in the main menu bar, the **Zoom** submenu of the status item (every rung, check-marked), and the settings field. The submenu lives there rather than in the main menu bar because SwiftUI's main menu bar cannot host a nested menu — a `Menu` is a `View`, not `Commands`.
 
 WebKit's own ⌘+ and ⌘-pinch still work and are not overridden: the shell only pushes a zoom when the preference changed, not on every view update. The previous unconditional write silently undid the page's own zoom on the next state change, which is what made ⌘+ look stuck.
+
+### Notifications
+
+Plugins that raise a system notification (`dsh-notification` and friends) call `new Notification(...)`. In WKWebView that never works, and not for a reason the API makes obvious:
+
+```
+Notification.permission            "default"
+Notification.requestPermission()   ->  resolves "denied"
+Notification.permission            "default"    (unchanged)
+new Notification(...)              ->  does not throw, shows nothing
+```
+
+WebKit ships the API and has no UI behind it. No prompt appears, ever, so every plugin guarding on `permission === "granted"` is permanently inert — and `dsh-notification` guards on exactly that (`lib/client.js`), returning a failure string nobody ever reads.
+
+So `dsh_desktop_bridge.js` replaces `window.Notification` at document start with one that reports **the app's real macOS authorisation** and forwards each notification to `UNUserNotificationCenter`. The WebKit original is kept as `__dshShellWebkitNotification` rather than discarded.
+
+**This only delivers if the app itself is authorised**, and macOS asks once per app:
+
+- **System Settings → Notifications → dsh**, and turn it on. The log says which state you are in:
+  ```
+  [info] notifications authorised — page notifications will be delivered
+  [info] notifications not authorised; grant them in System Settings → Notifications, …
+  [info] dsh desktop bridge attached (notifications: granted)
+  ```
+- The shim reports the real answer rather than claiming `granted` unconditionally. Lying would make plugins call in and then drop every notification — the same silence, moved.
+
+The page's `tag` becomes the notification's identifier, so re-notifying replaces the banner instead of stacking a second one, which is what `tag` means in the web API.
 
 The shell forwards no working directory to `dsh web` — the dsh SPA picks its own workspace inside the browser UI.
 

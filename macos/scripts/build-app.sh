@@ -147,6 +147,43 @@ for f in bridge.js dsh_desktop_bridge.js; do
   fi
 done
 
+# --- launch smoke test -------------------------------------------------------
+#
+# A crash during `applicationDidFinishLaunching` produces a perfectly good .app,
+# green tests, and a window that never appears — the user gets a dock icon and
+# no dsh. It is the worst failure this project can ship, and it is invisible to
+# `swift test` because that never compiles or launches the app.
+#
+# This caught a real one: a `MainActor.assumeIsolated` inside
+# `UNUserNotificationCenter.requestAuthorization`'s completion, which arrives on
+# an internal queue rather than the main thread, so the isolation assertion
+# trapped before the window existed.
+echo "==> smoke test: launching for 8s and checking it stays up"
+SMOKE_LOG="$(mktemp -t dsh-shell-smoke)"
+SMOKE_PID=""
+cleanup_smoke() {
+  if [[ -n "$SMOKE_PID" ]]; then kill "$SMOKE_PID" 2>/dev/null || true; fi
+  rm -f "$SMOKE_LOG"
+}
+trap cleanup_smoke EXIT
+
+DSH_HOME="$(mktemp -d -t dsh-shell-smoke-home)"
+DSH_HOME="$DSH_HOME" "$APP/Contents/MacOS/DSHShell" >"$SMOKE_LOG" 2>&1 &
+SMOKE_PID=$!
+sleep 8
+if ! kill -0 "$SMOKE_PID" 2>/dev/null; then
+  echo "error: the app exited within 8s of launch — it crashes on startup." >&2
+  echo "       Output was:" >&2
+  sed 's/^/         /' "$SMOKE_LOG" >&2
+  exit 7
+fi
+kill -TERM "$SMOKE_PID" 2>/dev/null || true
+wait "$SMOKE_PID" 2>/dev/null || true
+SMOKE_PID=""
+rm -f "$SMOKE_LOG"
+rm -rf "$DSH_HOME"
+echo "    ok   stayed up"
+
 cat <<EOF
 
 To run it:

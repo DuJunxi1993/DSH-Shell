@@ -132,7 +132,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // The result is worth recording. The notification shim reports whatever
+        // macOS actually decided, so an app that has never been granted this
+        // makes `dsh-notification` inert — silently, because the plugin's own
+        // failure message is a string nobody reads. Without this line the log
+        // says "notifications: denied" and leaves the question of *why* open.
+        //
+        // `requestAuthorization` only ever prompts once per app. After a refusal
+        // macOS will not ask again, and the grant has to be made in System
+        // Settings → Notifications. The log line is how that gets noticed.
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { granted, error in
+                // `Task { @MainActor }`, not `assumeIsolated`. This completion
+                // arrives on an internal queue, not the main thread, and
+                // `assumeIsolated` traps when the isolation it asserts is not
+                // there — which killed the app on launch, before a window.
+                Task { @MainActor in
+                    if let error {
+                        Log.error("notification authorisation failed: \(error.localizedDescription)")
+                    } else {
+                        Log.info(granted
+                                 ? "notifications authorised — page notifications will be delivered"
+                                 : "notifications not authorised; grant them in System Settings → Notifications, "
+                                 + "or plugins that raise them will stay silent")
+                    }
+                }
+            }
         statusItem = StatusItemController(coordinator: coordinator)
         statusItem?.onQuit = { [weak self] in self?.quit() }
     }

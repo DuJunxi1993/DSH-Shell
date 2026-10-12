@@ -1,6 +1,7 @@
 import AppKit
 import WebKit
 import DSHShellCore
+import UserNotifications
 
 /// Declares this webview to dsh as a macOS desktop host, and serves the five
 /// entry points dsh then requires.
@@ -85,13 +86,75 @@ final class DshDesktopBridge: NSObject {
         // which is the one `WebSurfaceView` built for bridge.js. That is fine and
         // in fact required: two controllers would mean the page ran with
         // whichever one the configuration points at.
+        // Must come *before* the bridge: the shim reads this synchronously
+        // while it installs, and `Notification.permission` is a plain property
+        // every caller reads without awaiting anything. Injecting it first is
+        // what makes the answer correct on the plugin's very first access.
+        //
+        // `authorizationStatus` is a synchronous read of the app's real grant, so
+        // this reports what macOS has actually decided rather than what the user
+        // is about to be asked. The value is fixed for the life of the
+        // controller — after a change in System Settings the page needs a
+        // reload, which is also how Safari behaves.
+        let permission = cachedNotificationPermission
+        controller.addUserScript(WKUserScript(
+            source: "window.__dshShellNotificationPermission = \(Self.jsString(permission));",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true))
+
         controller.addUserScript(WKUserScript(source: script,
                                               injectionTime: .atDocumentStart,
                                               forMainFrameOnly: true))
         controller.add(self, name: "dshDesktop")
         attachedController = controller
         active = true
-        Log.info("dsh desktop bridge attached")
+        Log.info("dsh desktop bridge attached (notifications: \(permission))")
+        refreshNotificationPermission()
+    }
+
+    /// What the shim reports before macOS has been asked, and until it answers.
+    ///
+    /// `denied` rather than `default` on purpose: `default` would leave the
+    /// plugin waiting for a prompt that WKWebView cannot show, which is the
+    /// state this whole shim exists to get out of.
+    private var cachedNotificationPermission = "denied"
+
+    /// A JS string literal, quotes and all.
+    private static func jsString(_ value: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [value]),
+              let text = String(data: data, encoding: .utf8),
+              text.count >= 2
+        else { return "\"\"" }
+        return String(text.dropFirst().dropLast())
+    }
+
+    /// Ask macOS what it actually decided, and publish the answer.
+    ///
+    /// `getNotificationSettings` is asynchronous and the user script has to be
+    /// added before the first load, so the injected value starts as whatever was
+    /// known at attach time and is corrected here if it was wrong. That is safe
+    /// because the shim reads the global on *every* access rather than capturing
+    /// it, so a page that asks later gets the corrected answer with no reload.
+    private func refreshNotificationPermission() {
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            let resolved = Self.permission(for: settings.authorizationStatus)
+            Task { @MainActor in
+                guard let self, resolved != self.cachedNotificationPermission else { return }
+                self.cachedNotificationPermission = resolved
+                self.webView?.evaluateJavaScript(
+                    "window.__dshShellNotificationPermission = \(Self.jsString(resolved));"
+                ) { _, _ in }
+                Log.info("notification permission is now \(resolved)")
+            }
+        }
+    }
+
+    private static func permission(for status: UNAuthorizationStatus) -> String {
+        switch status {
+        case .authorized, .provisional, .ephemeral: return "granted"
+        case .denied, .notDetermined: return "denied"
+        @unknown default: return "denied"
+        }
     }
 
     /// The single most important lookup in this file.
@@ -165,6 +228,38 @@ final class DshDesktopBridge: NSObject {
         webView.evaluateJavaScript(
             "window.__dshShellDesktop && window.__dshShellDesktop.resolveShortcuts(\(requestId), \(ok), \(literal))"
         ) { _, _ in }
+    }
+
+    /// Show a real system notification for something the page raised.
+    ///
+    /// This is the entire point of the shim: WKWebView cannot show a
+    /// notification and cannot be granted permission to, so a plugin that calls
+    /// `new Notification(...)` reaches this and nowhere else. `dsh-notification`
+    /// calls it when the agent finishes a turn.
+    ///
+    /// The page's `tag` becomes the request identifier, so re-notifying with the
+    /// same tag replaces the banner instead of stacking a second one — which is
+    /// what `tag` means in the web API and why the plugin sets it.
+    private func presentNotification(title: String, body: String, tag: String) {
+        guard !title.isEmpty || !body.isEmpty else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        // An empty tag would collide with every other untagged notification the
+        // app ever posts, so a stable per-notification identifier is minted.
+        let identifier = tag.isEmpty ? "dsh-page-\(UUID().uuidString)" : tag
+        let request = UNNotificationRequest(identifier: identifier,
+                                            content: content,
+                                            trigger: nil)
+        UNUserNotificationCenter.current().add(request) { error in
+            guard let error else { return }
+            // Authorisation can be withdrawn in System Settings while the app is
+            // running. Silence here is the plugin's silent failure all over
+            // again, so it is said out loud.
+            Log.error("page notification refused: \(error.localizedDescription)")
+        }
+        Log.info("page notification: \(title) — \(body)")
     }
 
     /// Begin a native window drag from a `[data-window-drag]` row.
@@ -406,6 +501,28 @@ extension DshDesktopBridge: WKScriptMessageHandler {
             case "beginWindowDrag":
                 beginWindowDrag(screenX: payload["screenX"] as? Double ?? 0,
                                 screenY: payload["screenY"] as? Double ?? 0)
+
+            case "notificationShimInstalled":
+                Log.info("""
+                    notification shim installed — WebKit had \
+                    \(payload["nativePresent"] as? Bool == true ? "an API reporting \"\(payload["nativePermission"] as? String ?? "?")\"" : "no Notification API"), \
+                    reporting \(payload["reportedPermission"] as? String ?? "?")
+                    """)
+
+            case "notification":
+                presentNotification(
+                    title: payload["title"] as? String ?? "",
+                    body: payload["body"] as? String ?? "",
+                    tag: payload["tag"] as? String ?? "")
+
+            case "notificationClose":
+                // The page retracted a notification. `UNUserNotificationCenter`
+                // takes an identifier, and the shim forwards the same `tag` the
+                // page used, so the mapping is exact rather than best-effort.
+                if let tag = payload["tag"] as? String, !tag.isEmpty {
+                    UNUserNotificationCenter.current()
+                        .removeDeliveredNotifications(withIdentifiers: [tag])
+                }
 
             default:
                 Log.debug("unhandled desktop bridge message: \(type)")

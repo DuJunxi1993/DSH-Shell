@@ -292,6 +292,143 @@
   }
   installDragForwarding();
 
+  /* -------------------------------------------------------------- *
+   * 6. The Notification shim.
+   *
+   * WKWebView has the Web Notifications API — `typeof Notification` is
+   * "function" and `new Notification(...)` does not throw — but it has
+   * no way to grant permission. Measured:
+   *
+   *     Notification.permission       "default"
+   *     Notification.requestPermission()  ->  resolves "denied"
+   *     Notification.permission         "default"   (unchanged)
+   *
+   * No prompt appears, ever, because there is no UI behind it. So every
+   * plugin that guards on `permission === "granted"` is permanently
+   * inert. `dsh-notification` is one: it checks that itself
+   * (`lib/client.js`) and returns a message nobody ever sees.
+   *
+   * This replaces `window.Notification` with one that reports
+   * "granted" and forwards the notification to the host, which raises a
+   * real `UNUserNotificationCenter` alert. That is the only place the
+   * permission can actually be granted, so the shim has to be here,
+   * ahead of the plugin, in the same document-start script.
+   *
+   * The WebKit original is kept as `__dshShellWebkitNotification` so
+   * nothing is destroyed outright — a page can still reach it, and this
+   * is reversible from the page if a future dsh needs the real API.
+   * -------------------------------------------------------------- */
+  installNotificationShim();
+
+  /* -------------------------------------------------------------- *
+   * 6. The Notification shim.
+   *
+   * WKWebView has the Web Notifications API — `typeof Notification` is
+   * "function" and `new Notification(...)` does not throw — but no way
+   * to grant permission. Measured:
+   *
+   *     Notification.permission          "default"
+   *     Notification.requestPermission()   ->  resolves "denied"
+   *     Notification.permission          "default"    (unchanged)
+   *
+   * No prompt ever appears, because there is no UI behind it. So every
+   * plugin guarding on `permission === "granted"` is permanently inert.
+   * `dsh-notification` is one — it checks that itself (lib/client.js) and
+   * returns a message nobody sees.
+   *
+   * So the host replaces `window.Notification` with one that reports the
+   * app's real authorisation and forwards to `UNUserNotificationCenter`,
+   * which is the only place macOS can actually grant it. The host
+   * injects `__dshShellNotificationPermission` immediately *before* this
+   * script runs, from `UNUserNotificationCenter.current()
+   * .authorizationStatus` — read synchronously, so the value is right on
+   * the very first access rather than one round trip later.
+   *
+   * The WebKit original is kept as `__dshShellWebkitNotification` rather
+   * than discarded: a page can still reach it, and this is reversible
+   * from the page if a future dsh wants the real API.
+   * -------------------------------------------------------------- */
+  installNotificationShim();
+
+  function installNotificationShim() {
+    if (window.__dshShellNotificationShim) { return false; }
+
+    var Native = window.__dshShellWebkitNotification;
+    if (Native === undefined) { Native = window.Notification; }
+
+    /* Synchronous on purpose: `Notification.permission` is read as a plain
+       property by every caller, so it cannot be a promise. The host sets the
+       value just above this script, which is why it is already correct when
+       the plugin first looks. */
+    function currentPermission() {
+      var reported = window.__dshShellNotificationPermission;
+      return reported === "granted" || reported === "denied"
+        ? reported
+        : "default";
+    }
+
+    function Shim(title, options) {
+      if (!(this instanceof Shim)) {
+        throw new TypeError("Failed to construct 'Notification': Please use the 'new' operator.");
+      }
+      options = options || {};
+      if (currentPermission() !== "granted") {
+        throw new Error("Notification permission is not granted.");
+      }
+      /* `tag` is how a plugin replaces an earlier notification instead of
+         stacking duplicates, so it is forwarded and reused as the request's
+         identifier on the host. Dropping it would make one finished turn
+         produce several banners. */
+      send("notification", {
+        title: String(title == null ? "" : title),
+        body: String(options.body == null ? "" : options.body),
+        tag: options.tag == null ? "" : String(options.tag),
+        requireInteraction: !!options.requireInteraction
+      });
+      this.title = String(title == null ? "" : title);
+      this.body = String(options.body == null ? "" : options.body);
+      this.tag = options.tag == null ? "" : String(options.tag);
+      this.onshow = null;
+      this.onclick = null;
+      this.onclose = null;
+      this.onerror = null;
+    }
+
+    /* Present because a feature check for it is the cheapest way a caller
+       decides whether a notification can be clicked. We do not wire clicks
+       through: a shell notification that raised the window on click would
+       duplicate what the shell already posts when the agent goes idle. */
+    Shim.prototype.close = function () {
+      send("notificationClose", { tag: this.tag || "" });
+    };
+
+    Object.defineProperty(Shim, "permission", {
+      get: currentPermission,
+      configurable: true
+    });
+    Shim.requestPermission = function (callback) {
+      var result = currentPermission();
+      /* Both shapes: the promise form the plugin uses, and the pre-2015
+         callback form, so neither caller is left out. */
+      if (typeof callback === "function") {
+        setTimeout(function () { callback(result); }, 0);
+      }
+      return Promise.resolve(result);
+    };
+    /* Feature checks against this must not take a different branch than they
+       would in a browser. */
+    Shim.maxActions = 0;
+
+    window.__dshShellWebkitNotification = Native;
+    window.Notification = Shim;
+    window.__dshShellNotificationShim = Shim;
+    send("notificationShimInstalled", {
+      nativePresent: Native !== undefined,
+      nativePermission: Native ? Native.permission : "absent",
+      reportedPermission: currentPermission()
+    });
+    return true;
+  }
   send("bridgeInstalled", {
     hasHost: !!host,
     appRegion: !!(window.CSS && CSS.supports && CSS.supports("-webkit-app-region", "drag"))
