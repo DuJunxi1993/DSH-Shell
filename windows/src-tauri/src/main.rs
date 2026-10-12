@@ -332,20 +332,19 @@ fn chrome_report(report: ChromeReport) {
         })
         .collect();
 
-    // Which layer is doing the work. When dsh honours the desktop contract it
-    // reserves the caption itself and the geometric fallback is dormant, so
-    // `avoid` is empty and that is correct rather than broken. A dsh that
-    // dropped the contract would look identical from the geometry alone, so the
-    // state is logged explicitly.
+    // Whether dsh honoured the desktop contract. There is no geometric pass to
+    // fall back to any more: when this is `contractMissing` the chrome is simply
+    // not reserving the caption, which is a different and much plainer failure
+    // than it used to be. It is logged explicitly so that a dsh which never
+    // answers is visible rather than silent.
     if report.contract == "contractMissing" && !report.placeholder {
         tracing::warn!(
             target: "dsh_shell",
-            "dsh did not answer the desktop contract ({}), so the chrome is compensating \
-             geometrically. Expect the reserved corner to be inset by guesswork rather than \
-             by dsh. contract_top_clearance={:?} avoidance: {}",
+            "dsh did not answer the desktop contract ({}), so nothing is reserving the \
+             caption and the page's own top row runs under the chrome. \
+             contract_top_clearance={:?}",
             report.origin,
-            report.contract_top_clearance,
-            report.avoid
+            report.contract_top_clearance
         );
     }
 
@@ -353,15 +352,14 @@ fn chrome_report(report: ChromeReport) {
         tracing::info!(
             target: "dsh_shell",
             "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} \
-             contract={} notifications={} avoidance: {}",
+             contract={} notifications={}",
             report.origin,
             round1(report.measured_bar_h),
             round1(report.measured_win_w),
             report.zoom,
             report.placeholder,
             report.contract,
-            report.notifications,
-            report.avoid
+            report.notifications
         );
     } else {
         tracing::warn!(
@@ -409,20 +407,16 @@ struct ChromeReport {
     /// plugin that shows system notifications, dsh-notification included, checks
     /// this itself and gives up silently.
     notifications: String,
-    /// Which chrome layer is doing the work: `"contractActive"` when dsh honours
-    /// the desktop-host contract and reserves the caption itself, or
-    /// `"contractMissing"` when the script is compensating geometrically.
+    /// Whether dsh honoured the desktop-host contract: `"contractActive"` when it
+    /// reserves the caption itself, `"contractMissing"` when it does not.
     ///
-    /// Logged explicitly because the two states are otherwise indistinguishable
-    /// from the geometry: a dsh that dropped the contract would leave the window
-    /// looking correct while a heuristic quietly did the work again.
+    /// Logged explicitly because with no geometric pass there is nothing to look
+    /// at instead: the window can look correct while nothing is reserving the
+    /// caption, and the page's top row runs under the chrome.
     contract: String,
     /// dsh's published `--dsh-frame-top-clearance`, when it publishes one.
     contract_top_clearance: Option<f64>,
     boxes: String,
-    /// What the reserved-corner avoidance did, or why it did nothing. Empty when
-    /// the contract is active, which is not a fault.
-    avoid: String,
 }
 
 /// A throw inside the injected script. Logged verbatim: it is the only record of
