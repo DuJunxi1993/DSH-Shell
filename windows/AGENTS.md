@@ -264,9 +264,14 @@ document.documentElement.style.setProperty('--dsh-windows-titlebar-height', '32p
 Measured against real dsh `0.2.0-rc.2`, not assumed
 (`docs/dsh-desktop-contract.md` §2.3): the frame then reserves the caption
 height itself, dsh paints its own drag strip, the content column gets its 16px
-top-left radius, `--dsh-frame-chrome-top` and `--dsh-frame-overlay-top` are
-published, fullscreen modal overlays are inset by the same amount, and both
-custom properties converge when the window goes fullscreen.
+top-left radius, and `--dsh-frame-chrome-top` / `--dsh-frame-overlay-top` are
+published.
+
+Fullscreen converges **asymmetrically**: `--dsh-frame-chrome-top` resets to
+`0px`, but `--dsh-frame-top-clearance` keeps its value. They agree in the normal
+case and this is the one state where they diverge — read `chrome-top`, which is
+also what `contractState()` reads. Where the contract lives and how to apply it
+are in **`docs/dsh-windows-contract.md`**.
 
 `--dsh-windows-titlebar-height` is **read** by dsh and never set by it, so the
 host owns the number. Declare it through `px()` like every other length: dsh
