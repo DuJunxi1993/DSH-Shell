@@ -4,7 +4,7 @@
  * written to lose gracefully:
  *
  *  * The stylesheet carries background and hover colours only. Sizes and radii
- *    are inline, because they are geometry and have to track the page zoom, and
+ *    are inline, because they are geometry and have to come from one place, and
  *    because an inline `background` would beat every `:hover` rule in the
  *    stylesheet - which is exactly how the hover highlights went missing once.
  *  * The bar hangs off `document.documentElement`, not `body`, so nothing the
@@ -15,19 +15,23 @@
  *
  * ## Zoom
  *
- * The page is zoomed (Ctrl +/-/0); the chrome is not. The geometry arrives from
- * Rust (`window.__DSH_SHELL__`) and every length goes through `px()`, which
- * divides by the page zoom exactly once. Do not also counter-scale with a
- * transform: that was the bug where zooming out made the buttons grow.
- * `chrome_report` re-measures the live DOM and Rust fails the run if
- * `height * zoom !== barH`.
+ * Zoom is Chromium's. `Ctrl`+`±`/`0` is not intercepted here, and every length
+ * below is a plain CSS pixel, so the chrome scales with the page exactly as
+ * dsh's own content does. That is what dsh's contract assumes too:
+ * `--dsh-windows-titlebar-height` is a CSS length, so the reserved caption band
+ * scales with everything else and the two cannot drift apart.
+ *
+ * The one thing this file still has to do about zoom is *report* it, and that
+ * needs a little care: Chromium applies zoom on top of the display's own scaling
+ * and Tauri can read neither. `devicePixelRatio` divided by the injected system
+ * scale is the whole signal, which is why `osScale` comes from Rust rather than
+ * being guessed here.
  *
  * ## Clicking through
  *
- * The bar carries the three window buttons and nothing else. It is
- * `pointer-events: none` apart from the buttons, and it draws no background, so
- * the page's own content reaches every pixel of the window the buttons are not
- * sitting on.
+ * The bar is `pointer-events: none` apart from the controls it owns, and it
+ * draws no background, so the page's own content reaches every pixel the
+ * controls are not sitting on.
  *
  * ## The page's own layout
  *
@@ -50,25 +54,16 @@
      chrome::tests - a fallback that drifts is a silently wrong chrome, which is
      how the bar was once 28px tall in the page and 24 in the crate. */
   var CFG = window.__DSH_SHELL__ || {};
-  var BAR_H = num(CFG.barH, 28);
+  var BAR_H = num(CFG.barH, 36);
   var WIN_W = num(CFG.winW, 32);
   var CORNER_R = num(CFG.cornerR, 5);
+  var CONTROL_H = num(CFG.controlH, 28);
+  var CONTROL_TOP = num(CFG.controlTop, 4);
+  var OS_SCALE = num(CFG.osScale, 1);
   var RESERVED_W = 3 * WIN_W;
-
-  /* The ladder comes from config.rs too. It is not restated here: the key
-     handler needs the step to ask for and clampZoom needs both ends, and a ladder
-     written down twice is a ladder that disagrees with itself. */
-  var ZOOM_MIN = num(CFG.zoomMin, 50);
-  var ZOOM_MAX = num(CFG.zoomMax, 200);
-  var ZOOM_STEP = num(CFG.zoomStep, 10);
 
   var STYLE_ID = "dsh-shell-chrome-style";
   var ROOT_ID = "dsh-shell-chrome";
-
-  /* Gap between the top of the window and the button row. Native captions are
-     flush against the frame, but on a frameless window the buttons sit on the
-     page and read as glued to the edge without it. */
-  var BUTTON_GAP = 4;
 
   /* ===================================================================
    * LAYER 1 — the desktop contract
@@ -90,13 +85,22 @@
    * and offers a drag region; the three window buttons stay ours, because they
    * are the only part of a native caption that talks to the window manager.
    *
-   * The height is ours to declare, so it comes from the same constant as every
-   * other length here and goes through `px()` like all of them. Declaring it in
-   * logical pixels would be wrong: dsh reads it as a CSS length and the page
-   * zoom multiplies it, exactly like everything else in the document.
+   * The contract also claims part of the band for itself: dsh pins its sidebar
+   * toggle to `left: 12px` and centres it vertically with
+   * `top: calc((var(--dsh-windows-titlebar-height) - 28px) / 2)`. That is why
+   * `BAR_H` is 36 rather than a round number of our own - at 28 the formula
+   * returns 0 and the toggle lands flush against the top of the window - and why
+   * `CONTROL_H` is 28, so our own controls occupy the identical box.
+   *
+   * It also decides where our controls are *not*: with the sidebar collapsed dsh
+   * moves its new-session button to `left: 48px`, so the whole left of the caption
+   * is dsh's in one state or the other. That is why the menu button sits on the
+   * right, beside the window buttons.
    *
    * `--dsh-windows-titlebar-height` is *read* by dsh and never set by it, which
-   * is what makes the host the owner of the number.
+   * is what makes the host the owner of the number. It is a CSS length, so the
+   * page zoom multiplies it exactly like everything else in the document, and it
+   * stays aligned with our bar for that reason.
    */
   function declareDesktopContract() {
     var html = document.documentElement;
@@ -150,6 +154,15 @@
 
   var contractReport = "contractMissing";
 
+  /* When this document started loading. dsh injects the contract's stylesheet a
+     little after first paint, so "not answered yet" and "never answers" look
+     identical from a single sample; the only way to tell them apart is to know
+     how long the page has been up. */
+  var loadedAt = Date.now();
+  /* Comfortably past the 1.4s measured on 0.2.0-rc.2, so a slow machine is not
+     reported as a dsh without a contract. */
+  var CONTRACT_SETTLE_MS = 5000;
+
   function reportContract(state, detail) {
     contractReport = state;
     try {
@@ -163,30 +176,43 @@
     }
   }
 
-  var zoom = clampZoom(num(CFG.zoom, 100));
-  var z = zoom / 100;
-
   function num(value, fallback) {
     var parsed = Number(value);
     return isFinite(parsed) && parsed > 0 ? parsed : fallback;
   }
 
-  function clampZoom(value) {
-    if (!isFinite(value)) return ZOOM_MAX;
-    if (value < ZOOM_MIN) return ZOOM_MIN;
-    if (value > ZOOM_MAX) return ZOOM_MAX;
-    return value;
-  }
-
-  /* The one place page zoom is divided out. See chrome::css_len.
-     Two forms: `cssPx` for arithmetic and hit-testing, `px` for a CSS length.
-     Using the string form in arithmetic yields NaN. */
-  function cssPx(designPx) {
-    return designPx / z;
-  }
-
+  /* Every length in this file is a plain CSS pixel.
+   *
+   * This used to divide by the page zoom, so the chrome kept a fixed physical
+   * size while the page around it scaled. Zoom is Chromium's now and the hotkeys
+   * are not intercepted, and dividing the chrome out is not merely unnecessary
+   * but wrong: dsh's reserved caption band is `--dsh-windows-titlebar-height`,
+   * a CSS length, so it scales with the zoom along with everything else. Scaling
+   * in step is what keeps our bar and dsh's band agreeing at every zoom level.
+   */
   function px(designPx) {
-    return cssPx(designPx) + "px";
+    return designPx + "px";
+  }
+
+  /* The page's current zoom, as a fraction.
+   *
+   * Chromium multiplies the display's own scale factor into `devicePixelRatio`
+   * and then applies the page zoom on top, and Tauri can read the first but
+   * exposes no getter for the second. Dividing one by the other - the system
+   * scale is injected from Rust - is the only way to learn the zoom from inside
+   * the page while the hotkeys belong to Chromium.
+   *
+   * This is what the menu steps from and what it displays. It is deliberately
+   * derived rather than cached: a cached value goes stale the moment the user
+   * presses Ctrl+=, and a menu that claims a percentage that is not the real one
+   * is worse than no menu.
+   */
+  function currentZoom() {
+    var ratio = Number(window.devicePixelRatio);
+    if (!isFinite(ratio) || ratio <= 0 || OS_SCALE <= 0) {
+      return 1;
+    }
+    return ratio / OS_SCALE;
   }
 
   function invoke(cmd, args) {
@@ -204,8 +230,8 @@
 
   /* Backgrounds and hover states live here, not inline: an inline background
      would beat every `:hover` rule in the stylesheet and the highlight would
-     never show. The zoom and the sizes are still inline, because they are
-     geometry and have to track the page zoom from one place.
+     never show. The sizes are still inline, because they are geometry and have
+     to come from one place.
    *
    * A constructed stylesheet is used rather than a `<style>` element because our
    * own boot page's CSP drops injected style elements - the buttons then fell
@@ -219,17 +245,51 @@
       "  outline: none;",
       "  color: inherit;",
       "  cursor: default;",
+      /* Two properties on one transition: the highlight fades, and the press
+         scales. `transform-origin` is pinned to the centre so a press moves the
+         glyph toward the pointer rather than sliding out from under it. */
+      "  transform-origin: center;",
+      "  transition: background-color 140ms ease, transform 90ms ease,",
+      "              opacity 140ms ease;",
       "}",
       "#" + ROOT_ID + " button:hover {",
       "  background: rgba(127,127,127,0.22);",
+      "}",
+      /* Press feedback. Scaled rather than merely tinted, because a caption is a
+         small target and the extra confirmation is worth more than the 4% of size
+         it costs. `:not(:disabled)` keeps the readout inert. */
+      "#" + ROOT_ID + " button:active:not(:disabled) {",
+      "  transform: scale(0.92);",
+      "  background: rgba(127,127,127,0.30);",
+      "}",
+      /* Focus has to be visible: this chrome is keyboard-reachable, and the UA
+         outline is suppressed above. */
+      "#" + ROOT_ID + " button:focus-visible {",
+      "  outline: 2px solid rgba(127,127,127,0.75);",
+      "  outline-offset: -2px;",
       "}",
       /* Light red, not a solid fill: the cluster behind it is the page's own
          surface colour, and a solid block there reads as a foreign panel. */
       "#" + ROOT_ID + " .dss-win button[data-dss-close]:hover {",
       "  background: rgba(214,45,45,0.18);",
       "}",
+      "#" + ROOT_ID + " .dss-win button[data-dss-close]:active {",
+      "  background: rgba(214,45,45,0.28);",
+      "}",
       "#" + ROOT_ID + " .dss-win button[data-dss-close]:hover svg g {",
       "  stroke: #c0392b;",
+      "  transition: stroke 140ms ease;",
+      "}",
+      /* Hover only. The panel's background, colour and border are written by
+         `probeTheme`, which measures the page — a stylesheet rule here would
+         either be overridden or win, and the token version of it won by being
+         wrong: dsh has no `--dsw-alias-bg-elevated`, so it rendered a white slab
+         on a dark page. See `panelSurface`. */
+      "#" + ROOT_ID + " .dss-panel-item:hover:not([disabled]) {",
+      "  background: rgba(127,127,127,0.22);",
+      "}",
+      "#" + ROOT_ID + " .dss-panel-item {",
+      "  transition: background-color 120ms ease;",
       "}",
       "#" + ROOT_ID + " svg { display: block; }"
     ].join("\n");
@@ -337,7 +397,7 @@
       "align-items:flex-start",
       "height:" + px(BAR_H),
       "z-index:2147483647",
-      /* Everything below is click-through except the window buttons. */
+      /* Everything below is click-through except the controls we own. */
       "pointer-events:none",
       "color:var(--dsw-alias-label-primary, #16181d)",
       "-webkit-user-select:none",
@@ -426,6 +486,38 @@
       return { r: 255, g: 255, b: 255 };
     }
 
+    /* The panel's own surface, derived from the page rather than from a token.
+     *
+     * The obvious thing is `var(--dsw-alias-bg-elevated, #fff)`, and it is wrong:
+     * dsh does not define that alias, so the fallback wins and the panel is a
+     * white slab sitting on a dark page. The glyphs already solved this problem
+     * for the bar by measuring the page (`pageBackground`) instead of guessing at
+     * dsh's tokens, which differ per build and are not guaranteed to exist on
+     * `<html>` at all — the panel uses the same measurement, so the menu follows
+     * the theme switch for free and stays correct across dsh releases.
+     *
+     * A solid colour rather than a translucent one: a menu with the page showing
+     * through it is unreadable over a streaming response.
+     */
+    function panelSurface(bg, fg) {
+      var dark = luminance(bg) < 0.45;
+      /* Lift the page's own colour towards white, so the panel reads as a raised
+         surface of the same family rather than as a different product pasted on
+         top. Light pages go almost fully to white; dark pages move only a little,
+         because pushing a dark theme towards white is what turns it grey. */
+      var mix = dark ? 0.10 : 0.88;
+      var channel = function (value) {
+        return Math.round(value + (255 - value) * mix);
+      };
+      return {
+        background: "rgb(" + channel(bg.r) + "," + channel(bg.g) + "," + channel(bg.b) + ")",
+        color: fg,
+        /* A border is what separates a light panel from a light page; the shadow
+           alone is invisible when both surfaces are pale. */
+        border: "1px solid rgba(127,127,127,0.28)"
+      };
+    }
+
     var lastFg = null;
     function probeTheme() {
       var bg = pageBackground();
@@ -434,7 +526,350 @@
         bar.style.color = fg;
         lastFg = fg;
       }
+      /* Re-read the surface every pass rather than only when the foreground
+         changed: a theme switch can move the background without crossing the
+         luminance threshold, and the panel is the one place that shows it. */
+      var surface = panelSurface(bg, fg);
+      zoomPanel.style.background = surface.background;
+      zoomPanel.style.color = surface.color;
+      zoomPanel.style.border = surface.border;
       return fg;
+    }
+
+    /* --- the menu button, and the zoom panel behind it ---
+     *
+     * On the right, immediately before the window buttons, and that is not a
+     * style choice. The caption's left edge is dsh's: its contract pins the
+     * sidebar toggle to `left: 12px`, and when the sidebar is collapsed dsh
+     * *also* moves its new-session button to `left: 48px`. Every x on the left
+     * was therefore a collision waiting for the sidebar to collapse — which is
+     * what the screenshot showed. On the right the only reserved width is the
+     * window buttons' own, and we know exactly how wide that is.
+     *
+     * The panel is a dropdown rather than a permanent row because there is only
+     * one thing to put in it, and a row of zoom controls sitting in the caption
+     * all day would be chrome competing with dsh's own content for the same
+     * pixels.
+     */
+    var menuButton = document.createElement("button");
+    menuButton.type = "button";
+    menuButton.className = "dss-btn dss-menu";
+    menuButton.title = "菜单";
+    menuButton.setAttribute("aria-label", "菜单");
+    menuButton.setAttribute("aria-haspopup", "true");
+    menuButton.setAttribute("aria-expanded", "false");
+    menuButton.style.cssText = [
+      /* `margin-left:auto` rather than an absolute `left`: the bar is already a
+         flex row, so this pushes the menu button and the window cluster to the
+         right as one group and there is no x arithmetic to get wrong. */
+      "margin-left:auto",
+      "flex:0 0 auto",
+      "margin-top:" + px(CONTROL_TOP),
+      "width:" + px(WIN_W),
+      "height:" + px(CONTROL_H),
+      "pointer-events:auto",
+      "background:transparent",
+      "display:flex",
+      "align-items:center",
+      "justify-content:center"
+    ].join(";");
+
+    var zoomPanel = document.createElement("div");
+    zoomPanel.className = "dss-panel";
+    zoomPanel.style.cssText = [
+      "position:absolute",
+      /* Aligned to the menu button's right edge, i.e. `RESERVED_W` from the
+         window's right — the width of the window buttons, which is the only
+         thing between the panel and the corner. */
+      "right:" + px(RESERVED_W),
+      "top:" + px(BAR_H),
+      "min-width:" + px(150),
+      "padding:" + px(5),
+      "pointer-events:auto",
+      "border-radius:" + px(CORNER_R + 1),
+      "box-shadow:0 6px 20px rgba(0,0,0,0.32)",
+      /* A gap between the items, not padding inside each: it keeps the rows the
+         same height whether or not they carry a label, and a hover highlight then
+         covers one row rather than bleeding into its neighbour. */
+      "flex-direction:column",
+      "gap:" + px(2),
+      "font-size:" + px(12.5),
+      "line-height:" + px(1.35),
+      /* Opacity and a small rise rather than `display`, so the panel can fade in
+         instead of appearing between two frames. `visibility` keeps it out of the
+         hit-testing tree while it is transparent. */
+      "opacity:0",
+      "visibility:hidden",
+      "transform:translateY(-6px)",
+      "transform-origin:top right",
+      "transition:opacity 140ms ease, transform 140ms ease, visibility 0s linear 140ms"
+    ].join(";");
+
+    /* Zoom is a ladder, not a free scale: Chromium's hotkeys land on its own
+       rungs, so stepping by a tenth from wherever we actually are is the only
+       way a "+/-" pair behaves predictably next to them. Rust clamps to the same
+       ladder before it calls `set_zoom`, so these are a courtesy to the UI and
+       not the enforcement point. */
+    var ZOOM_MIN = 50;
+    var ZOOM_MAX = 200;
+    var ZOOM_STEP = 10;
+
+    function zoomPercent() {
+      return Math.round(currentZoom() * 100);
+    }
+
+    /* One row in the panel.
+     *
+     * `min-height` rather than padding alone, because a 12.5px label with 2px of
+     * padding is a 20px row and four of them read as one crowded block — the rows
+     * have to be comfortably taller than the text before they stop looking stuck
+     * together. The readout is a row too, so the column keeps one rhythm whether
+     * or not an item has a label.
+     */
+    function zoomItem(label, onClick, role) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.className = "dss-panel-item";
+      item.textContent = label;
+      if (role) {
+        item.dataset.role = role;
+      }
+      var readout = role === "readout";
+      item.setAttribute("aria-live", readout ? "polite" : "false");
+      if (readout) {
+        /* Not focusable and not clickable: it is a value, not a control, and a
+           disabled button invites the question of why it cannot be pressed. */
+        item.disabled = true;
+      }
+      item.style.cssText = [
+        "display:flex",
+        "align-items:center",
+        "justify-content:space-between",
+        "width:100%",
+        "min-height:" + px(30),
+        "box-sizing:border-box",
+        "text-align:left",
+        "background:transparent",
+        "border:0",
+        "border-radius:" + px(4),
+        "padding:0 " + px(10),
+        "font:inherit",
+        "font-size:" + px(12.5),
+        "color:inherit",
+        "cursor:default",
+        readout ? "opacity:0.7" : "",
+        /* Tabular figures so the readout does not shift sideways as the number
+           changes width. */
+        readout ? "font-variant-numeric:tabular-nums" : ""
+      ].join(";");
+      if (!readout) {
+        item.addEventListener("click", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          onClick();
+          paintZoomPanel();
+        });
+      }
+      zoomPanel.appendChild(item);
+      return item;
+    }
+
+    /* A hairline between the zoom controls and the one action that is not a zoom
+       step. Drawn as a pseudo-element on the row rather than as a separate
+       element so there is nothing extra to lay out. */
+    function zoomSeparator() {
+      var rule = document.createElement("div");
+      rule.style.cssText = [
+        "height:1px",
+        "margin:" + px(4) + " " + px(6),
+        "background:currentColor",
+        "opacity:0.18",
+        "flex:0 0 auto"
+      ].join(";");
+      zoomPanel.appendChild(rule);
+    }
+
+    function setZoomPercent(percent) {
+      var clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, percent));
+      return invoke("set_page_zoom", { percent: clamped }).catch(function (error) {
+        invoke("chrome_error", { message: "set_page_zoom failed: " + error }).catch(function () {});
+      });
+    }
+
+    function paintZoomPanel() {
+      var here = zoomPercent();
+      zoomPanel.querySelectorAll(".dss-panel-item").forEach(function (item) {
+        if (item.dataset.role === "readout") {
+          item.textContent = here + "%";
+        }
+      });
+    }
+
+    function stepZoom(direction) {
+      var here = zoomPercent();
+      /* Align to the ladder before stepping, so repeated presses do not drift
+         off it: from 137%, "−" means the rung below 130, not 127. */
+      var offset = here - ZOOM_MIN;
+      var steps = Math.round(offset / ZOOM_STEP);
+      if (direction < 0 && steps * ZOOM_STEP + ZOOM_MIN < here) {
+        steps -= 1;
+      }
+      if (direction > 0 && steps * ZOOM_STEP + ZOOM_MIN > here) {
+        steps += 1;
+      }
+      return setZoomPercent(ZOOM_MIN + (steps + direction) * ZOOM_STEP);
+    }
+
+    /* The readout first, then the two steps, then the reset behind a rule.
+     *
+     * The value belongs at the top of the panel, not between the two controls
+     * that change it: a number sitting between a "+" and a "-" reads as the third
+     * control rather than as the state the other two act on.
+     */
+    zoomItem("100%", null, "readout");
+    zoomItem("放大", function () { stepZoom(1); });
+    zoomItem("缩小", function () { stepZoom(-1); });
+    zoomSeparator();
+    zoomItem("复位 100%", function () { setZoomPercent(100); });
+
+    /* Open and close are driven by opacity, not `display`, so the panel fades.
+     *
+     * `visibility` is switched alongside it rather than left to the opacity: a
+     * fully transparent panel that is still `visible` would sit over the page
+     * swallowing clicks, which is the one thing a closed menu must not do. The
+     * `0s linear 140ms` delay on the close side means visibility only flips once
+     * the fade has finished, while opening flips it immediately — a transition
+     * delay on one property cannot be made conditional per-direction otherwise.
+     */
+    function setPanelOpen(open) {
+      zoomPanel.style.opacity = open ? "1" : "0";
+      zoomPanel.style.visibility = open ? "visible" : "hidden";
+      zoomPanel.style.transform = open ? "translateY(0)" : "translateY(-6px)";
+      zoomPanel.style.transition = open
+        ? "opacity 140ms ease, transform 140ms ease, visibility 0s"
+        : "opacity 140ms ease, transform 140ms ease, visibility 0s linear 140ms";
+      menuButton.setAttribute("aria-expanded", open ? "true" : "false");
+      var bars = menuButton.firstChild;
+      if (bars && bars.style) {
+        bars.style.transform = open ? "rotate(90deg) scaleX(0.85)" : "rotate(0deg) scaleX(1)";
+      }
+      if (open) {
+        paintZoomPanel();
+      }
+    }
+
+    function panelIsOpen() {
+      return zoomPanel.style.visibility === "visible";
+    }
+
+    menuButton.appendChild(hamburger());
+    menuButton.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      setPanelOpen(!panelIsOpen());
+    });
+    /* A caption control that stays open after the user clicks the page is a menu
+       that has to be dismissed by hand. Any click elsewhere closes it. */
+    document.addEventListener("mousedown", function (event) {
+      if (!panelIsOpen()) {
+        return;
+      }
+      if (event.target === menuButton || zoomPanel.contains(event.target)) {
+        return;
+      }
+      setPanelOpen(false);
+    }, true);
+    window.addEventListener("blur", function () { setPanelOpen(false); });
+    bar.appendChild(menuButton);
+    bar.appendChild(zoomPanel);
+
+    /* Three lines, two of glyph: the bars are drawn with borders rather than an
+       inline SVG so they inherit `currentColor` and nothing else.
+     *
+     * The explicit height is not cosmetic. Without it the element's box is the
+       border plus nothing, so `align-items:center` centres a 1.5px sliver and the
+       two shadow lines sit 4px and 8px *below* it — the glyph then reads as
+       sitting several pixels lower than the window buttons, which is exactly what
+     * the screenshot showed. Giving the box the full height of the glyph makes
+     * centring mean what it says.
+     */
+    function hamburger() {
+      var box = document.createElement("span");
+      box.setAttribute("aria-hidden", "true");
+      box.style.cssText = [
+        "display:block",
+        "width:" + px(14),
+        "height:" + px(11),
+        "border-top:" + px(1.5) + " solid currentColor",
+        "box-shadow:0 " + px(4) + " 0 currentColor, 0 " + px(8) + " 0 currentColor",
+        /* Rotates a little when the menu is open. Cheap, and it makes the button
+           read as a disclosure rather than as a label. */
+        "transform-origin:center",
+        "transition:transform 160ms cubic-bezier(0.2, 0.9, 0.3, 1)"
+      ].join(";");
+      return box;
+    }
+
+    /* --- status, centred in the window ---
+     *
+     * Centred on the window rather than on the space left over, so it does not
+     * drift as the button cluster's width or the page zoom changes. The width is
+     * capped so the text cannot reach the menu button on the left or the window
+     * buttons on the right: 0..40 is dsh's, 48..80 is ours, and the right-hand
+     * 96 is the window's.
+     *
+     * Two things, both obtained without inventing an API: which dsh we are
+     * attached to, and whether it is still answering. The zoom percentage is not
+     * here - it is in the menu, which derives it from the live page rather than
+     * from a copy kept in step by hand.
+     *
+     * The dot is deliberately three-state. A failed probe only means "down" once
+     * a probe has ever succeeded: a page whose own CSP blocked the request would
+     * otherwise report dsh as dead while dsh is serving it.
+     */
+    var status = document.createElement("div");
+    status.className = "dss-status";
+    status.style.cssText = [
+      "position:absolute",
+      "top:0",
+      "left:50%",
+      "transform:translateX(-50%)",
+      "height:" + px(BAR_H),
+      "line-height:" + px(BAR_H),
+      "padding:0 " + px(10),
+      "pointer-events:none",
+      "white-space:nowrap",
+      "overflow:hidden",
+      "text-overflow:ellipsis",
+      "max-width:" + px(320),
+      "font-size:" + px(11),
+      "opacity:0.75",
+      "color:inherit"
+    ].join(";");
+    bar.appendChild(status);
+
+    var reachable = false;
+    var everReached = false;
+
+    function paintStatus() {
+      var tint = !everReached ? "inherit" : (reachable ? "#22c55e" : "#ef4444");
+      status.innerHTML =
+        '<span style="color:' + tint + '">' + (everReached ? "●" : "○") + "</span>" +
+        " dsh " + (location.host || "?");
+    }
+
+    /* Same-origin probe: any answer at all proves dsh's HTTP server is up, and
+       the 401 from its auth fence counts. */
+    function probeDsh() {
+      fetch(location.origin + "/", { method: "HEAD", cache: "no-store" })
+        .then(function () {
+          reachable = true;
+          everReached = true;
+        })
+        .catch(function () {
+          reachable = false;
+        })
+        .then(paintStatus);
     }
 
     /* --- window buttons --- */
@@ -444,17 +879,19 @@
       "display:flex",
       "align-items:stretch",
       "pointer-events:auto",
-      "margin-left:auto",
-      /* A small gap so the buttons do not look glued to the top frame. */
-      "margin-top:" + px(BUTTON_GAP),
-      "width:" + px(RESERVED_W),
-      "height:" + px(BAR_H - BUTTON_GAP),
+      /* No `margin-left:auto`: the menu button ahead of it already claims the
+         free space, and giving it to both would push a gap between them. */
       "flex:0 0 auto",
+      /* CONTROL_TOP..CONTROL_TOP+CONTROL_H is exactly the box dsh gives its own
+         sidebar toggle, which is what puts the three controls on one line. */
+      "margin-top:" + px(CONTROL_TOP),
+      "width:" + px(RESERVED_W),
+      "height:" + px(CONTROL_H),
       /* No background at all. The bar is chrome over the page, and a fill here
          reads as a foreign panel: it did not match the loaded page or the
          content column. Legibility comes from the glyph colour instead, which
          follows the page's own `--dsw-alias-label-primary` and so works on the
-         light dsh theme and on the dark boot page alike. */
+         light dsh theme and the dark boot page alike. */
       "background:transparent"
     ].join(";");
 
@@ -510,17 +947,26 @@
 
     document.documentElement.appendChild(bar);
 
-    function paint(value) {
-      zoom = clampZoom(value);
-      z = zoom / 100;
+    /* Every length in the bar comes from one place, and it is written once here
+       rather than at each `style.cssText`. Zoom no longer appears: the lengths
+       are plain CSS pixels and the browser scales them. */
+    function paint() {
       bar.style.height = px(BAR_H);
+      menuButton.style.marginTop = px(CONTROL_TOP);
+      menuButton.style.width = px(WIN_W);
+      menuButton.style.height = px(CONTROL_H);
+      /* `right` rather than `left`, so the panel stays anchored to the window
+         corner as the window is resized; the menu button is in normal flow and
+         moves with it for free. */
+      zoomPanel.style.right = px(RESERVED_W);
+      zoomPanel.style.top = px(BAR_H);
       winCluster.style.width = px(RESERVED_W);
-      winCluster.style.marginTop = px(BUTTON_GAP);
-      winCluster.style.height = px(BAR_H - BUTTON_GAP);
+      winCluster.style.marginTop = px(CONTROL_TOP);
+      winCluster.style.height = px(CONTROL_H);
       var buttons = [minimize, maximize, close];
       for (var i = 0; i < buttons.length; i++) {
         buttons[i].style.width = px(WIN_W);
-        buttons[i].style.height = px(BAR_H - BUTTON_GAP);
+        buttons[i].style.height = px(CONTROL_H);
         buttons[i].style.borderRadius = px(CORNER_R);
       }
       var glyphs = winCluster.querySelectorAll("svg");
@@ -530,7 +976,7 @@
       }
     }
 
-    paint(zoom);
+    paint();
 
     /* The foreground is measured rather than derived from a token, and a theme
        switch is not something an observer can see: it would watch childList, and
@@ -539,9 +985,11 @@
        slow poll costs a handful of computed-style reads a second. */
     setInterval(probeTheme, 1500);
     probeTheme();
+    paintStatus();
+    probeDsh();
+    setInterval(probeDsh, 4000);
 
     window.__DSH_SHELL_CHROME__ = {
-      setZoom: paint,
       setMaximized: function (isMaximized) {
         maximize.title = isMaximized ? "Restore" : "Maximize";
         maximize.setAttribute("aria-label", maximize.title);
@@ -583,12 +1031,13 @@
         report: {
           installed: true,
           still_present: !!node,
-          /* Multiplied by the page zoom so Rust can compare against the design
-             constants it owns: a mismatch means the 1/zoom correction was
-             applied a different number of times than exactly once. */
-          measured_bar_h: barBox ? barBox.height * z : 0,
-          measured_win_w: winBox ? winBox.width * z : 0,
-          zoom: z,
+          /* Plain CSS pixels now. The chrome scales with the page zoom like the
+             rest of the document, so these are directly comparable to the design
+             constants Rust owns - which is the check that used to need the zoom
+             multiplied back in by hand. */
+          measured_bar_h: barBox ? barBox.height : 0,
+          measured_win_w: winBox ? winBox.width : 0,
+          zoom: currentZoom(),
           placeholder: document.documentElement.hasAttribute("data-dsh-shell-placeholder"),
           ready_state: document.readyState,
           origin: location.origin,
@@ -598,7 +1047,15 @@
              nothing is reserving it and the row runs under the chrome. */
           contract: contractState(),
           contract_top_clearance: contractTopClearance(),
+          /* dsh applies the contract's stylesheet about 1.4s after the page loads,
+             and `contract` says "missing" for every report before that. Without
+             this, the shell warns on every single page load about a contract that
+             was always going to arrive, which trains the reader to ignore it. The
+             warning is for a dsh that *never* answers. */
+          contract_settled: Date.now() - loadedAt > CONTRACT_SETTLE_MS,
           boxes: "bar=" + describe(node) +
+            " status=" + describe(status) +
+            " menu=" + describe(menuButton) +
             " winc=" + describe(winCluster) +
             " close=" + describe(close) +
             " color=" + getComputedStyle(node || bar).color
@@ -644,40 +1101,11 @@
     }
   }
 
-  function paintZoom(value) {
-    if (window.__DSH_SHELL_CHROME__ && typeof window.__DSH_SHELL_CHROME__.setZoom === "function") {
-      window.__DSH_SHELL_CHROME__.setZoom(value);
-    }
-  }
-
-  /* Zoom shortcuts. Handled here because focus is inside the page, not the
-     window, and `code` is used so the bindings do not depend on the keyboard
-     layout: Ctrl+= (and Ctrl+Shift+=) zooms in, Ctrl+- out, Ctrl+0 resets.
-     Chromium's own zoom hotkeys are disabled in Rust so these cannot double up. */
-  document.addEventListener("keydown", function (event) {
-    if (!event.ctrlKey || event.altKey || event.metaKey) {
-      return;
-    }
-    var code = event.code;
-    var command = null;
-    var delta = 0;
-    if (code === "Equal" || code === "NumpadAdd") {
-      command = "zoom_step";
-      delta = ZOOM_STEP;
-    } else if (code === "Minus" || code === "NumpadSubtract") {
-      command = "zoom_step";
-      delta = -ZOOM_STEP;
-    } else if (code === "Digit0" || code === "Numpad0") {
-      command = "zoom_reset";
-    }
-    if (!command) {
-      return;
-    }
-    event.preventDefault();
-    invoke(command, command === "zoom_reset" ? {} : { delta: delta })
-      .then(paintZoom)
-      .catch(function () {});
-  });
+  /* No zoom hotkeys here. Chromium's own Ctrl+= / Ctrl+- / Ctrl+0 are enabled in
+     Rust, and intercepting them would put us back in charge of a scale factor
+     that the page and the contract both treat as ordinary CSS. The menu derives
+     the current zoom from the live page instead, so it stays correct whichever
+     way the zoom was last changed. */
 
   function run() {
     try {

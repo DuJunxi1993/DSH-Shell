@@ -1,33 +1,70 @@
-# Changelog
-
-All notable changes to the **Windows** implementation of DSH Shell (the Tauri
-app under `windows/`). The macOS implementation keeps its own history under
-`macos/`; the repository-level layout is described in the root `README.md`.
-
-The format is [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
-project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-Releases are tagged with a `windows-` prefix (`windows-v0.1.1`) because Git tags
-share one namespace with the macOS implementation's tags.
-
 ## [Unreleased]
 
 ### Added
 
+- A **menu button** in the caption, opening a zoom panel: enlarge / current
+  percentage / shrink / reset 100%. It sits at 48px from the left edge because
+  the desktop contract pins dsh's own sidebar toggle to `left: 12px`, and 48 is
+  the first column past it — the same column dsh puts its collapsed new-session
+  button in.
+- A **status line**, centred in the caption: which dsh we are attached to and
+  whether it is still answering.
 - `auto_restart_on_crash` is no longer a dead config field. A dsh that dies on its
-  own is restarted, bounded to three attempts with a 2s → 4s → 8s backoff. The
+  own is restarted, bounded to three attempts with a 2s -> 4s -> 8s backoff. The
   budget resets only after dsh has stayed up a full minute, so a crash at lunchtime
   and again at nine are two failures rather than one long one. After the budget is
   spent the shell stops and says so, instead of respawning forever.
-- A dsh orphaned by an **earlier** run — a crash, a kill, an upgrade from under a
-  running dsh — is now reclaimed instead of making the next launch refuse to start
-  and point at `attach`. Because it means killing a process this shell never
-  spawned, a candidate has to satisfy three independent facts: it owns our port,
-  its parent is PID 1 (orphaned, not in use), and it is the `dsh_binary_path` we
-  are configured to run.
+- A dsh orphaned by an **earlier** run is now reclaimed — at start-up when it
+  holds the port we need, and at exit when it is *still* holding our port after
+  our own tree kill. Because it means killing a process this shell never spawned,
+  a candidate must satisfy three independent facts: it owns our port, it has no
+  living parent, and its command line names the harness derived from our own
+  `dsh_binary_path`.
+
+### Changed
+
+- **The caption is 36px, and the caption is dsh's.** The bar height is the one
+  number the desktop contract makes the host own, and dsh centres its 28px
+  sidebar toggle with `top: calc((var(--dsh-windows-titlebar-height) - 28px) /
+  2)`. At 28 that formula returns 0 and the toggle ends up flush against the
+  window's top edge; at 36 it lands on the same top edge as our own button row.
+- **Page zoom is WebView2's.** The hotkeys are Chromium's own and the chrome
+  scales with the page, exactly as dsh's reserved band does. The 1/zoom division
+  that kept the chrome a fixed physical size is gone — it was the single most
+  bug-prone line in the file, and it was never needed, because
+  `--dsh-windows-titlebar-height` is a CSS length and scales with everything
+  else. Dividing the chrome out while dsh scaled in is what would have separated
+  them.
+- The geometric fallback (`findRightColumns`, `insetColumn`, `clearCorner`,
+  `gutterTopRow`, `layoutSignature`) and our own drag strip are **deleted**, and
+  `platform_adapt.js` now does exactly two things to dsh's document: declare the
+  contract. The pass found columns by geometry in a document whose CSS-Modules
+  class names are rehashed every dsh build and wrote padding onto whatever it
+  believed was a column.
+
+### Removed
+
+- **BREAKING (config):** `zoom_percent`. Zoom is no longer persisted in
+  `settings.json` — WebView2 restores the last zoom per origin by itself. A
+  settings file written by an earlier build still loads: the key is accepted,
+  ignored, and not written back. Because the struct uses `deny_unknown_fields`,
+  deleting the key outright would have made every existing file unparseable, and
+  `load_or_default` answers a parse failure with defaults — quietly handing the
+  user a different port and launch mode than the one they chose.
+- `zoom_step` and `zoom_reset` are replaced by one `set_page_zoom(percent)`. The
+  hotkeys are Chromium's, so the shell no longer knows the current zoom and
+  cannot step from it; the page derives it from `devicePixelRatio` over the
+  system scale factor and asks for the rung it wants.
 
 ### Fixed
 
+- **Two bugs that made the orphan reclaim inert.** It compared the port owner's
+  executable with the configured `dsh_binary_path` — `node.exe` against
+  `dsh.cmd`, which never matches — and it required `parent_pid == 1`, while
+  Windows records the *dead* parent's PID instead of reparenting to 1. Both meant
+  no real dsh was ever reclaimed, and the refusal was logged at info, so it
+  looked like a working feature. Identity is now matched on the command line, and
+  "orphaned" means "no living parent".
 - The zoom ladder is consistent again at its new 200% ceiling. The script's
   fallback still said 100 while `config.rs` said 200, and two tests had the old
   ceiling written in as literals — which is the assertion shape the zoom tests
@@ -39,11 +76,10 @@ share one namespace with the macOS implementation's tags.
 
 ### Known limitations
 
-- The desktop contract (`data-windows-titlebar`) is **not implemented by dsh
-  `0.2.0-rc.2`**, so the chrome continues to compensate geometrically. This is the
-  fallback working, not a regression: the chrome declares the contract, reads back
-  whether dsh answered, logs `contractMissing` and carries on. When dsh ships it,
-  the switch is automatic.
+- The desktop contract takes about 1.4 s to answer, so `chrome_report` logs
+  `contract=contractMissing` until dsh's stylesheet lands. It is a sample of a
+  moment, not a verdict about the dsh; `top_clearance` is the field that shows
+  what dsh actually reserved.
 
 ## [0.1.1] - 2026-10-11
 

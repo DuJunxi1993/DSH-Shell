@@ -28,11 +28,12 @@ Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
 | No console window while dsh starts or while we reap it | verified (zero visible console windows over a full run) |
 | File drag-and-drop onto the page | `disable_drag_drop_handler()`; needs your eyes on a real drop |
 | Frameless window with an injected title bar | injected, geometry asserted against the live DOM |
-| Content column inset so nothing is occluded | verified: `inset centerCol by 32px`, sidebar left at full height |
-| Page zoom 50–200% in 10% steps, persisted | verified: bar measures 32 logical px at 100% *and* at 50% |
+| The caption is dsh's, not ours | verified: `contract=contractActive`, `top_clearance=Some(36)` |
+| Page zoom 50–200%, Chromium's own hotkeys, restored per origin | verified: `Ctrl`+`±` scales the chrome and the page together |
 | Anti-nest guard (refuses to run inside a harness session) | verified |
 | Port-ownership guard (points at `attach` instead of dying) | verified |
-| `cargo test` → 82 hermetic tests against `stub-dsh` | green |
+| An orphaned dsh from an earlier run is reclaimed | rule tests + real process-table tests; needs a live orphan to watch end to end |
+| `cargo test` → 96 hermetic tests against `stub-dsh` | green |
 | `cargo clippy --all-targets -- -D warnings` | clean |
 | `cargo build --release` | clean |
 | `.msi` + `.nsis` bundles | built |
@@ -77,10 +78,9 @@ it; the defaults below apply when it is missing.
   "trusted_hosts": ["127.0.0.1", "localhost"],
   "poll_interval_seconds": 0.5,
   "spawn_timeout_seconds": 120,
-  "auto_restart_on_crash": true,
-  "zoom_percent": 100
-}
-```
+    "auto_restart_on_crash": true
+  }
+  ```
 
 | Field | Meaning |
 |---|---|
@@ -92,7 +92,11 @@ it; the defaults below apply when it is missing.
 | `poll_interval_seconds` | How often the liveness probe asks the port. |
 | `spawn_timeout_seconds` | How long to wait for dsh's URL line. dsh's Loader can take that long on a cold profile, so this is generous. |
 | `auto_restart_on_crash` | Restart dsh if it dies on its own. Bounded: three attempts, backing off 2s → 4s → 8s, and the budget resets only after dsh has been up a full minute. After that it stops and tells you, rather than respawning forever. |
-| `zoom_percent` | Page zoom, 50–200 in steps of 10. Normalised on read, so a hand-edited 57 behaves like 60. Carries a serde default, so a settings file written before this field existed still loads. |
+
+There is no `zoom_percent`. The page zoom belongs to WebView2 now — `Ctrl` + `±`/`0`
+are Chromium's own, and it restores the last zoom per origin by itself. A file
+written by an older build still loads: the key is accepted and ignored, and it is
+not written back.
 
 ## How the endpoint is found
 
@@ -204,28 +208,44 @@ touch the real harness.
 
 ## Window chrome
 
-The window is frameless. The title bar is a 32px strip of DOM injected into
-whatever page is loaded, so the dsh sidebar can reach the very top of the window
-and only the three buttons sit on top of the content. The dsh app's own top
-area stays visible through the drag strip, and the button cluster sits in a
-surface colour read from the page's own CSS variables, so it follows the dsh
-light/dark theme.
+The window is frameless and the caption is **dsh's**, not ours. Declaring two
+properties on `<html>` — `data-windows-titlebar` and
+`--dsh-windows-titlebar-height` — makes dsh reserve the caption height on its own
+frame, paint its own drag strip, round the content column's corner, and inset its
+own fullscreen overlays. It also pins its sidebar toggle into the band at
+`left: 12px`. We do not measure or rearrange any of that; `platform_adapt.js` does
+exactly two things to dsh's document and both are those properties.
 
-- **Drag** the strip, or double-click it to maximize.
-- **− / +** and the percentage step the page zoom, 50–200% in 10% steps, and the
-  choice is remembered. `Ctrl+Alt+↑` / `Ctrl+Alt+↓` do the same. Chromium's own
-  `Ctrl+=` zoom is disabled so the percentage cannot drift from the real zoom.
-- The bar keeps its 32 logical pixels at every zoom level, so the buttons stay
-  usable at 50%. This is asserted, not eyeballed: the chrome reports its measured
-  geometry back to the shell, which compares it against the constants in
-  `chrome.rs` and logs a warning on any mismatch.
-- The **content area is inset by the bar height** so the dsh app's own top-right
-  controls — including the right-hand dock panel — are never underneath the
-  buttons. The sidebar keeps its full height and still reaches the top edge.
+What is left in our bar is what dsh cannot provide: a menu button, the three
+window buttons, and a status line. It draws no background and is
+`pointer-events: none` apart from those controls, so the page reaches every pixel
+they are not sitting on.
+
+- **Drag** the caption to move the window — dsh's own drag strip, not ours.
+- **☰** opens the zoom menu: 放大 / current percentage / 缩小 / 复位 100%. It sits
+  at 48px from the left edge because dsh's toggle owns 12..40, which is also
+  where dsh puts its own collapsed new-session button.
+- **− / +** and the percentage step the page zoom, 50–200% in 10% steps.
+- **`Ctrl` + `−` / `=` / `0`** are Chromium's own and do the same thing. Zoom is
+  not persisted in `settings.json`; WebView2 restores the last zoom per origin.
+- The caption scales with the page zoom, because `--dsh-windows-titlebar-height`
+  is a CSS length and dsh's reserved band scales with it. Keeping our bar and
+  dsh's band in step is why nothing divides the zoom out any more.
 - Hover highlights every button; the close button's is a light red, and hover
   backgrounds are rounded to match the window.
+- The chrome reports its measured geometry back to the shell, which compares it
+  against the constants in `chrome.rs` and logs a warning on any mismatch.
 
 Two things make this work at all, and both are non-obvious:
+
+- The bar is 36px, and that is dsh's arithmetic rather than taste. dsh centres its
+  28px toggle with `top: calc((var(--dsh-windows-titlebar-height) - 28px) / 2)`,
+  so at 28 the formula returns 0 and the toggle ends up flush against the window's
+  top edge. At 36 it lands at 4px, the same top edge our button row uses.
+- The contract takes about 1.4 s to answer. `chrome_report` logs
+  `contract=contractMissing` until dsh's stylesheet lands, so read that field
+  together with `top_clearance` — a bare `contract` is a sample of a moment, not
+  a verdict about the dsh.
 
 - The injection cannot go through Tauri's `initialization_script`, because dsh
   serves its own Content-Security-Policy and a WebView2 document-created script
@@ -252,10 +272,10 @@ cargo run
 1. A window appears immediately showing "Starting dsh…", with a title bar.
 2. Within a few seconds the dsh UI loads and the sidebar reaches the very top of
    the window. It is a real UI, not a 401 page.
-3. Drag the title bar: the window moves. Drag the window border: it resizes.
+3. Drag the caption: the window moves. Drag the window border: it resizes.
 4. Drag a file from Explorer onto the page: it lands in the chat composer.
-5. Click −/+, or press `Ctrl+Alt+↓`: the page scales and the percentage changes.
-   The title bar does not change size. Restart: the zoom is remembered.
+5. Click ☰ → 放大, or press `Ctrl`+`=`: the page and the caption scale together.
+   Restart: WebView2 brings the zoom back on its own.
 6. Close the window with the ✕. Within ~1s dsh is gone and the port is free:
    ```powershell
    Get-NetTCPConnection -State Listen -LocalPort 3080

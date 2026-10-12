@@ -17,8 +17,12 @@ pub enum LaunchMode {
     Attach,
 }
 
-/// Zoom ladder. Kept as constants rather than baked into the UI so raising the
-/// ceiling later is a one-line change, not a redesign of the control.
+/// The zoom ladder the menu steps along.
+///
+/// Zoom itself is Chromium's: `Ctrl`+`±`/`0` are not intercepted, and WebView2
+/// restores the last zoom per origin on its own. These constants exist for the
+/// title-bar menu, which has to pick a target to ask for and has to land on the
+/// same rungs Chromium uses rather than inventing its own.
 ///
 /// The ceiling is 200, matching `ZoomLadder` on the macOS shell. It was 100
 /// there and here, and nothing was defending it: measured against real dsh
@@ -30,10 +34,6 @@ pub const ZOOM_MIN: u8 = 50;
 pub const ZOOM_MAX: u8 = 200;
 pub const ZOOM_STEP: u8 = 10;
 pub const ZOOM_DEFAULT: u8 = 100;
-
-fn default_zoom_percent() -> u8 {
-    ZOOM_DEFAULT
-}
 
 /// How many times dsh may be restarted after crashing before the shell gives up.
 ///
@@ -124,15 +124,20 @@ pub struct Config {
     pub spawn_timeout_seconds: u64,
     /// Whether to restart dsh on unexpected child exit.
     pub auto_restart_on_crash: bool,
-    /// WebView page zoom, in percent. See [`normalize_zoom`].
+    /// A tombstone for the removed `zoom_percent`.
     ///
-    /// `#[serde(default)]` is load-bearing, not decoration: this struct uses
-    /// `deny_unknown_fields` and every other field is required, so a new
-    /// required field would make an existing settings file fail to parse — and
-    /// [`Config::load_or_default`] would then quietly discard the user's port
-    /// and launch mode along with it.
-    #[serde(default = "default_zoom_percent")]
-    pub zoom_percent: u8,
+    /// The page zoom is Chromium's now — its hotkeys are not intercepted and
+    /// WebView2 restores the last zoom per origin by itself — so there is nothing
+    /// left to persist and nothing left to read.
+    ///
+    /// The name has to stay. This struct uses `deny_unknown_fields`, so removing
+    /// the field outright would make every settings file written by an earlier
+    /// build fail to parse, and [`Config::load_or_default`] answers a parse
+    /// failure with defaults — which would quietly hand the user a different port
+    /// and launch mode than the one they chose. Deserialised and never used,
+    /// never written back.
+    #[serde(default, rename = "zoom_percent", skip_serializing)]
+    pub removed_zoom_percent: Option<u8>,
 }
 
 impl Default for Config {
@@ -146,7 +151,7 @@ impl Default for Config {
             poll_interval_seconds: 0.5,
             spawn_timeout_seconds: 60,
             auto_restart_on_crash: true,
-            zoom_percent: ZOOM_DEFAULT,
+            removed_zoom_percent: None,
         }
     }
 }
@@ -256,6 +261,48 @@ mod tests {
         let cfg = Config::load_or_default();
         // dsh's own web default, so attach mode finds a running instance.
         assert_eq!(cfg.preferred_port, 3080);
+    }
+
+    /// A settings file written by a build that still had `zoom_percent` has to
+    /// keep parsing, and keep its port.
+    ///
+    /// This is the whole reason the field became a tombstone rather than
+    /// disappearing. `deny_unknown_fields` turns an unrecognised key into a
+    /// parse error, `load_or_default` answers a parse error with defaults, and the
+    /// user silently gets a different port and launch mode. Removing the name
+    /// would therefore have been a data-loss bug that only showed up as "my
+    /// settings reset", which is exactly the sort of regression that ships.
+    #[test]
+    fn a_settings_file_with_the_old_zoom_percent_still_loads() {
+        let json = serde_json::json!({
+            "dsh_binary_path": "C:/tools/dsh.cmd",
+            "launch_mode": "spawn",
+            "listen_host": "127.0.0.1",
+            "preferred_port": 4455,
+            "trusted_hosts": ["127.0.0.1"],
+            "poll_interval_seconds": 0.5,
+            "spawn_timeout_seconds": 60,
+            "auto_restart_on_crash": true,
+            "zoom_percent": 150
+        });
+        let cfg: Config = serde_json::from_value(json).expect("an old settings file must parse");
+        assert_eq!(cfg.preferred_port, 4455, "the port has to survive the parse");
+        assert_eq!(cfg.removed_zoom_percent, Some(150), "and the old key is read, not dropped");
+    }
+
+    /// And it must not be written back, or every save would resurrect a field
+    /// that no longer does anything.
+    #[test]
+    fn the_old_zoom_percent_is_not_written_back() {
+        let cfg = Config {
+            removed_zoom_percent: Some(150),
+            ..Config::default()
+        };
+        let text = serde_json::to_string(&cfg).expect("serialise");
+        assert!(
+            !text.contains("zoom_percent"),
+            "a removed setting must not reappear in the file: {text}"
+        );
     }
 
     #[test]

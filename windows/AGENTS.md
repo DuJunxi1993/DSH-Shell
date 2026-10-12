@@ -163,27 +163,40 @@ obvious and the Tauri docs do not put them together.
    time and the page cannot see the error.
 5. **A frameless window keeps edge resizing.** Wry attaches a manual hit-test
    handler for undecorated windows, so dragging the border still resizes. The
-   chrome leaves the top few pixels of its drag strip free for that hit test.
-6. **Apply the 1/zoom correction exactly once.** The page zoom multiplies every
-   CSS length in the document, so a design length `D` that must render as `D`
-   logical pixels needs `D / zoom` — that is `chrome::css_len`, and it is the
-   only place the division may live. Dividing the lengths *and* counter-scaling
-   the clusters with a transform applied it twice, so at 50% zoom the window
-   buttons rendered at 92 logical pixels instead of 46: "the menu bar grows when
-   I zoom out". `chrome::css_len` is unit-tested and `chrome_report` re-checks
-   the live DOM against the constants, so this cannot fail silently again.
+   chrome does not need to leave room for it — the hit test is at the window
+   level, above the webview — so there is no reserved strip and nothing in the
+   bar that is there only to be dragged.
+6. **Zoom is Chromium's, and the chrome scales with the page.** `Ctrl` + `±`/`0`
+   are enabled (`zoom_hotkeys_enabled(true)`, written explicitly because the
+   default is a `serde(default)` bool and therefore false). Every length in
+   `platform_adapt.js` is a plain CSS pixel, so nothing divides by the zoom.
+
+   This used to be the opposite: lengths were divided by the zoom so the chrome
+   kept a fixed physical size, and that division was the single most bug-prone
+   line in the file — applied twice once, which made "the menu bar grows when I
+   zoom out". The division is gone because it was never needed. `--dsh-windows-
+   titlebar-height` is a CSS length, so dsh's reserved caption band scales with
+   the zoom along with everything else; scaling in step is what keeps our bar and
+   dsh's band agreeing. Dividing the chrome out while dsh scaled in would have
+   been the thing separating them.
+
+   Tauri has **no getter for the page zoom** — `set_zoom` is the only API. So the
+   title-bar menu, which has to step the zoom, derives it inside the page from
+   `window.devicePixelRatio` divided by the system scale factor injected from
+   `window.scale_factor()`. That is why `set_page_zoom` takes an **absolute**
+   percentage: a delta command would need a "current" value the shell does not
+   have, and a remembered one goes stale the first time the user presses `Ctrl+=`.
 7. **The injected script's own fallbacks are a second copy of every constant.**
    `platform_adapt.js` reads `window.__DSH_SHELL__`, but each value also has a
    literal fallback for the case where the script runs without it. Those literals
    drifted (a 28px bar against a 24px constant) and the chrome looked right only
    because the injected value always won. Two tests in `chrome.rs` now hold the
-   two sides together, and the zoom ladder is injected from `config.rs` instead
-   of being restated in the script.
+   two sides together.
 8. **A synthetic click from another process never reaches the webview.**
    `mouse_event` from PowerShell is refused by the foreground lock, so
-   minimize/maximize/✕ cannot be verified that way — the button appears dead
-   while it is fine. Use `PostMessage(WM_SYSCOMMAND, SC_CLOSE)` for the real
-   close path, and ask the user for anything that needs a click.
+   minimize/maximize/✕ and the menu button cannot be verified that way — the
+   button appears dead while it is fine. Use `PostMessage(WM_SYSCOMMAND, SC_CLOSE)`
+   for the real close path, and ask the user for anything that needs a click.
 9. **The capabilities are per origin, and the remote one is not optional.**
    The chrome is DOM inside dsh's page, so `capabilities/chrome.json` must list
    the commands the title bar invokes or the buttons silently do nothing. The
@@ -230,35 +243,52 @@ obvious and the Tauri docs do not put them together.
     and the toast carries no launch argument to fall back on. Do not spend time
     re-deriving this. Claim an AUMID only for an installed build, the way the
     plugin does — an unregistered AUMID makes the toast fail to appear at all.
-12. **`contractMissing` is the correct state on dsh `0.2.0-rc.2`, not a fault.**
-    The chrome declares the desktop host contract with two properties
-    (`html[data-windows-titlebar]` and `--dsh-windows-titlebar-height`) and then
-    reads back `--dsh-frame-chrome-top` to find out whether dsh answered. On
-    rc.2 it does not, and the log says so at WARN on every page load:
+12. **dsh `0.2.0-rc.2` *does* answer the desktop contract — about 1.4 s after the
+    page loads.** This corrects an earlier entry in this file, which claimed the
+    opposite and was wrong in a way that survived two rounds of re-measurement.
 
-        dsh did not answer the desktop contract (http://127.0.0.1:3402), so the
-        chrome is compensating geometrically.
+    Measured, from the running app's own log:
 
-    That is the fallback working, not a regression. Measured against the CSS the
-    server actually serves (fetch the token URL, follow the 303, then read
-    `assets/index-*.css`): `--dsh-frame-top-clearance` appears **zero** times,
-    `--dsh-frame-chrome-top` appears once as a *consumer* (`var(…, 0px)`) and is
-    never defined, and the only `html[data-windows-titlebar]` rules that exist
-    are `--dsh-dockkit-float-top` on one dockkit float class. rc.2 does not
-    implement the contract.
+        chrome ok: … placeholder=false contract=contractMissing top_clearance=None
+        chrome ok: … placeholder=false contract=contractActive   top_clearance=Some(28.0)
 
-    Two traps in confirming this, both of which cost real time here:
-    - The rules *do* exist in `node_modules/@deepseek-ai/dsh-client-ui-layout/
-      lib/client.js`. That is the plugin's copy; the page never loads it. Grepping
-      the installed npm tree answers a question nobody asked.
-    - `row=none brandRow=none no left column found` in `chrome_report` says the
-      *content column's top row* was not located. It says nothing about whether
-      the page rendered at all, and reading it as "the page did not boot" is
-      wrong — the screenshot shows a fully working UI.
+    `top_clearance` coming back as exactly the height we declared is the proof:
+    dsh is echoing `--dsh-windows-titlebar-height` into
+    `--dsh-frame-top-clearance`. Every report before that catches it mid-flight.
+    So `contract=contractMissing` in a log is a **statement about a moment**, not a
+    verdict about the dsh — do not read it as "this dsh has no contract".
 
-    When a dsh release does implement the contract, the switch is automatic:
-    `runAvoidance` skips the geometric layer and clears whatever it had already
-    applied. Nothing here needs changing; do not "fix" the WARN.
+    Three ways this was measured wrongly, all of which cost real time:
+
+    - **Reading the static CSS.** Fetch the token URL, follow the 303, and read
+      `assets/index-*.css`: `--dsh-frame-chrome-top` is there once, as a
+      *consumer* (`var(--dsh-frame-chrome-top, 0px)`), never defined. That says
+      nothing about whether the contract works, because the publishing rules are
+      not in the compiled stylesheet at all.
+    - **Grepping the npm tree.** The rules are in
+      `node_modules/@deepseek-ai/dsh-client-ui-layout/lib/client.js`. Grepping the
+      installed tree is also the wrong question — but it fails *open*, i.e. it
+      suggests the contract exists, which is why it produced a confident wrong
+      answer rather than a confident right one.
+    - **Sampling too early.** `contractState()` runs at install and 1.5 s later.
+      That second sample is not late enough. A `chrome_report` logged *after* the
+      page has settled is the only trustworthy reading, which is why
+      `top_clearance` is now in the log line: `contract` without the value it
+      published means only "we asked and something came back".
+
+    Two things this entry used to get wrong that are now settled:
+    - `row=none brandRow=none no left column found` was never about the page
+      failing to boot. It said the *content column's top row* was not found by
+      the geometric layer. The geometric layer has since been deleted, so that
+      line no longer appears — and reading it as "the page did not boot" was
+      wrong regardless; the screenshot showed a fully working UI.
+    - The contract also **claims part of the caption**: dsh pins its sidebar
+      toggle to `left: 12px` and centres it with
+      `top: calc((var(--dsh-windows-titlebar-height) - 28px) / 2)`. That formula is
+      why `BAR_H` is 36 — at 28 it returns 0 and the toggle ends up flush against
+      the window's top edge — and why our menu button starts at 48, the first
+      column past the toggle's 12..40. `chrome::tests` asserts both relationships
+      rather than the numbers, so the reason survives the next edit.
 
 ## The repo has two implementations and one contract
 
@@ -287,7 +317,7 @@ enough to make it do the window-chrome work itself:
 
 ```js
 document.documentElement.setAttribute('data-windows-titlebar', '')
-document.documentElement.style.setProperty('--dsh-windows-titlebar-height', '32px')
+document.documentElement.style.setProperty('--dsh-windows-titlebar-height', '36px')
 ```
 
 Measured against real dsh `0.2.0-rc.2`, not assumed
@@ -303,62 +333,43 @@ also what `contractState()` reads. Where the contract lives and how to apply it
 are in **`docs/dsh-windows-contract.md`**.
 
 `--dsh-windows-titlebar-height` is **read** by dsh and never set by it, so the
-host owns the number. Declare it through `px()` like every other length: dsh
-reads it as a CSS length and the page zoom multiplies it.
+host owns the number. Declare it through `px()` like every other length: dsh reads
+it as a CSS length and the page zoom multiplies it — which is the point, since
+that is also why our own bar scales in step instead of being divided out (fact 6).
 
-`platform_adapt.js` is therefore two layers:
+**The whole of `platform_adapt.js` is the contract layer now.** There is one
+thing it does to dsh: those two properties. Everything else it touches is inside
+its own `#dsh-shell-chrome` subtree or is a read.
 
-- **the contract layer**, which declares the host and reads dsh's published
-  clearances;
-- **the geometric fallback** (`findRightColumns`, `insetColumn`, `clearCorner`,
-  `gutterTopRow`, `layoutSignature`), which runs only when
-  `contractState()` reports `contractMissing` — an older dsh, or our own boot
-  placeholder, which is not dsh and never will be.
+The geometric fallback (`findRightColumns`, `insetColumn`, `clearCorner`,
+`gutterTopRow`, `layoutSignature`, and the `dss-grab` drag strip) has been
+deleted, along with `chrome::css_len`. It existed to compensate for a contract
+that turns out to work, and it was the most likely thing in the file to break:
+it found columns by geometry in a document whose CSS-Modules class names are
+rehashed every dsh build, then wrote padding and transforms onto whatever it
+believed was a column. The pass that once "padded list items and conversation
+bubbles" was that code with the wrong anchor.
 
-`chrome_report` now logs `contract=` and `contract_top_clearance=` on every
-report, and `chrome_report` warns when the contract goes unanswered on a
-non-placeholder document. **If you are about to add a fourth geometric pass,
-check that field first** — the answer is usually that no pass is needed.
+Worth knowing before anyone rewrites it, since all of it is still true about the
+dsh page itself:
 
-dsh does *not* provide the caption's buttons. It reserves the space and offers a
-drag region; the three window buttons stay ours, because they are the only part
-of a native caption that talks to the window manager.
-
-### Why the fallback exists at all
-
-"The page has no contract" is still true for a dsh that predates one, and the
-fallback is the only thing standing between that dsh and a chrome drawn on top
-of its controls. It is a fallback, not the strategy.
-
-What it cannot be is correct-by-default. Insetting a column found by its
-geometry is a guess about a document whose class names are rehashed every
-build, and a wrong guess displaces the page's own layout. The pass that once
-"padded list items and conversation bubbles" was this code with the wrong
-anchor.
-
-### What the fallback still has to do, and why geometry is the only option
-
-When the contract is absent, dsh's app shell still cannot be addressed
-directly, so the corner has to be handled geometrically:
-
-- No stable selector. No semantic `id` on the shell, and CSS-Modules class
-  names are hashed per build (`pI_x6G_centerCol` in one release, something else
-  in the next). Only `#root` survives.
-- No ARIA landmarks: no `banner`, `main`, `complementary` or `toolbar` anywhere
-  in the bundle, so accessibility cannot be used as an anchor either.
+- No stable selector. No semantic `id` on the shell, and CSS-Modules class names
+  are hashed per build (`pI_x6G_centerCol` in one release, something else in the
+  next). Only `#root` survives.
+- No ARIA landmarks: no `banner`, `main`, `complementary` or `toolbar` anywhere in
+  the bundle, so accessibility cannot be used as an anchor either.
 - Hit-testing is not a substitute. `elementsFromPoint` skips anything under a
-  `pointer-events: none` overlay, and app headers routinely have one, so the row
-  being covered is invisible to it exactly when it matters.
+  `pointer-events: none` overlay, and app headers routinely have one.
 
-The heuristic the fallback relies on: the shell is the widest left-anchored
-column that is not the full window width, and the content column is its sibling
-reaching the right edge. Note that the right-hand dock panel is a sibling of
-the content column and shares its right edge, so it is covered by the same
-inset — which is what the user wanted, since that panel holds the buttons that
-were being hidden.
+`chrome_report` logs `contract=` **and** `contract_top_clearance=` on every
+report, and warns when the contract goes unanswered on a non-placeholder
+document. Read both together: `contract` alone is a sample of a moment (fact 12),
+and `top_clearance` is dsh telling you what it actually reserved.
 
-Do not add a per-row padding fallback. It was tried: it padded list items and
-conversation bubbles, which breaks the layout rather than protecting it.
+dsh does *not* provide the caption's buttons. It reserves the space, offers a
+drag region, and pins its own sidebar toggle into the band; the window buttons
+and our menu button stay ours, because they are the only parts of a caption that
+talk to the window manager.
 
 ### macOS cannot have this for free
 

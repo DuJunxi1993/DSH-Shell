@@ -18,7 +18,7 @@
 
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,9 +56,6 @@ struct AppState {
     /// theoretical.
     starting_pid: AtomicU32,
     shutting_down: AtomicBool,
-    /// Current page zoom in percent; the single source of truth for what the
-    /// webview is actually set to.
-    zoom_percent: AtomicU8,
     /// Origin of the dsh page the window is allowed to navigate within, as
     /// `scheme://host:port`. Empty until dsh resolves, while only the local boot
     /// placeholder is reachable.
@@ -97,17 +94,14 @@ fn raise_window(app: &AppHandle) {
 fn main() {
     init_tracing();
 
-    let config = Config::load_or_default();
-    let zoom = config::normalize_zoom(config.zoom_percent);
     let state = Arc::new(AppState {
         dsh: tokio::sync::Mutex::new(None),
         starting_pid: AtomicU32::new(0),
         shutting_down: AtomicBool::new(false),
-        zoom_percent: AtomicU8::new(zoom),
         dsh_origin: parking_lot::RwLock::new(String::new()),
     });
 
-    let app = match build(state.clone(), zoom) {
+    let app = match build(state.clone()) {
         Ok(app) => app,
         Err(err) => {
             write_crash_log(&format!("failed to start: {err}"));
@@ -154,6 +148,17 @@ fn main() {
                         );
                     }
                     tracing::info!(target: "dsh_shell", "dsh terminated; exiting");
+                    // The port is the contract this whole repository exists to
+                    // keep, so it is checked rather than assumed: if something is
+                    // still listening after our own tree is gone, then either the
+                    // tree kill missed a grandchild or an earlier run left one
+                    // behind. Both are ours to clear, and both are cleared by the
+                    // same rule that decides at start-up — a dsh with no living
+                    // parent, running our own harness, on our own port. Anything
+                    // else is left alone, including a dsh the operator started
+                    // from a terminal.
+                    let config = Config::load_or_default();
+                    orphan::reclaim_orphan(&config, orphan::ReclaimReason::AtExit);
                     handle.exit(0);
                 });
             }
@@ -216,73 +221,49 @@ fn nonzero_pid(state: &Arc<AppState>) -> Option<u32> {
     }
 }
 
-/// The chrome script, with its geometry and the current zoom baked in.
+/// The chrome script, with its geometry and the display's scale factor baked in.
 ///
 /// `initialization_script` is re-run on every navigation, so this covers both
 /// the local boot placeholder and the remote dsh origin.
-fn chrome_script(zoom_percent: u8) -> String {
-    chrome::script(zoom_percent)
+fn chrome_script(os_scale: f64) -> String {
+    chrome::script(os_scale)
 }
 
-/// Step the page zoom by one rung and persist the choice.
+/// Set the page zoom to an absolute percentage.
 ///
-/// The chrome sends a delta rather than an absolute value so the ladder lives
-/// here alone; the page just redraws the number it gets back, which is what
-/// keeps the readout from drifting away from the real zoom.
+/// Absolute rather than a delta, and that is the whole design: the hotkeys are
+/// Chromium's, so we cannot know what the user last did to the zoom, and a
+/// command that stepped from our own remembered value would drift away from the
+/// real one the first time they pressed `Ctrl+=`. The page works it out instead -
+/// `devicePixelRatio` over the system scale it is given - and asks for the rung
+/// it wants. Rust's job is only to clamp it onto the ladder.
 ///
-/// Reachable from the remote dsh origin without a capability: Tauri checks the
-/// ACL only on the plugin command path, and `generate_handler!` commands are
-/// trusted by definition. That is fine here - this command can only change the
-/// page zoom - but it is the reason a state-changing command added here later
-/// needs to think twice.
+/// Nothing is persisted: WebView2 restores the last zoom per origin on its own.
 #[tauri::command]
-async fn zoom_step(
-    window: WebviewWindow,
-    state: tauri::State<'_, Arc<AppState>>,
-    delta: i16,
-) -> CommandResult<u8> {
-    let current = state.zoom_percent.load(Ordering::Relaxed);
-    apply_zoom(&window, &state, config::next_zoom(current, delta))
-}
-
-/// `Ctrl+0`: back to 100%.
-#[tauri::command]
-async fn zoom_reset(
-    window: WebviewWindow,
-    state: tauri::State<'_, Arc<AppState>>,
-) -> CommandResult<u8> {
-    apply_zoom(&window, &state, config::ZOOM_DEFAULT)
-}
-
-fn apply_zoom(
-    window: &WebviewWindow,
-    state: &Arc<AppState>,
-    next: u8,
-) -> CommandResult<u8> {
-    let next = config::normalize_zoom(next);
-    let current = state.zoom_percent.load(Ordering::Relaxed);
-    if next != current {
-        window
-            .set_zoom(config::zoom_scale(next))
-            .map_err(|err| format!("could not set zoom: {err}"))?;
-        state.zoom_percent.store(next, Ordering::Relaxed);
-        tracing::info!(target: "dsh_shell", "page zoom {current}% -> {next}%");
-        persist_zoom(next);
-    }
+fn set_page_zoom(window: WebviewWindow, percent: u8) -> CommandResult<u8> {
+    let next = config::normalize_zoom(percent);
+    window
+        .set_zoom(f64::from(next) / 100.0)
+        .map_err(|err| format!("could not set zoom: {err}"))?;
+    tracing::info!(target: "dsh_shell", "page zoom set to {next}%");
     Ok(next)
 }
 
-/// Write the zoom back to settings, keeping every other field the user has.
-fn persist_zoom(percent: u8) {
-    let mut config = Config::load_or_default();
-    if config.zoom_percent == percent {
+/// Back to 100%, from the tray.
+fn reset_zoom(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
-    }
-    config.zoom_percent = percent;
-    if let Err(err) = config.save() {
-        tracing::warn!(target: "dsh_shell", "could not save zoom: {err}");
+    };
+    match set_page_zoom(window, config::ZOOM_DEFAULT) {
+        Ok(percent) => tracing::info!(target: "dsh_shell", "zoom reset to {percent}% from the tray"),
+        Err(err) => tracing::warn!(target: "dsh_shell", "zoom reset failed: {err}"),
     }
 }
+
+/// How long a page is given to answer the desktop contract before its silence is
+/// worth a warning. Must match `CONTRACT_SETTLE_MS` in `platform_adapt.js`, which
+/// is the side that decides; this is the side that trusts it.
+const CONTRACT_SETTLE_MS: u64 = 5_000;
 
 /// Report what the injected chrome managed to do.
 ///
@@ -337,13 +318,14 @@ fn chrome_report(report: ChromeReport) {
     // not reserving the caption, which is a different and much plainer failure
     // than it used to be. It is logged explicitly so that a dsh which never
     // answers is visible rather than silent.
-    if report.contract == "contractMissing" && !report.placeholder {
+    if report.contract == "contractMissing" && report.contract_settled && !report.placeholder {
         tracing::warn!(
             target: "dsh_shell",
-            "dsh did not answer the desktop contract ({}), so nothing is reserving the \
-             caption and the page's own top row runs under the chrome. \
-             contract_top_clearance={:?}",
+            "dsh did not answer the desktop contract ({}), and has had {}s to do it. \
+             Nothing is reserving the caption, so the page's own top row runs under \
+             the chrome. contract_top_clearance={:?}",
             report.origin,
+            CONTRACT_SETTLE_MS / 1000,
             report.contract_top_clearance
         );
     }
@@ -417,6 +399,13 @@ struct ChromeReport {
     contract: String,
     /// dsh's published `--dsh-frame-top-clearance`, when it publishes one.
     contract_top_clearance: Option<f64>,
+    /// Whether the page has been up long enough for dsh to have answered.
+    ///
+    /// dsh injects the contract's stylesheet about 1.4 s after load, so every
+    /// report before that says `contractMissing`. Warning on those trains the
+    /// reader to ignore the warning, which is the one thing a warning must not do
+    /// — the case worth reporting is a dsh that *never* answers.
+    contract_settled: bool,
     boxes: String,
 }
 
@@ -486,21 +475,8 @@ fn toggle_window(app: &AppHandle) {
     }
 }
 
-/// Back to 100%, from the tray, whether or not a page is asking.
-fn reset_zoom(app: &AppHandle) {
-    let state = app.state::<Arc<AppState>>();
-    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
-        return;
-    };
-    match apply_zoom(&window, &state, config::ZOOM_DEFAULT) {
-        Ok(percent) => tracing::info!(target: "dsh_shell", "zoom reset to {percent}% from the tray"),
-        Err(err) => tracing::warn!(target: "dsh_shell", "zoom reset failed: {err}"),
-    }
-}
-
 impl AppState {
-    /// May the webview navigate here? The rule and the reason for it live in
-    /// [`navigate::is_internal`]; this only supplies the dsh origin, which is
+    /// May the webview navigate here? The rule and the reason for it live in    /// [`navigate::is_internal`]; this only supplies the dsh origin, which is
     /// unknown until dsh has resolved.
     fn is_allowed_navigation(&self, url: &tauri::Url) -> bool {
         navigate::is_internal(url, &self.dsh_origin.read())
@@ -522,13 +498,10 @@ fn open_externally(url: &tauri::Url) {
     }
 }
 
-fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
+fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
     let setup_state = state.clone();
-    let page_load_state = state.clone();
     let nav_state = state.clone();
     let new_window_state = state.clone();
-    let chrome = chrome_script(zoom);
-    let page_load_chrome = chrome.clone();
     tauri::Builder::default()
         // A second launch raises the window that is already running instead of
         // starting a rival one - which would otherwise race dsh for the port and
@@ -542,13 +515,25 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
         // Toast only, and only from Rust: the page never gets a notification
         // capability, because a dsh page has no business posting toasts as us.
         .plugin(tauri_plugin_notification::init())
-        // Required by the `zoom_step` and `chrome_report` commands, which read
-        // the zoom through `tauri::State`. Without it, state resolution fails at
-        // invoke time and the command returns an error the page cannot see -
-        // which is exactly the failure that made the zoom control do nothing.
         .manage(state)
         .setup(move |app| {
             build_tray(app)?;
+            // Read from the monitor, not from the window: `initialization_script`
+            // has to be handed the finished string at builder time, so the window
+            // does not exist yet, and `window.scale_factor()` at this point is
+            // always None - which silently baked 1.0 in and made the menu read a
+            // 125% display as a 125% zoom. The number is what the chrome divides
+            // `devicePixelRatio` by to recover the zoom, so getting it wrong is
+            // not cosmetic.
+            let os_scale = app
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .map(|monitor| monitor.scale_factor())
+                .filter(|scale| *scale > 0.0)
+                .unwrap_or(1.0);
+            let chrome = chrome_script(os_scale);
+            let page_load_chrome = chrome.clone();
             let window = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
                 .title("DSH Shell")
                 .inner_size(1280.0, 800.0)
@@ -563,24 +548,17 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
                 // cannot be dragged onto the dsh page. Hand drops back to the
                 // page; it has its own drop target for the chat composer.
                 .disable_drag_drop_handler()
-                // Chromium's own Ctrl+= zoom would bypass our state and leave
-                // the percentage readout lying.
-                .zoom_hotkeys_enabled(false)
+                // Chromium's own zoom hotkeys. Written explicitly rather than
+                // left to the default: the default is a `#[serde(default)]`
+                // bool, which is false, and this used to be disabled on purpose
+                // so the chrome could divide the zoom out. Now the chrome scales
+                // with the page the way dsh's own content does, so the hotkeys are
+                // wanted and the division is gone.
+                .zoom_hotkeys_enabled(true)
                 // Runs before any page script, on every navigation, so it cannot
                 // be lost to a race with the SPA booting.
                 .initialization_script(chrome.clone())
                 .on_page_load(move |window, payload| {
-                    // Re-assert the zoom on every document. It survives
-                    // navigation inside one webview, but not across a webview
-                    // being torn down, and a page that renders at 100% before
-                    // snapping to the saved zoom is visibly wrong.
-                    if payload.event() != tauri::webview::PageLoadEvent::Finished {
-                        return;
-                    }
-                    let percent = page_load_state.zoom_percent.load(Ordering::Relaxed);
-                    if let Err(err) = window.set_zoom(config::zoom_scale(percent)) {
-                        tracing::warn!(target: "dsh_shell", "could not apply zoom: {err}");
-                    }
                     // The initialization script above only reaches our own local
                     // boot page: dsh serves its own Content-Security-Policy, and
                     // a document-created injection is subject to it. `eval` comes
@@ -588,6 +566,9 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
                     // real page is injected here instead. The script is
                     // idempotent, so running it on the placeholder too is a
                     // no-op.
+                    if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                        return;
+                    }
                     if let Err(err) = window.eval(page_load_chrome.clone()) {
                         tracing::error!(target: "dsh_shell", "could not inject chrome: {err}");
                     }
@@ -627,11 +608,10 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
                 let config = Config::load_or_default();
                 tracing::info!(
                     target: "dsh_shell",
-                    "starting: mode={:?} port={} host={} zoom={}% binary={} auto_restart={}",
+                    "starting: mode={:?} port={} host={} binary={} auto_restart={} os_scale={os_scale}",
                     config.launch_mode,
                     config.preferred_port,
                     config.listen_host,
-                    config::normalize_zoom(config.zoom_percent),
                     config.dsh_binary_path.display(),
                     config.auto_restart_on_crash,
                 );
@@ -643,8 +623,7 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
         })
         .invoke_handler(tauri::generate_handler![
             hide_to_tray,
-            zoom_step,
-            zoom_reset,
+            set_page_zoom,
             chrome_report,
             chrome_error
         ])
@@ -664,9 +643,9 @@ async fn supervise_dsh(window: &WebviewWindow, state: Arc<AppState>, config: Con
         // Before the first spawn, and only then: a dsh orphaned by a previous
         // run holds the port this launch needs, and `starting_pid` cannot know
         // about it because it never saw the process.
-        if attempt == 0 {
-            orphan::reclaim_orphan(&config);
-        }
+          if attempt == 0 {
+              orphan::reclaim_orphan(&config, orphan::ReclaimReason::AtStartup);
+          }
         let started = std::time::Instant::now();
         let dsh = match launch_recording_pid(&state, config.clone()).await {
             Ok(dsh) => dsh,
