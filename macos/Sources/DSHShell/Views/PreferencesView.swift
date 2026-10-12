@@ -6,13 +6,51 @@ struct PreferencesView: View {
     @State private var working: ShellSettings = .default
 
     var body: some View {
-        TabView {
-            generalTab
-                .tabItem { Label("General", systemImage: "gear") }
-            advancedTab
-                .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
-            consoleTab
-                .tabItem { Label("Console", systemImage: "text.alignleft") }
+        // The Apply button is drawn here, in the layout, rather than declared
+        // through `.toolbar`.
+        //
+        // A `Settings` scene has no working window toolbar on this OS. Both
+        // toolbar attempts landed inside the tab strip instead: attached to
+        // `generalTab`, "Apply" rendered as a fourth tab beside
+        // General/Advanced/Console; hoisted onto this `VStack`, it still
+        // rendered there — squatting to the left of the tabs and overlapping
+        // their labels and icons. Same assumption both times: that a
+        // `confirmationAction` reaches the window's real toolbar.
+        //
+        // So the bottom bar is a plain `HStack`. It is also, unlike the toolbar,
+        // reachable from every tab — the toolbar had been attached to
+        // `generalTab` alone, so Advanced and Console had no way to save at
+        // all: edits there lived in `working`, a `@State`, and were discarded
+        // when the window closed.
+        VStack(spacing: 0) {
+            TabView {
+                generalTab
+                    .tabItem { Label("General", systemImage: "gear") }
+                advancedTab
+                    .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
+                consoleTab
+                    .tabItem { Label("Console", systemImage: "text.alignleft") }
+            }
+            // The bottom bar is part of the window's 460pt, so the tab content
+            // takes what is left rather than being squeezed under it.
+            .frame(maxHeight: .infinity)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Apply") {
+                    coordinator.saveSettings(working)
+                    coordinator.reload()
+                    // Re-read rather than leaving `working` as it was: the
+                    // saved settings are the source of truth once written, and
+                    // the fields should show what is actually stored.
+                    working = coordinator.settings
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
         .frame(width: 600, height: 460)
         .onAppear { working = coordinator.settings }
@@ -51,14 +89,6 @@ struct PreferencesView: View {
         }
         .formStyle(.grouped)
         .padding(.horizontal, 8)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Apply") {
-                    coordinator.saveSettings(working)
-                    coordinator.reload()
-                }
-            }
-        }
     }
 
     private var advancedTab: some View {

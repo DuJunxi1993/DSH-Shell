@@ -5,7 +5,6 @@ import UserNotifications
 @main
 struct DSHShellApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         // `Window`, not `WindowGroup`. A `WindowGroup` scene exists precisely so the
@@ -24,6 +23,26 @@ struct DSHShellApp: App {
                 .frame(minWidth: 800, minHeight: 600)
                 .onAppear { appDelegate.coordinator.start() }
         }
+        // Let the page be the titlebar.
+        //
+        // The previous arrangement configured the window after it existed —
+        // inserting `.fullSizeContentView`, setting `titlebarAppearsTransparent`
+        // — and re-asserted those values from `didBecomeKey`/`didResignKey` plus a
+        // 1.5s timer. AppKit resets `titlebarAppearsTransparent` during key-state
+        // transitions, so the titlebar briefly went opaque over the content and
+        // painted a light band across the top of the window: switching away and
+        // back, or minimising, flashed it for a frame.
+        //
+        // The re-assertion could not win that race. By the time a main-queue
+        // notification callback ran, the frame had already been composited, and
+        // writing `window.styleMask` is itself what makes AppKit rebuild the
+        // window's chrome — the repair caused the condition it was repairing.
+        //
+        // `.windowStyle` hands the whole job to SwiftUI at creation time, so
+        // there is no window in which AppKit has a state to undo. The traffic
+        // lights stay, floating over the page's own 48px top clearance, which is
+        // what dsh's darwin contract reserves it.
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -36,10 +55,6 @@ struct DSHShellApp: App {
                     appDelegate.coordinator.webNewSession()
                 }
                 .keyboardShortcut("n", modifiers: .command)
-                Button("Sessions…") {
-                    openWindow(id: MainScene.sessionsID)
-                }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
             }
             CommandGroup(after: .windowArrangement) {
                 Button("Reload dsh") {
@@ -85,14 +100,6 @@ struct DSHShellApp: App {
                 .keyboardShortcut(",", modifiers: [.command])
             }
         }
-
-        // Same reasoning as the main scene: one sessions panel, focused rather than
-        // duplicated. `WindowGroup` here would let every click of "Sessions…"
-        // stack another panel.
-        Window(MainScene.sessionsTitle, id: MainScene.sessionsID) {
-            SessionPanelView()
-        }
-        .windowResizability(.contentMinSize)
 
         Settings {
             PreferencesView()

@@ -26,12 +26,10 @@
 		7F5E6E1A79EB5B64F36B548E /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 7FA498CAEF0366440E369E46 /* AppIcon.icns */; };
 		88EE41A107E40C10BF92A455 /* dsh_desktop_bridge.js in Resources */ = {isa = PBXBuildFile; fileRef = F380BA37BF8483DA903AA6AF /* dsh_desktop_bridge.js */; };
 		8A264C8CD074D8A5B6087237 /* FileLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC660D37722DCCF3F66A5C21 /* FileLogger.swift */; };
-		989B23D3264C2D5CB447DF28 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3C253023D3FE2249D03789 /* SessionStore.swift */; };
 		9C22D7D3069E1046CD86D6F1 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29DD6AF2425B38B104B7229E /* SettingsStore.swift */; };
 		9CBE63C4B4E900081476F71D /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D86352F40BB75CF484FFF6EF /* StatusItemController.swift */; };
 		A0ACAF703BD47296EA69F7A3 /* bridge.js in Resources */ = {isa = PBXBuildFile; fileRef = F68C53CC3E11E0EDBBB8B9EE /* bridge.js */; };
 		A9E3C5206326F89BF1992FC9 /* KeyCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E728D8FBC067F96A7BBE37C /* KeyCode.swift */; };
-		AC56FDB7C5F9E042307180B3 /* SessionPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF2B411DAC8CE05EF91F72F2 /* SessionPanelView.swift */; };
 		AE58C654CF3732D5AAEC391B /* Preflight.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ABE07BD22C3D75328FF33D1 /* Preflight.swift */; };
 		AEE7D744DB0F13473BB0BCCF /* WebSurfaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6169E7629BEB3B0D2D74536 /* WebSurfaceView.swift */; };
 		AF054154979D72384C7F41E9 /* DSHShellBridge.h in Headers */ = {isa = PBXBuildFile; fileRef = 3E66FB254FE31F86C077CA57 /* DSHShellBridge.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -105,12 +103,10 @@
 		6E728D8FBC067F96A7BBE37C /* KeyCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCode.swift; sourceTree = "<group>"; };
 		759E0C2EEE18DB8D7145ED3F /* ShellScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellScene.swift; sourceTree = "<group>"; };
 		7ABE07BD22C3D75328FF33D1 /* Preflight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Preflight.swift; sourceTree = "<group>"; };
-		7D3C253023D3FE2249D03789 /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		7FA498CAEF0366440E369E46 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		88B55A6F32159842400F8E02 /* DSHProcessManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DSHProcessManager.swift; sourceTree = "<group>"; };
 		894CD960891199B62E5A233E /* DSHObjCWebUIDelegate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DSHObjCWebUIDelegate.m; sourceTree = "<group>"; };
 		94D81232BC0BF5DCC4FC75EA /* HealthProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthProbe.swift; sourceTree = "<group>"; };
-		AF2B411DAC8CE05EF91F72F2 /* SessionPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPanelView.swift; sourceTree = "<group>"; };
 		BABEC72D98A6EDE5B7B3B0AD /* LineAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineAccumulator.swift; sourceTree = "<group>"; };
 		BD461005C588053EACCEBA44 /* EndpointResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointResolver.swift; sourceTree = "<group>"; };
 		BFE56A703547A47DF3A079F0 /* DshDesktopBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshDesktopBridge.swift; sourceTree = "<group>"; };
@@ -186,7 +182,6 @@
 				5DBF9B44E773385747F8E27A /* PortOccupant.swift */,
 				7ABE07BD22C3D75328FF33D1 /* Preflight.swift */,
 				C39AB84883E1648B1A79CCEA /* ResourceLocator.swift */,
-				7D3C253023D3FE2249D03789 /* SessionStore.swift */,
 				29DD6AF2425B38B104B7229E /* SettingsStore.swift */,
 				39E3E7D077717B933AF0C497 /* ShortcutConfigStore.swift */,
 				E8BE1938BA443F2126A6A434 /* ShortcutModel.swift */,
@@ -220,7 +215,6 @@
 				5DD14FD8BEB3964858ABE8A7 /* ErrorView.swift */,
 				E61F41F8C45AF8903782FEA8 /* LoadingView.swift */,
 				0B8166DA5D5F841A4F0CFE1C /* PreferencesView.swift */,
-				AF2B411DAC8CE05EF91F72F2 /* SessionPanelView.swift */,
 				759E0C2EEE18DB8D7145ED3F /* ShellScene.swift */,
 				F6169E7629BEB3B0D2D74536 /* WebSurfaceView.swift */,
 			);
@@ -444,7 +438,6 @@
 				AE58C654CF3732D5AAEC391B /* Preflight.swift in Sources */,
 				F9D12D8E78F7608A7FE7E1B3 /* ResourceLocator.swift in Sources */,
 				4670E50A06F0452C8E9AEA63 /* SVGPathGeometry.swift in Sources */,
-				989B23D3264C2D5CB447DF28 /* SessionStore.swift in Sources */,
 				9C22D7D3069E1046CD86D6F1 /* SettingsStore.swift in Sources */,
 				D65BEF8453E239275355CA82 /* ShortcutConfigStore.swift in Sources */,
 				637195281C0344CB131E029D /* ShortcutModel.swift in Sources */,
@@ -464,7 +457,6 @@
 				EB7F027F4C6FF4FED8F91F24 /* FishLogoImage.swift in Sources */,
 				7E7EBD3CF0AAC9060B1717DA /* LoadingView.swift in Sources */,
 				DC1887CE78542768F9AB38E0 /* PreferencesView.swift in Sources */,
-				AC56FDB7C5F9E042307180B3 /* SessionPanelView.swift in Sources */,
 				6FBE609953C1256E6792C3F5 /* ShellScene.swift in Sources */,
 				4420BEE197DB118BBA3A125D /* SingleInstanceGuard.swift in Sources */,
 				9CBE63C4B4E900081476F71D /* StatusItemController.swift in Sources */,
