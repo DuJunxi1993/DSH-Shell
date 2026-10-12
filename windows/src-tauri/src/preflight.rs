@@ -116,4 +116,56 @@ mod tests {
         drop(listener);
         assert!(port_is_free("127.0.0.1", port));
     }
+
+    #[test]
+    fn the_probe_sees_a_live_server_not_just_our_own_socket() {
+        // The check that decides whether every lifecycle test built on
+        // `port_is_free` is real.
+        //
+        // `port_is_free` answers "could *this* socket have bound", which is not
+        // the question that matters: the question is "is anything listening". The
+        // macOS shell shipped a probe that could not tell the two apart — it set
+        // `SO_REUSEADDR`, the kernel agreed, and thirteen tests went green
+        // asserting a property that could not fail.
+        //
+        // Windows has no `SO_REUSEADDR` here, so that exact failure does not
+        // reproduce. That is the point: the absence of one option is not evidence,
+        // so this test forces the distinction directly. A listener that has
+        // *accepted a connection* is the strongest case available without spawning
+        // a real server — it is a live server by any definition, and if the probe
+        // still calls the port free, every test that trusts it is decorative.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let addr = listener.local_addr().expect("addr");
+        let port = addr.port();
+
+        // Make it a live server: one accepted connection, so the listener is
+        // demonstrably serving rather than merely holding the port.
+        let served = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept the probe connection");
+            drop(stream);
+        });
+        let client = std::net::TcpStream::connect(addr).expect("connect to the listener");
+        assert!(!port_is_free("127.0.0.1", port), "a served port is in use");
+        drop(client);
+        served.join().expect("the listener thread");
+    }
+
+    #[test]
+    fn the_probe_ignores_a_port_whose_listener_is_gone() {
+        // The mirror image, and the reason the macOS report had to change its own
+        // probe: a port left in TIME_WAIT by a connection that has already closed
+        // must read as free, or the second launch after the first is refused.
+        // Windows gets this for free (no SO_REUSEADDR to widen bind), and this
+        // pins that the property still holds if a platform ever does add one.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let addr = listener.local_addr().expect("addr");
+        let port = addr.port();
+        let client = std::net::TcpStream::connect(addr).expect("connect");
+        drop(listener);
+        drop(client);
+        assert!(
+            port_is_free("127.0.0.1", port),
+            "a closed connection must not keep the port reported as occupied"
+        );
+    }
 }
