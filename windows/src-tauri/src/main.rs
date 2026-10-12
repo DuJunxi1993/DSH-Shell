@@ -33,6 +33,7 @@ use dsh_shell_core::config::{self, Config};
 use dsh_shell_core::error::ShellError;
 use dsh_shell_core::navigate;
 use dsh_shell_core::platform;
+use dsh_shell_core::preflight;
 use dsh_shell_core::process::{self, DshProcess};
 
 /// Hard ceiling on the exit path. Shutdown must never be able to wedge the app.
@@ -630,18 +631,16 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
                 let config = Config::load_or_default();
                 tracing::info!(
                     target: "dsh_shell",
-                    "starting: mode={:?} port={} host={} zoom={}% binary={}",
+                    "starting: mode={:?} port={} host={} zoom={}% binary={} auto_restart={}",
                     config.launch_mode,
                     config.preferred_port,
                     config.listen_host,
                     config::normalize_zoom(config.zoom_percent),
                     config.dsh_binary_path.display(),
+                    config.auto_restart_on_crash,
                 );
 
-                match launch_recording_pid(&state, config).await {
-                    Ok(dsh) => point_at_dsh(window, state, dsh).await,
-                    Err(err) => report_failure(&window, &err),
-                }
+                supervise_dsh(&window, state, config).await;
             });
 
             Ok(())
@@ -656,20 +655,126 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
         .build(tauri::generate_context!())
 }
 
-async fn point_at_dsh(window: WebviewWindow, state: Arc<AppState>, dsh: DshProcess) {
+/// Launch dsh, point the window at it, and restart it a bounded number of times if
+/// it crashes.
+///
+/// The counter resets once dsh has been up long enough to count as working. It
+/// has to: a process that crashes after nine hours is a new failure, not a
+/// continuation of the one that was fixed at lunchtime, and without the reset the
+/// third crash of the morning would never be retried.
+async fn supervise_dsh(window: &WebviewWindow, state: Arc<AppState>, config: Config) {
+    let mut attempt: u32 = 0;
+    loop {
+        let started = std::time::Instant::now();
+        let dsh = match launch_recording_pid(&state, config.clone()).await {
+            Ok(dsh) => dsh,
+            Err(err) => {
+                report_failure(window, &err);
+                return;
+            }
+        };
+
+        let ending = match point_at_dsh(window.clone(), state.clone(), dsh).await {
+            Some(ending) => ending,
+            // A URL we cannot parse is a failure to start, not a crash to retry.
+            None => return,
+        };
+        if ending == DshEnding::ShuttingDown || state.shutting_down.load(Ordering::SeqCst) {
+            tracing::info!(target: "dsh_shell", "dsh ended because the app is exiting");
+            return;
+        }
+
+        if !config.auto_restart_on_crash {
+            tracing::info!(target: "dsh_shell", "auto_restart_on_crash is off; not restarting");
+            return;
+        }
+        if attempt >= config::MAX_RESTARTS {
+            tracing::error!(
+                target: "dsh_shell",
+                "dsh crashed {attempt} time(s) in a row; giving up. Fix it, or set auto_restart_on_crash to false."
+            );
+            notify(
+                window.app_handle(),
+                "dsh 反复崩溃",
+                format!("DSH Shell 已重启 dsh {attempt} 次，仍然失败。窗口保留，但页面已无法连接。"),
+            );
+            return;
+        }
+
+        // A dsh that lived long enough resets the budget: this is a new failure,
+        // not a continuation of the one that was already handled.
+        if started.elapsed() >= config::HEALTHY_AFTER {
+            tracing::info!(
+                target: "dsh_shell",
+                "dsh ran for {:?}; restarting the budget",
+                started.elapsed()
+            );
+            attempt = 0;
+        }
+
+        let wait = config::restart_backoff(attempt);
+        attempt += 1;
+        tracing::warn!(
+            target: "dsh_shell",
+            "dsh crashed ({}); restarting in {wait:?} (attempt {attempt}/{})",
+            ending.describe(),
+            config::MAX_RESTARTS
+        );
+
+        // The port has to be free before the respawn, not after it. `launch`
+        // would fail on a port the dead dsh has not finished releasing, and the
+        // failure would be indistinguishable from the crash that caused it.
+        wait_for_port_release(&config).await;
+
+        tokio::time::sleep(wait).await;
+        tracing::info!(target: "dsh_shell", "restarting dsh after a crash");
+    }
+}
+
+/// How long to keep waiting for a crashed dsh to release its port.
+///
+/// Past this the port belongs to somebody else, and the respawn should fail
+/// loudly in preflight rather than hang here.
+const PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Wait for the crashed dsh's port to come free, bounded.
+async fn wait_for_port_release(config: &Config) {
+    if config.preferred_port == 0 {
+        return;
+    }
+    let deadline = std::time::Instant::now() + PORT_RELEASE_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        if preflight::port_is_free(&config.listen_host, config.preferred_port) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    tracing::warn!(
+        target: "dsh_shell",
+        "port {}:{} still busy after {:?}; the respawn will fail in preflight",
+        config.listen_host,
+        config.preferred_port,
+        PORT_RELEASE_TIMEOUT
+    );
+}
+
+async fn point_at_dsh(window: WebviewWindow, state: Arc<AppState>, dsh: DshProcess) -> Option<DshEnding> {
     let url = dsh.url().to_string();
     tracing::info!(target: "dsh_shell", "dsh ready (pid {:?}) at {url}", dsh.pid());
 
     let parsed = match tauri::Url::parse(&url) {
         Ok(parsed) => parsed,
         Err(err) => {
-            report_failure(&window, &ShellError::EndpointTimeout {
-                host: String::from("<unparsable>"),
-                port: 0,
-                waited: Duration::ZERO,
-                tail: format!("dsh printed an unparsable URL: {url}: {err}"),
-            });
-            return;
+            report_failure(
+                &window,
+                &ShellError::EndpointTimeout {
+                    host: String::from("<unparsable>"),
+                    port: 0,
+                    waited: Duration::ZERO,
+                    tail: format!("dsh printed an unparsable URL: {url}: {err}"),
+                },
+            );
+            return None;
         }
     };
 
@@ -689,55 +794,79 @@ async fn point_at_dsh(window: WebviewWindow, state: Arc<AppState>, dsh: DshProce
 
     if let Err(err) = window.navigate(parsed) {
         tracing::error!(target: "dsh_shell", "could not navigate the window: {err}");
-        return;
+        return None;
     }
     let _ = window.set_title("DSH Shell — dsh");
-    watch_dsh_exit(window.app_handle().clone(), state);
+    Some(wait_for_dsh_exit(&window, &state).await)
+}
+
+/// Why dsh stopped being there.
+///
+/// The supervisor needs this to tell "dsh crashed" — which is worth restarting —
+/// from "the user quit the app", which is not, and conflating the two would
+/// resurrect dsh after the user asked for it to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DshEnding {
+    /// Died on its own while we were still running.
+    Crashed { code: Option<i32> },
+    /// We are shutting down; this is the exit path doing its job.
+    ShuttingDown,
+}
+
+impl DshEnding {
+    fn describe(self) -> String {
+        match self {
+            DshEnding::Crashed { code: Some(code) } => format!("退出代码 {code}"),
+            DshEnding::Crashed { code: None } => "被信号终止".to_string(),
+            DshEnding::ShuttingDown => "壳正在退出".to_string(),
+        }
+    }
 }
 
 /// How often to ask dsh whether it is still there.
 const EXIT_POLL: Duration = Duration::from_secs(1);
 
-/// Watch dsh for an unexpected exit and say so.
+/// Wait until dsh is gone, and say why it went.
 ///
-/// Nothing used to notice this: dsh could die and the window would sit there
-/// showing a page with no server behind it, looking like a hang. Suppressed
-/// while we are shutting down, where dsh exiting is the whole point and a toast
-/// would be a lie.
-fn watch_dsh_exit(app: AppHandle, state: Arc<AppState>) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(EXIT_POLL).await;
-            if state.shutting_down.load(Ordering::SeqCst) {
-                return;
+/// Awaited rather than spawned, so the supervisor owns the whole lifetime of a
+/// dsh instance and can restart it without racing a detached watcher. Nothing
+/// used to notice an exit at all: dsh could die and the window would sit there
+/// showing a page with no server behind it, looking like a hang.
+async fn wait_for_dsh_exit(window: &WebviewWindow, state: &Arc<AppState>) -> DshEnding {
+    let app = window.app_handle().clone();
+    loop {
+        tokio::time::sleep(EXIT_POLL).await;
+        if state.shutting_down.load(Ordering::SeqCst) {
+            return DshEnding::ShuttingDown;
+        }
+        // Locked in the same order as the shutdown path (dsh, then child), and
+        // only for the length of one non-blocking poll.
+        let polled = {
+            let guard = state.dsh.lock().await;
+            match guard.as_ref() {
+                Some(dsh) => dsh.poll_exit().await,
+                None => continue,
             }
-            // Locked in the same order as the shutdown path (dsh, then child),
-            // and only for the length of one non-blocking poll.
-            let polled = {
-                let guard = state.dsh.lock().await;
-                match guard.as_ref() {
-                    Some(dsh) => dsh.poll_exit().await,
-                    None => continue,
-                }
-            };
-            match polled {
-                Ok(process::Exited::No) => {}
-                Ok(process::Exited::Yes(code)) => {
-                    let how = match code {
-                        Some(code) => format!("退出代码 {code}"),
-                        None => "被信号终止".to_string(),
-                    };
-                    tracing::error!(target: "dsh_shell", "dsh exited unexpectedly ({how})");
-                    notify(&app, "dsh 已退出", format!("DSH Shell 的 dsh 意外退出（{how}）。窗口仍然打开，但页面已无法连接。"));
-                    return;
-                }
-                Err(err) => {
-                    // A failed poll says nothing about dsh. Keep watching.
-                    tracing::warn!(target: "dsh_shell", "could not poll dsh: {err}");
-                }
+        };
+        match polled {
+            Ok(process::Exited::No) => {}
+            Ok(process::Exited::Yes(code)) => {
+                let ending = DshEnding::Crashed { code };
+                let how = ending.describe();
+                tracing::error!(target: "dsh_shell", "dsh exited unexpectedly ({how})");
+                notify(
+                    &app,
+                    "dsh 已退出",
+                    format!("DSH Shell 的 dsh 意外退出（{how}）。窗口仍然打开，但页面已无法连接。"),
+                );
+                return ending;
+            }
+            Err(err) => {
+                // A failed poll says nothing about dsh. Keep watching.
+                tracing::warn!(target: "dsh_shell", "could not poll dsh: {err}");
             }
         }
-    });
+    }
 }
 
 /// Put a toast on screen, and log it either way.

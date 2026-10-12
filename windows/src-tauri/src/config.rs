@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// How the shell should connect to a dsh instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -33,6 +34,34 @@ pub const ZOOM_DEFAULT: u8 = 100;
 fn default_zoom_percent() -> u8 {
     ZOOM_DEFAULT
 }
+
+/// How many times dsh may be restarted after crashing before the shell gives up.
+///
+/// A bound is the whole point. A dsh that cannot start — a broken binary, a port
+/// somebody else owns, a profile that will not load — would otherwise be spawned
+/// forever, one crash per attempt, which is a fork bomb with a user interface.
+pub const MAX_RESTARTS: u32 = 3;
+
+/// How long to wait before restart number `attempt` (0-based).
+///
+/// Exponential, because the failures that repeat are usually the slow ones: a
+/// plugin Loader that needs ten seconds to settle will fail again immediately if
+/// asked again instantly. Capped, because the alternative is a wait that grows
+/// without bound and an app that has stopped trying while looking alive.
+pub fn restart_backoff(attempt: u32) -> Duration {
+    match attempt {
+        0 => Duration::from_secs(2),
+        1 => Duration::from_secs(4),
+        _ => Duration::from_secs(8),
+    }
+}
+
+/// How long dsh must stay up before a later crash counts as a new failure.
+///
+/// Without this the budget is spent once per *session* rather than once per
+/// *outage*: three crashes spread across a day would exhaust it, and a dsh that
+/// crashed at lunchtime and again at nine would not be retried the second time.
+pub const HEALTHY_AFTER: Duration = Duration::from_secs(60);
 
 /// Snap an arbitrary value onto the supported zoom ladder.
 ///
@@ -249,6 +278,62 @@ mod tests {
         // The ceiling leaving room above 100% is a property of the ladder, not of
         // this test, so it is checked where it cannot be optimized away.
         const _: () = assert!(ZOOM_MAX > 100, "the ceiling must leave room above 100%");
+    }
+
+    #[test]
+    fn the_restart_budget_is_finite() {
+        // The property that matters: however long this runs, the number of spawns
+        // is bounded. A dsh that cannot start must not become a fork bomb with a
+        // UI. Both bounds are properties of the constant, so they are checked
+        // where the compiler cannot fold them away.
+        const _: () = assert!(MAX_RESTARTS > 0, "a zero budget never recovers at all");
+        const _: () = assert!(
+            MAX_RESTARTS <= 5,
+            "past five attempts the user needs to see it, not have the app keep trying"
+        );
+    }
+
+    #[test]
+    fn the_restart_backoff_grows_then_stops() {
+        // Exponential so a slow failure (a plugin Loader that needs ten seconds)
+        // is not retried instantly, capped so the wait cannot grow without bound.
+        let first = restart_backoff(0);
+        let second = restart_backoff(1);
+        let third = restart_backoff(2);
+        assert!(second > first, "attempt 2 must wait longer than attempt 1");
+        assert!(third > second, "attempt 3 must wait longer than attempt 2");
+        // Everything past the third is the cap, not a longer delay.
+        for attempt in 3..50 {
+            assert_eq!(
+                restart_backoff(attempt),
+                third,
+                "attempt {attempt} must not keep growing the wait"
+            );
+        }
+    }
+
+    #[test]
+    fn the_restart_wait_never_exceeds_the_budget() {
+        // The whole schedule has to fit inside a span a user will tolerate, or
+        // the bound on the count buys nothing: three spawns spaced a minute apart
+        // is not a recovery.
+        let total: Duration = (0..MAX_RESTARTS).fold(Duration::ZERO, |sum, attempt| {
+            sum + restart_backoff(attempt)
+        });
+        assert!(
+            total <= Duration::from_secs(30),
+            "the full retry schedule is {total:?}, which is too long to hold a window open"
+        );
+    }
+
+    #[test]
+    fn a_healthy_dsh_outlives_the_reset_window() {
+        // The reset only helps if it fires before the budget is normally spent,
+        // and does not fire so eagerly that a crash loop never gets to restart.
+        assert!(
+            HEALTHY_AFTER > Duration::from_secs(30),
+            "a process that survives this long was working, not failing"
+        );
     }
 
     #[test]
