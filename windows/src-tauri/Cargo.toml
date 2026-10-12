@@ -72,6 +72,16 @@ tauri-plugin-notification = "2.3.3"
 [target.'cfg(windows)'.dependencies]
 notify-rust = "4"
 
+# Orphan detection needs to answer two questions about a process it did not
+# spawn: who is that process's parent, and what is its executable. Both come from
+# the process table, and `preflight` decides whether to kill on the answers, so
+# they are pinned to the narrowest features that provide them. See src/orphan.rs.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

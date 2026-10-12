@@ -32,6 +32,7 @@ use dsh_shell_core::chrome;
 use dsh_shell_core::config::{self, Config};
 use dsh_shell_core::error::ShellError;
 use dsh_shell_core::navigate;
+use dsh_shell_core::orphan;
 use dsh_shell_core::platform;
 use dsh_shell_core::preflight;
 use dsh_shell_core::process::{self, DshProcess};
@@ -665,6 +666,12 @@ fn build(state: Arc<AppState>, zoom: u8) -> tauri::Result<tauri::App> {
 async fn supervise_dsh(window: &WebviewWindow, state: Arc<AppState>, config: Config) {
     let mut attempt: u32 = 0;
     loop {
+        // Before the first spawn, and only then: a dsh orphaned by a previous
+        // run holds the port this launch needs, and `starting_pid` cannot know
+        // about it because it never saw the process.
+        if attempt == 0 {
+            orphan::reclaim_orphan(&config);
+        }
         let started = std::time::Instant::now();
         let dsh = match launch_recording_pid(&state, config.clone()).await {
             Ok(dsh) => dsh,

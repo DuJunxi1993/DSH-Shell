@@ -892,6 +892,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "url",
+ "windows",
 ]
 
 [[package]]
