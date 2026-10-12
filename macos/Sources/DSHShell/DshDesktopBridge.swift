@@ -488,17 +488,27 @@ extension DshDesktopBridge: WKScriptMessageHandler {
             case "closeWindow":
                 // dsh sends the revision and offers to close only "if its
                 // configuration is still current". We do not check it, and
-                // should not: the window is ours to close, and a stale
-                // revision here would only produce a window the user cannot
-                // get rid of by keyboard.
+                // should not: the window is ours, and a stale revision here
+                // would only produce a window the user cannot get rid of by
+                // keyboard.
                 //
-                // Logged because this path is easy to break invisibly. dsh
-                // owns `meta+KeyW` on macOS, so the shell's own Close Window
-                // item never runs — if this stops firing, ⌘W is dead and
-                // nothing else would say so.
+                // This hides rather than closes, and that is the difference
+                // between the app surviving ⌘W and not. dsh owns `meta+KeyW` on
+                // macOS as part of its desktop contract, so ⌘W arrives here and
+                // nowhere else; `performClose` destroyed the SwiftUI scene's
+                // window, and destroying the last window ends the process — so
+                // pressing ⌘W quit the app, dsh and all.
+                //
+                // The window *is* the session: one WKWebView holding the live
+                // bridge, the scroll position and the composed draft. Hiding
+                // keeps all of it and matches what the status item's toggle
+                // already did.
+                //
+                // Logged because this path is easy to break invisibly: nothing
+                // else would report that ⌘W had stopped hiding the window.
                 let window = webView?.window
-                Log.info("closeWindow: dsh requested it (revision \(payload["revision"] as? String ?? "-")), performing close on \(window?.windowNumber.description ?? "no window")")
-                window?.performClose(nil)
+                Log.info("closeWindow: dsh requested it (revision \(payload["revision"] as? String ?? "-")); hiding \(window?.windowNumber.description ?? "no window")")
+                window?.orderOut(nil)
 
             case "beginWindowDrag":
                 beginWindowDrag(screenX: payload["screenX"] as? Double ?? 0,

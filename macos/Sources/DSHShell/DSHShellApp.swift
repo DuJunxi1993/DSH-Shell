@@ -178,6 +178,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // false, always.
+        //
+        // The app outlives its windows on purpose: it has a menu bar item and
+        // holds a live dsh session, so losing the window is not a reason to
+        // lose the process. Quitting stays with ⌘Q and the status item's Quit.
+        //
+        // This is also the backstop for the main window's close interceptor.
+        // That one turns the close into `orderOut`, so the last window is never
+        // actually closed and this is never consulted — but the setting window
+        // is an ordinary closable window, and if it were the only one left, the
+        // default would take the app down with it.
+        return false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         coordinator.shutdownBlocking()
         statusItem?.uninstall()

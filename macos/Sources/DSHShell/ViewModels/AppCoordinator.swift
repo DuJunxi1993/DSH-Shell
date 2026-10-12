@@ -237,6 +237,8 @@ final class AppCoordinator: ObservableObject {
 
     func attach(window: NSWindow?) {
         mainWindow = window
+        guard let window else { return }
+        MainWindowCloseInterceptor.shared.install(on: window)
     }
 
     /// Adopts the scene's own `openWindow` action, supplied by `ShellScene`.
@@ -543,5 +545,106 @@ extension AppCoordinator: WebBridgeClient {
 
     func webInjectText(_ text: String) {
         bridge?.invoke(.injectText(text))
+    }
+}
+
+/// Turns "close the window" into "put the window away", for the main window.
+///
+/// ## Why this exists
+///
+/// Closing the main window used to quit the app. Three separate routes all ended
+/// at the same place:
+///
+/// - dsh owns `meta+KeyW` on macOS — it is part of the desktop contract — so ⌘W
+///   is delivered to the page, which calls `closeWindow` over the bridge.
+/// - The status item's "Show / Hide" used `orderOut`, which only hides. The
+///   window stayed alive, so the next `closeWindow` still had something to
+///   destroy.
+/// - The red button did what it says.
+///
+/// All of it funnelled into `performClose`, which destroys a SwiftUI `Window`
+/// scene's window. Destroying the last window ends the process, so ⌘W appeared
+/// to quit the app and the status item's toggle appeared to quit the app too.
+///
+/// That is not the macOS contract for an app with a menu bar item and a live
+/// background process: hiding the window is what a "close" should mean here, and
+/// quitting stays with ⌘Q and the status item's Quit. dsh's `closeWindow`
+/// contract is unchanged — the page still gets to ask — it just no longer takes
+/// the whole app down with it.
+///
+/// ## Why the window is hidden rather than closed
+///
+/// Not only convention. The window *is* the dsh session: it holds the one
+/// `WKWebView` with the live bridge, the page's scroll position, the composed
+/// draft. Destroying it tore all of that down and rebuilt it on the next show.
+/// `orderOut` keeps it, which is also why the status item's toggle had already
+/// been doing the right thing.
+///
+/// ## Why a shared instance
+///
+/// `NSWindow.delegate` is a weak reference, so a delegate that is only
+/// referenced by the window it guards is deallocated the moment it is assigned.
+/// One instance for the app's lifetime, like the app delegate beside it.
+@MainActor
+final class MainWindowCloseInterceptor: NSObject, NSWindowDelegate, @unchecked Sendable {
+    static let shared = MainWindowCloseInterceptor()
+
+    /// Installed windows, so `install` can tell a fresh window from one that has
+    /// already been taken over.
+    private var installed: [ObjectIdentifier] = []
+
+    /// SwiftUI installs its own delegate on a `Window` scene's window; replacing
+    /// it outright breaks whatever it was doing, so the original is kept and
+    /// still told about the events it cares about.
+    ///
+    /// Strong, not weak: it is only reachable through here once the window's
+    /// weak `delegate` points at this object, so a weak reference would let it
+    /// be deallocated and silently stop receiving anything.
+    private var original: NSWindowDelegate?
+
+    func install(on window: NSWindow) {
+        let key = ObjectIdentifier(window)
+        guard !installed.contains(key) else { return }
+
+        if let existing = window.delegate, existing !== self {
+            original = existing
+            window.delegate = self
+        }
+        installed.append(key)
+        Log.info("main window close will hide rather than quit (delegate: \(original.map { String(describing: type(of: $0)) } ?? "none"))")
+    }
+
+    /// The whole fix: veto the close, and hide instead.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        Log.info("main window close → hidden; the app and its dsh session stay up")
+        return false
+    }
+
+    // MARK: - Pass-through
+    //
+    // A delegate that answers none of these silently drops whatever SwiftUI was
+    // listening for. Each one forwards to the delegate that was there before.
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        original?.windowDidBecomeKey?(notification)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        original?.windowDidResignKey?(notification)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        original?.windowDidResize?(notification)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // Never reached for the main window — the close is vetoed above — but
+        // forwarded rather than dropped in case that ever changes.
+        original?.windowWillClose?(notification)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        original?.windowDidMove?(notification)
     }
 }
