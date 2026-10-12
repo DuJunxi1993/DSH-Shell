@@ -27,9 +27,19 @@ struct WebSurfaceView: NSViewRepresentable {
     /// The origin the shell is allowed to show. Everything else is handed to the
     /// system browser — see the coordinator for why that matters.
     var allowedOrigin: String = ""
+    /// Declares this webview to dsh as a macOS desktop host.
+    ///
+    /// Owned by the coordinator, not by this value type: the bridge has to
+    /// outlive every view update (SwiftUI recreates `self` freely), and it has to
+    /// be released explicitly when the app quits so the key monitor stops.
+    let desktopBridge: DshDesktopBridge?
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var bridge: WebBridge?
+        /// Held here rather than by the caller so it outlives the view update
+        /// that created it; the page keeps calling into it for the webview's
+        /// whole life.
+        var desktopBridge: DshDesktopBridge?
         /// Strong owner of the `WKUIDelegate`.
         ///
         /// `WKWebView.UIDelegate` is declared `weak` (see `WKWebView.h`:
@@ -94,6 +104,14 @@ struct WebSurfaceView: NSViewRepresentable {
         context.coordinator.allowedOrigin = URLOrigin.of(url)
         apply(zoomPercent, to: view)
 
+        // The desktop contract goes in before `view.load`, so `data-platform` is
+        // set before any of dsh's own scripts run. Its bridge script shares the
+        // configuration's user content controller, so it is injected alongside
+        // bridge.js rather than replacing it.
+        desktopBridge?.attach(to: view)
+        desktopBridge?.installKeyMonitor()
+        context.coordinator.desktopBridge = desktopBridge
+
         context.coordinator.bridge = bridge
         bridge.webView = view
         bridgeClient?.bridgeReady(bridge)
@@ -126,6 +144,13 @@ struct WebSurfaceView: NSViewRepresentable {
         }
         context.coordinator.allowedOrigin = URLOrigin.of(url)
         apply(zoomPercent, to: webView)
+        // SwiftUI can hand us a different webview than the one the bridge was
+        // attached to; a desktop contract injected into the old one is not
+        // running in the new one, and dsh would boot as a browser document with
+        // no sign of why.
+        desktopBridge?.attach(to: webView)
+        desktopBridge?.installKeyMonitor()
+        context.coordinator.desktopBridge = desktopBridge
         if webView.url != url {
             webView.load(URLRequest(url: url))
         }

@@ -217,6 +217,9 @@ runtime: document.documentElement.dataset.platform === undefined ? "web" : "desk
 ### 7.3 两端共同
 
 - **`-webkit-app-region` 在 WKWebView 中不被支持**（实测 `CSS.supports(...) === false`）。它是 Blink 属性，WebView2 支持，WKWebView 不支持。因此 dsh 的 `[data-window-drag]` 行在 macOS 下不会自拖，壳必须转发原生拖拽。
+- **`dshDesktopBoot.ready()` 的 `streamBaseUrl` 必须是真实的 `location.origin`。** 读 shipped bundle 只会得到「该字段只写不读」的结论，据此返回空串会让 dsh **完全无法启动**（57 个条目未激活、`dsh-api-gateway: failed`、boot 屏永远停在 "Loading plugins…"）。消费方不在那个 bundle 里。一个属性，无论有没有人读它都要给对的值。
+- **`data-platform` 与桥接必须原子地一起加载。** 属性设了而桥接没加载，dsh 会**完全无法启动**（`ShortcutsService` 抛 `Desktop keyboard bridge unavailable`，级联导致 `ui-layout` 永久 pending、24 个条目无法激活）。所以两者必须放在同一个注入脚本里：资源缺失 → 两者都不发生 → 自动退回 web 运行时。拆成两个来源就制造了一个「白屏且无提示」的故障模式。
+- **契约只负责页面侧。** `ShellScene` 里 1.5 秒 `Timer` 重断言 `NSWindow.styleMask` 那个 workaround 修的是 AppKit 的窗口侧抖动，dsh 的任何 CSS 变量都影响不到它，**接入契约后依然保留**。详见 `dsh-desktop-contract.md` §4.4。
 - 不设任何桌面契约时的基线：dsh 按**普通浏览器**渲染，不下发任何 `--dsh-frame-*` 变量，壳必须自行补偿。
 
 ---

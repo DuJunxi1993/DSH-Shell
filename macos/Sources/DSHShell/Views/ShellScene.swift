@@ -43,7 +43,8 @@ struct ShellScene: View {
         case .ready(let url):
             WebSurfaceView(url: url, bridgeClient: coordinator,
                            zoomPercent: coordinator.zoomPercent,
-                           allowedOrigin: URLOrigin.of(url))
+                           allowedOrigin: URLOrigin.of(url),
+                           desktopBridge: coordinator.desktopBridge)
                 .ignoresSafeArea(edges: [.top, .bottom])
                 .onAppear { attachWindow() }
         case .failed(let reason):

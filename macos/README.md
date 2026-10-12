@@ -24,7 +24,12 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | `launchMode == .attach` fallback (probe the configured loopback port only) | ✅ |
 | App icon, transparent titlebar, floating status badge | ✅ |
 | Preferences (binary path, listen host/port, trusted hosts, timeouts, auto-restart) | ✅ |
-| Unit tests for `DSHShellCore` | ✅ 81 passing, 0 failing |
+| dsh **desktop host contract** — `data-platform=darwin` + `dshDesktopBoot` + `dshDesktop` | ✅ real dsh 0.2.0-rc.2: UI boots, 48px top clearance reserved, 4 drag regions, 0 page errors |
+| Native window drag from dsh's `[data-window-drag]` rows | ✅ WebKit has no `-webkit-app-region`, so `mousedown` is forwarded to `performWindowDragWithEvent:` |
+| Native shortcuts — only the chords dsh actually has bound | ✅ 17 chords across 28 commands; everything else stays with AppKit/WebKit, so ⌘C/⌘V/⌘X and typing still work |
+| Device-local shortcut preferences, dsh's real document/edit shapes | ✅ `keybindings.json`, conflict-checked, corrupt files reported not overwritten |
+| One-command Release `.app` | ✅ `./scripts/build-app.sh`, ad-hoc signed, arm64 |
+| Unit tests for `DSHShellCore` | ✅ 146 passing, 0 failing |
 | Hermetic lifecycle tests against `stub-dsh` | ✅ 13, every one ends by asserting the port is bindable again |
 | Single instance — a second launch raises the window, never fights for the port | ✅ `flock`, checked before anything else |
 | Menu-bar status item: show/hide, zoom reset, exit | ✅ carries the connection state |
@@ -32,7 +37,7 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | Page zoom 50–100% in 10% steps, persisted | ✅ menu + status item |
 | Daily rotating file log + `crash.log` | ✅ `~/Library/Application Support/DSHShell/logs/` |
 | dsh desktop-contract self-check reported to the log | ✅ `platform`, `--dsh-frame-*`, `-webkit-app-region` |
-| `swift build` and `xcodebuild` both clean | ✅ 0 errors |
+| `swift build` and `xcodebuild` both clean | ✅ 0 errors; both are run by `build-app.sh` because `swift test` alone never compiles the app target |
 | Preflight: refuse to nest inside a harness session | ✅ |
 | Preflight: refuse a port someone else owns, never kill it | ✅ |
 | Preflight: `SO_REUSEADDR` on the port probe | ✅ so `TIME_WAIT` cannot fake a collision |
@@ -50,33 +55,72 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
   ```
   The first launch needs the dsh front-end dist to be built (`pnpm run build` from the dsh repo). dsh-swiftUI does **not** ship the dsh dist.
 
-If you have multiple Xcode versions installed, point the active developer directory at the beta once:
+If you have multiple Xcode versions installed, `xcode-select -p` may still point at CommandLineTools, which has no `xcodebuild`. Either point it at the beta once:
+
 ```sh
 sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer
 ```
+
+…or, preferably, leave the global setting alone and set `DEVELOPER_DIR` per command. `build-app.sh` does the latter automatically: pointing `xcode-select` at a beta silently moves every other tool on the machine onto it.
+
+- **xcodegen** — `brew install xcodegen`. `DSHShell.xcodeproj` is generated from `project.yml`; never hand-edit it.
 
 ---
 
 ## Building
 
-### Option A — Xcode
+### The deliverable — one command
+
+```sh
+./scripts/build-app.sh            # Release .app
+./scripts/build-app.sh --debug    # Debug .app
+./scripts/build-app.sh --run      # Release, then launch it
+```
+
+From a fresh clone, with no manual steps. It runs the syntax check on both injected scripts, regenerates the Xcode project, runs the hermetic test suite, builds Release, and then **verifies the two JS bridges are actually inside the bundle** before reporting success.
+
+```
+==> built macos/build/Release/DerivedData/Build/Products/Release/DSHShell.app
+    size:      2.2M
+    version:   0.2.0
+    bundle id: ai.deepseek.dsh-shell
+      ok   bridge.js
+      ok   dsh_desktop_bridge.js
+
+To run it:
+    open ".../DSHShell.app"
+```
+
+That last check is not ceremony. `swift build` produces a bare Mach-O executable with no bundle, so `bridge.js` and `dsh_desktop_bridge.js` are simply absent — and a missing `dsh_desktop_bridge.js` does not degrade, it **breaks**: dsh is never told it is on a desktop, so the desktop runtime is never declared and the failure looks like nothing at all. The script fails rather than handing you an app that cannot boot dsh.
+
+**Signing.** The app is ad-hoc signed (`CODE_SIGN_IDENTITY="-"`), so it runs on the machine that built it. There are no Developer ID identities here, so it is not distributable and Gatekeeper will quarantine a copy that arrives from anywhere else. For that case, once:
+
+```sh
+xattr -dr com.apple.quarantine /path/to/DSHShell.app
+```
+
+**Architecture.** arm64 only. `xcodebuild -destination 'platform=macOS'` matches both arm64 and x86_64 on Apple silicon and then fails inside Swift's prebuilt-module set, on something the project does not control; the script pins `arch=arm64`.
+
+### Working on it — Xcode
 
 ```sh
 brew install xcodegen              # one-time
-./scripts/generate-xcodeproj.sh    # regenerates DSHShell.xcodeproj
+xcodegen generate                  # after editing project.yml
 open DSHShell.xcodeproj
 ```
 
-Then ⌘R. The first build expects a signing identity. For a local-only build, set the team to "None" and enable "Sign to Run Locally"; the project already disables Hardened Runtime because ad-hoc-signed frameworks would otherwise fail dyld library validation (no shared Team ID).
+Then ⌘R. The generated **shared scheme is committed**, which is what makes `-scheme DSHShell` work on a fresh clone — so do not gitignore `*.xcscheme`.
 
-### Option B — Swift Package
+### Testing
 
 ```sh
-swift build -c release           # builds DSHShellCore + DSHShell
-swift test                       # runs the 10 unit tests
+swift test      # 146 hermetic tests
+swift build     # compiles the app target too — `swift test` does NOT
 ```
 
-To produce a `.app` bundle, use the Xcode project (Option A).
+`swift test` only reaches `DSHShellCore`, the bridge shim and `stub-dsh`. It never compiles `Sources/DSHShell`, which is how `Bundle.module` — a SwiftPM-only accessor that does not exist in the Xcode target — survived to the Xcode build. Both commands are part of `build-app.sh` for that reason.
+
+No test boots a real dsh: the lifecycle tests drive `stub-dsh`, a purpose-built test double.
 
 ---
 
@@ -109,6 +153,14 @@ Settings live at `~/Library/Application Support/dsh-swiftUI/settings.json`. Defa
 
 The shell forwards no working directory to `dsh web` — the dsh SPA picks its own workspace inside the browser UI.
 
+Shortcut preferences are a **separate, device-local** file, because dsh's own rule is "Desktop never falls back to browser storage" — a per-origin store would be exactly that fallback, i.e. two copies of the user's keybindings that disagree:
+
+```
+~/Library/Application Support/DSHShell/keybindings.json
+```
+
+It is created on the **first accepted edit**, not on first read. Its content is the shortcut *document* only (`{schemaVersion, profiles}`); `revision` and `sequence` are deliberately not persisted, because dsh re-mints them on every accepted change. A corrupt or newer-schema file is reported (`status: "unreadable"`, `error: "invalid"` / `"future"`) and left alone rather than being treated as "no preferences" and overwritten. See [docs/dsh-desktop-contract.md §4.5](../docs/dsh-desktop-contract.md).
+
 ---
 
 ## Lifecycle
@@ -132,7 +184,22 @@ The shell forwards no working directory to `dsh web` — the dsh SPA picks its o
 
 ## Diagnostics
 
-Lifecycle events flow through `OSLog` with subsystem `ai.deepseek.dsh-shell`. To see them:
+There is a plain log file, one per day:
+
+```
+~/Library/Application Support/DSHShell/logs/dsh-shell.log.YYYY-MM-DD
+```
+
+The one line worth knowing about is the keyboard filter, logged whenever dsh's command catalog grows:
+
+```
+[info] desktop bridge ready — host=true webkit-app-region=false (expected: WebKit has no such property, so drag rows need native forwarding)
+[info] keyboard filter: 17 bound chord(s) across 28 command(s) — alt+meta+Enter, alt+meta+KeyB, …, meta+Slash
+```
+
+If that line never appears, the host is not forwarding shortcuts at all. If a chord you expect is missing from it, dsh has not bound it and the host is correctly leaving that key to macOS.
+
+Lifecycle events also flow through `OSLog` with subsystem `ai.deepseek.dsh-shell`. To see them:
 
 ```sh
 log stream --predicate 'subsystem == "ai.deepseek.dsh-shell"' --info --debug

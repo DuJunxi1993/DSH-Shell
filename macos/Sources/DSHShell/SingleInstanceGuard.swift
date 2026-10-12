@@ -73,7 +73,10 @@ final class SingleInstanceGuard {
         guard let other = candidates.first(where: { $0.processIdentifier != mine }) else {
             return false
         }
-        other.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        // `activateIgnoringOtherApps` has been deprecated since macOS 14 and
+        // does nothing; the app is already the frontmost candidate, so
+        // `activateAllWindows` is both sufficient and not a warning.
+        other.activate(options: [.activateAllWindows])
         return true
     }
 }

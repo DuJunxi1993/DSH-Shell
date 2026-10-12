@@ -59,6 +59,10 @@ final class AppCoordinator: ObservableObject {
     private var lastURL: URL?
     private var lastChildPID: Int32?
     private var bridge: WebBridge?
+    /// The dsh desktop-host contract. App-lifetime, because it owns a key
+    /// monitor that must be released explicitly on quit and must not be tied to
+    /// any one view's lifetime.
+    let desktopBridge = DshDesktopBridge()
     private var agentWasRunning = false
     private var agentRunningSince: Date?
     private let logger = Logger(subsystem: "ai.deepseek.dsh-shell", category: "AppCoordinator")
@@ -117,6 +121,7 @@ final class AppCoordinator: ObservableObject {
     /// plain syscalls that cannot be dropped by teardown — and only then
     /// attempt the best-effort actor cleanup.
     func shutdownBlocking() {
+        desktopBridge.removeKeyMonitor()
         lifecycleRunning = false
         lifecycleTask?.cancel()
         lifecycleTask = nil

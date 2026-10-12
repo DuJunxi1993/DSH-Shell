@@ -12,7 +12,9 @@ DerivedData/
 xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcuserstate
-*.xcscheme
+# The shared scheme must be committed: it is the only thing that lets
+# `xcodebuild -scheme DSHShell` work on a fresh clone. Ignoring it meant a
+# clean checkout could not build the app at all. Regenerate with xcodegen.
 
 # Swift Package Manager
 .build/

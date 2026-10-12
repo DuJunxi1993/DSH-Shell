@@ -38,6 +38,11 @@ let dshBin = argValue("--dsh", "/Users/djx/.npm-global/bin/dsh")
 let dshHome = argValue("--dsh-home", NSTemporaryDirectory() + "dsh-probe-home-\(getpid())")
 let port = Int(argValue("--port", "3080")) ?? 3080
 let trustedHost = "127.0.0.1:\(port)"
+/// Restrict the run to one mode. Not a convenience: loading the same page six
+/// times in a row against one dsh mutates host state, and a failure that only
+/// appears on the last load is indistinguishable from a bug in that mode's
+/// script. Running a mode alone is what separates the two.
+let onlyMode = argValue("--only", "")
 
 try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
 try? FileManager.default.createDirectory(atPath: dshHome, withIntermediateDirectories: true)
@@ -196,10 +201,157 @@ func portIsFree(_ port: Int) -> Bool {
     return r == 0
 }
 
+/// The host-side stand-in the probe appends around the app's real bridge.
+///
+/// Two things a browser cannot provide, which is exactly the two the app provides
+/// natively: answering `shortcuts.get`, and the key monitor. Everything else —
+/// the attribute, the five entry points, the drag forwarding — is the file under
+/// test, unmodified.
+///
+/// Split in two, and the split is the whole point. The handler has to exist
+/// *before* the bridge runs, because the bridge captures
+/// `window.webkit.messageHandlers.dshDesktop` once at load and would otherwise
+/// hold `null` for the rest of the page's life. In the app that ordering is free:
+/// Swift registers the handler on the user content controller before injecting.
+/// A probe that appended its handler afterwards was therefore testing a
+/// situation the app never produces, and it failed for a reason that had nothing
+/// to do with the bridge.
+private let probeHostPre = """
+; /* ---- host stand-in, installed before the bridge under test ---- */
+(function () {
+  var SNAPSHOT = {
+    revision: "00000000-0000-4000-8000-000000000000",
+    sequence: 1,
+    document: { schemaVersion: 1, profiles: {} },
+    status: "ready", error: null, usingDefaults: true
+  };
+  window.__dshProbeLog = [];
+  window.webkit = window.webkit || {};
+  window.webkit.messageHandlers = window.webkit.messageHandlers || {};
+  window.webkit.messageHandlers.dshDesktop = {
+    postMessage: function (raw) {
+      var msg;
+      try { msg = JSON.parse(raw); } catch (e) { return; }
+      // Record the payload too. `type` alone cannot distinguish "dsh reported a
+      // boot failure" from what it failed on, and the failure text is the only
+      // place the reason exists.
+      window.__dshProbeLog.push(
+        msg.type + (msg.payload === null || msg.payload === undefined
+          ? '' : ' ' + JSON.stringify(msg.payload)));
+      var reply = function (id, ok, value) {
+        if (window.__dshShellDesktop && window.__dshShellDesktop.resolveShortcuts) {
+          window.__dshShellDesktop.resolveShortcuts(id, ok, value);
+        }
+      };
+      if (msg.type === "shortcutsGet") reply(msg.payload.id, true, SNAPSHOT);
+      else if (msg.type === "shortcutsEdit") reply(msg.payload.id, true, { status: "saved", snapshot: SNAPSHOT });
+      else if (msg.type === "beginWindowDrag") window.__dshProbeDrag = msg.payload;
+    }
+  };
+})();
+"""
+
+private let probeHostPost = """
+// ---- probe instrumentation, after the bridge ----
+// Wrap `ready()` so we can see whether dsh ever called it and what it did.
+// A boot card sitting on "Loading plugins..." for 90s means __DSH_BOOT_READY__
+// never resolved, and the only way to tell "never called" from "called and
+// rejected" from "resolved but something else hung" is to watch the call.
+(function () {
+  var b = window.dshDesktopBoot;
+  if (!b || b.__probeWrapped) { return; }
+  b.__probeWrapped = true;
+  var real = b.ready;
+  b.ready = function () {
+    window.__dshProbeLog.push('ready:called');
+    var r;
+    try { r = real.apply(this, arguments); }
+    catch (e) { window.__dshProbeLog.push('ready:threw ' + e); throw e; }
+    return Promise.resolve(r).then(
+      function (v) { window.__dshProbeLog.push('ready:resolved'); return v; },
+      function (e) { window.__dshProbeLog.push('ready:rejected ' + e); throw e; });
+  };
+})();
+window.__dshProbeInstalled = true;
+"""
+
+extension Mode {
+    /// Read the bridge the app actually ships.
+    ///
+    /// `STUB_BRIDGE_PATH` overrides it so a candidate implementation can be tried
+    /// without rebuilding the app. A missing file is a hard failure in the probe:
+    /// the point is to test the real thing, and silently falling back to a copy
+    /// would turn the gate into decoration.
+    static func appBridgeSource() -> String {
+        if let override = ProcessInfo.processInfo.environment["STUB_BRIDGE_PATH"],
+           FileManager.default.isReadableFile(atPath: override) {
+            return probeHostPre
+                + ((try? String(contentsOfFile: override, encoding: .utf8)) ?? "")
+                + probeHostPost
+        }
+        // Search upward from this file rather than counting directories: the probe may
+        // be compiled from anywhere, and a wrong count fails with "cannot read the
+        // bridge", which reads like a missing file rather than like a path bug.
+        //
+        // `#filePath` is whatever path the compiler was given, so it can be
+        // relative. Resolve it against the working directory first — otherwise
+        // `deletingLastPathComponent` walks off the front of a relative path and
+        // the search starts in the wrong place entirely.
+        var dir = URL(fileURLWithPath: #filePath)
+        if !dir.path.hasPrefix("/") {
+            dir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent(dir.path)
+        }
+        dir = dir.standardizedFileURL.deletingLastPathComponent()
+        let relative = "Sources/DSHShell/Bridge/dsh_desktop_bridge.js"
+        for _ in 0..<8 {
+            let candidate = dir.appendingPathComponent(relative)
+            if let source = try? String(contentsOfFile: candidate.path, encoding: .utf8) {
+                logLine("app bridge loaded from \(candidate.path)")
+                return probeHostPre + source + probeHostPost
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        FileHandle.standardError.write(
+            "[dsh-probe] FATAL: cannot find \(relative) above \(#filePath)\n"
+                .data(using: .utf8)!)
+        exit(5)
+    }
+}
+
+// MARK: - Process leak protection
+
+/// The PID of the dsh this probe spawned, if any.
+///
+/// Registered with `atexit` so that *every* exit path reaps it, including the
+/// ones nobody planned: a fatal read of the bridge, a crash in a measurement
+/// closure, a Ctrl-C. Without this the probe leaks a dsh holding the port, which
+/// is the exact failure every test in this repository exists to prevent — and the
+/// first version of this tool produced it.
+///
+/// Not a `deinit`: a leaked object never runs one.
+nonisolated(unsafe) var probeSpawnedPID: Int32 = -1
+
+nonisolated func reapSpawnedDsh() {
+    let pid = probeSpawnedPID
+    guard pid > 0 else { return }
+    probeSpawnedPID = -1
+    if kill(pid, 0) != 0 { return }
+    kill(pid, SIGTERM)
+    // No run loop is guaranteed here, so poll with waitpid rather than sleeping
+    // on a Task: this runs during teardown, where nothing else is scheduled.
+    var status: Int32 = 0
+    for _ in 0..<50 {
+        if waitpid(pid, &status, WNOHANG) != 0 { return }
+        usleep(100_000)
+    }
+    kill(pid, SIGKILL)
+}
+
 // MARK: - Injection
 
 enum Mode: String, CaseIterable {
-    case baseline, darwin, windows, darwinProxy, darwinReal
+    case baseline, darwin, windows, darwinProxy, darwinReal, darwinAppBridge
 
     var script: String {
         switch self {
@@ -222,6 +374,13 @@ enum Mode: String, CaseIterable {
             return "window.__PROBE_MODE__='windows';"
                 + "document.documentElement.setAttribute('data-windows-titlebar','');"
                 + "document.documentElement.style.setProperty('--dsh-windows-titlebar-height','32px');"
+        case .darwinAppBridge:
+            // The gate. Every earlier mode embedded a *copy* of the bridge, which
+            // proved the contract was implementable and said nothing about
+            // whether this implementation works. This one loads the file the app
+            // actually ships, so a regression in it fails here rather than as a
+            // white window on someone's machine.
+            return Mode.appBridgeSource()
         case .darwinProxy:
             // Enumerates the preload surface instead of guessing it: a Proxy
             // records every property read and every call dsh makes against
@@ -311,6 +470,13 @@ enum Mode: String, CaseIterable {
                 shortcuts: {
                   get: (definitions) => {
                     log('shortcuts.get definitions=' + (definitions ? definitions.length : 'null'));
+                    if (definitions && definitions.length) {
+                      /* The catalog shape is the whole basis of the host's keyboard
+                       filter — `defaults` per profile and `fixed` are what
+                       effectiveShortcuts consumes — so print it rather than only
+                       its length. See docs/dsh-desktop-contract.md §4.5. */
+                    log('shortcuts.get SAMPLE=' + JSON.stringify(definitions.slice(0, 4)));
+                    }
                     return Promise.resolve({
                       revision: '00000000-0000-4000-8000-000000000000',
                       sequence: 0,
@@ -396,6 +562,29 @@ let measureJS = """
   if (boot) out.bootCardText = (boot.innerText||'').replace(/\\s+/g,' ').slice(0, 400);
   else out.bootCardText = null;
   out.pageErrors = (window.__PROBE_ERRORS__ || []).slice(0, 20);
+
+  // How far the injected bridge actually got. Without this, a desktop-runtime
+  // failure is indistinguishable from a bad attribute: the page shows a boot card
+  // that never advances, and the only record is "24 entries did not activate",
+  // which does not say whether the script ran at all.
+  out.desktopSurface = {
+    platform: document.documentElement.getAttribute('data-platform'),
+    boot: typeof window.dshDesktopBoot,
+    bootReady: !!(window.dshDesktopBoot && window.dshDesktopBoot.ready),
+    desktop: typeof window.dshDesktop,
+    desktopKeys: window.dshDesktop ? Object.keys(window.dshDesktop) : [],
+    keyboardKeys: window.dshDesktop && window.dshDesktop.keyboard
+      ? Object.keys(window.dshDesktop.keyboard) : [],
+    shortcutsKeys: window.dshDesktop && window.dshDesktop.shortcuts
+      ? Object.keys(window.dshDesktop.shortcuts) : [],
+    shell: typeof window.__dshShellDesktop,
+    hasMessageHandler: !!(window.webkit && window.webkit.messageHandlers
+      && window.webkit.messageHandlers.dshDesktop),
+    probeMessages: (window.__dshProbeLog || []).slice(0, 12),
+    transport: !!window.__DSH_TRANSPORT__,
+    transportKeys: window.__DSH_TRANSPORT__ ? Object.keys(window.__DSH_TRANSPORT__) : [],
+    bootReadySettled: !!(window.__DSH_BOOT_READY__ && window.__DSH_BOOT_READY__.settled)
+  };
 
   // THE decisive measurement: did dsh reserve the strip for itself? The frame
   // is the box whose computed padding-top equals the published clearance.
@@ -540,10 +729,14 @@ final class Probe {
         let us = WKUserScript(source: mode.script,
                               injectionTime: .atDocumentStart,
                               forMainFrameOnly: true)
-        ucc.addUserScript(us)
-        // Capture page errors at documentStart, before dsh's own scripts run.
+        // The error trap has to be installed BEFORE the script under test, not
+        // after. A throw inside that script happens before any later script runs,
+        // so a trap installed second captures only what dsh reports afterwards
+        // and misses the actual cause — which is precisely the failure this mode
+        // exists to find. Getting this order wrong cost one confusing run.
         ucc.addUserScript(WKUserScript(source: Self.errorTrap, injectionTime: .atDocumentStart,
                                        forMainFrameOnly: true))
+        ucc.addUserScript(us)
         cfg.userContentController = ucc
         cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
@@ -699,6 +892,8 @@ do {
     logLine("failed to spawn \(dshBin): \(error)")
     exit(2)
 }
+probeSpawnedPID = dsh.pid
+atexit(reapSpawnedDsh)
 logLine("spawned dsh pid \(dsh.pid)")
 
 guard let url = dsh.waitForURL(timeout: 120) else {
@@ -723,7 +918,17 @@ var liveProbes: [Probe] = []
 var m2Dispatch = ""
 var m2DispatchExtra = ""
 
-for mode in Mode.allCases {
+let modesToRun: [Mode] = onlyMode.isEmpty
+    ? Mode.allCases
+    : (Mode.allCases.filter { $0.rawValue == onlyMode })
+if modesToRun.isEmpty {
+    logLine("no mode matches --only \(onlyMode); known: "
+        + Mode.allCases.map(\.rawValue).joined(separator: ", "))
+    exit(6)
+}
+logLine("modes: " + modesToRun.map(\.rawValue).joined(separator: ", "))
+
+for mode in modesToRun {
     logLine("--- mode \(mode.rawValue) ---")
     let probe = Probe(mode: mode)
     liveProbes.append(probe)   // kept alive on purpose; see finish()
@@ -802,6 +1007,7 @@ if mode == .darwinReal {
 
 logLine("shutting down dsh pid \(dsh.pid)")
 dsh.shutdown()
+probeSpawnedPID = -1   // reaped through the actor; atexit must not signal it twice
 let freed = waitForPortRelease(port, timeout: 30)
 report["portFreedAfterShutdown"] = freed
 report["pidStillAliveAfterShutdown"] = kill(dsh.pid, 0) == 0
