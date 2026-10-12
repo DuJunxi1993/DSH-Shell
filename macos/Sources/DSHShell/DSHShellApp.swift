@@ -8,7 +8,17 @@ struct DSHShellApp: App {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup(id: MainScene.id) {
+        // `Window`, not `WindowGroup`. A `WindowGroup` scene exists precisely so the
+        // app can have several instances of it, and `openWindow(id:)` takes that
+        // up: every request opens another one. The status item's "show" did
+        // exactly that, so each press added a window — each with its own
+        // `WKWebView`, its own bridge attach, and its own live connection to
+        // dsh. Six presses, six conversations, one dsh.
+        //
+        // `Window` is the single-instance scene: opening it again focuses the
+        // window that is already there. That is the whole point of this app, and
+        // it is now stated by the type rather than enforced by hope.
+        Window(MainScene.title, id: MainScene.id) {
             ShellScene()
                 .environmentObject(appDelegate.coordinator)
                 .frame(minWidth: 800, minHeight: 600)
@@ -49,21 +59,22 @@ struct DSHShellApp: App {
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
-            // Zoom lives in View, not in a shell-specific group, because
-            // ⌘+/- is where a Mac user expects it and because WebKit answers
-            // ⌘+ itself — these items set the same state the webview reports
-            // back, so the two cannot drift apart.
+            // The zoom *ladder* lives in the status item's menu, which is an
+            // `NSMenu` and can hold a real submenu. It cannot live here: SwiftUI's
+            // main menu bar has no nested-menu support at all — a `Menu` is a
+            // `View`, not `Commands`, so putting one in `.commands` does not
+            // compile. The step that macOS users actually reach for stays.
             CommandGroup(after: .toolbar) {
                 Button("Zoom In") {
-                    appDelegate.coordinator.stepZoom(10)
+                    appDelegate.coordinator.stepZoom(ZoomLadder.step)
                 }
                 .keyboardShortcut("+", modifiers: .command)
                 Button("Zoom Out") {
-                    appDelegate.coordinator.stepZoom(-10)
+                    appDelegate.coordinator.stepZoom(-ZoomLadder.step)
                 }
                 .keyboardShortcut("-", modifiers: .command)
                 Button("Actual Size") {
-                    appDelegate.coordinator.setZoom(100)
+                    appDelegate.coordinator.setZoom(ZoomLadder.default)
                 }
                 .keyboardShortcut("0", modifiers: .command)
             }
@@ -75,7 +86,10 @@ struct DSHShellApp: App {
             }
         }
 
-        WindowGroup(id: MainScene.sessionsID) {
+        // Same reasoning as the main scene: one sessions panel, focused rather than
+        // duplicated. `WindowGroup` here would let every click of "Sessions…"
+        // stack another panel.
+        Window(MainScene.sessionsTitle, id: MainScene.sessionsID) {
             SessionPanelView()
         }
         .windowResizability(.contentMinSize)

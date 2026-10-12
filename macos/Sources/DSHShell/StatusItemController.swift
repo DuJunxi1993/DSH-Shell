@@ -51,8 +51,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.addItem(withTitle: "显示 / 隐藏", action: #selector(toggleWindow), keyEquivalent: "")
             .target = self
-        menu.addItem(withTitle: "缩放复位 100%", action: #selector(resetZoom), keyEquivalent: "")
-            .target = self
+        menu.addItem(zoomSubmenu())
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出（关闭 dsh）", action: #selector(quit), keyEquivalent: "q")
             .target = self
@@ -64,9 +63,42 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let center = NotificationCenter.default
         observers.append(
             center.addObserver(forName: .dshShellStateChanged, object: nil, queue: .main) {
-                [weak self] _ in self?.refreshTitle()
+                [weak self] _ in MainActor.assumeIsolated { self?.refreshTitle() }
             })
         refreshTitle()
+    }
+
+    /// Every zoom rung, as a submenu of the status item.
+    ///
+    /// A submenu rather than "放大/缩小" because the ladder has sixteen rungs and
+    /// the ones worth reaching are not adjacent: 50% for a dense log, 200% for
+    /// small text across the room. Stepping there one 10% press at a time is the
+    /// reason the ladder used to stop at 100 — the far rungs were not worth
+    /// walking to.
+    ///
+    /// Built from `ZoomLadder.rungs` so it cannot offer a percentage that
+    /// ⌘+/- could never produce.
+    private func zoomSubmenu() -> NSMenuItem {
+        let parent = NSMenuItem(title: "缩放", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.title = "缩放"
+
+        for rung in ZoomLadder.rungs {
+            let item = NSMenuItem(title: "\(rung)%", action: #selector(setZoom(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = rung
+            // A radio group rather than plain checks: exactly one rung is ever
+            // set, and the menu items are not toggles.
+            item.state = (rung == coordinator?.zoomPercent) ? .on : .off
+            submenu.addItem(item)
+        }
+        submenu.addItem(.separator())
+        let reset = NSMenuItem(title: "实际大小 (100%)", action: #selector(resetZoom), keyEquivalent: "")
+        reset.target = self
+        submenu.addItem(reset)
+
+        parent.submenu = submenu
+        return parent
     }
 
     /// A template image, or nothing.
@@ -100,10 +132,27 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
 
+    /// Re-stamped every time the menu opens, because the zoom can be changed
+    /// from three places — here, ⌘+/⌘-, and the settings field — and a checkmark
+    /// frozen at launch is worse than none.
     func menuWillOpen(_ menu: NSMenu) {
-        refreshTitle()
-        for item in menu.items where item.action == #selector(resetZoom) {
-            item.isEnabled = (coordinator?.zoomPercent ?? 100) != 100
+        MainActor.assumeIsolated {
+            refreshTitle()
+            refreshZoomChecks(in: menu)
+        }
+    }
+
+    private func refreshZoomChecks(in menu: NSMenu) {
+        let current = coordinator?.zoomPercent ?? ZoomLadder.default
+        for item in menu.items {
+            guard let submenu = item.submenu else { continue }
+            for rung in submenu.items {
+                guard let value = rung.representedObject as? Int else { continue }
+                rung.state = (value == current) ? .on : .off
+            }
+            for rung in submenu.items where rung.action == #selector(resetZoom) {
+                rung.isEnabled = current != ZoomLadder.default
+            }
         }
     }
 
@@ -132,17 +181,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func toggleWindow() {
         guard let coordinator else { return }
         if coordinator.isMainWindowVisible {
-            // Deliberately `orderOut` and not `miniaturize`: minimising leaves a
-            // window in the Dock's window list, which is a different thing and
-            // harder to get back than this one.
-            coordinator.mainWindow?.orderOut(nil)
+            coordinator.hideMainWindow()
         } else {
             coordinator.showMainWindow()
         }
     }
 
+    /// Pick one rung. `representedObject` carries the number because the title
+    /// is a localised string and "50%" is not a number anyone should parse back
+    /// out of it.
+    @objc private func setZoom(_ sender: NSMenuItem) {
+        guard let rung = sender.representedObject as? Int else { return }
+        coordinator?.setZoom(rung)
+    }
+
     @objc private func resetZoom() {
-        coordinator?.setZoom(100)
+        coordinator?.setZoom(ZoomLadder.default)
     }
 
     @objc private func quit() {

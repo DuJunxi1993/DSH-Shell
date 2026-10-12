@@ -19,31 +19,68 @@ final class ZoomAndOriginTests: XCTestCase {
     func testZoomClampsToTheRange() {
         XCTAssertEqual(ZoomLadder.snap(0), 50)
         XCTAssertEqual(ZoomLadder.snap(-100), 50)
-        XCTAssertEqual(ZoomLadder.snap(1000), 100)
+        XCTAssertEqual(ZoomLadder.snap(1000), 200)
     }
 
     func testZoomIsAlwaysAMultipleOfTheStep() {
-        for value in 0...200 {
+        for value in 0...400 {
             XCTAssertEqual(ZoomLadder.snap(value) % ZoomLadder.step, 0, "snap(\(value))")
         }
     }
 
     func testNextWalksTheLadderAndStopsAtTheEnds() {
         XCTAssertEqual(ZoomLadder.next(from: 50, delta: 10), 60)
-        XCTAssertEqual(ZoomLadder.next(from: 100, delta: 10), 100)
+        XCTAssertEqual(ZoomLadder.next(from: 100, delta: 10), 110)
         XCTAssertEqual(ZoomLadder.next(from: 50, delta: -10), 50)
         XCTAssertEqual(ZoomLadder.next(from: 100, delta: -10), 90)
+        XCTAssertEqual(ZoomLadder.next(from: 200, delta: 10), 200)
     }
 
-    /// An oversized delta from a corrupted settings file must not escape the
-    /// range, and must not overflow either.
+    /// Past 100% the user is reading dsh as a smaller window, not a bigger one —
+    /// measured, that costs a narrower CSS viewport and nothing else.
+    func testTheLadderGoesPast100() {
+        XCTAssertEqual(ZoomLadder.next(from: 100, delta: 10), 110)
+        XCTAssertEqual(ZoomLadder.next(from: 190, delta: 10), 200)
+        XCTAssertEqual(ZoomLadder.next(from: 200, delta: 10), 200, "and stops there")
+    }
+
+    /// The status item's Zoom submenu enumerates this, so a rung it offers but
+    /// stepping cannot reach — or the reverse — is a menu that lies.
+    func testTheRungsAreExactlyTheWalkableRange() {
+        XCTAssertEqual(ZoomLadder.rungs.first, ZoomLadder.minimum)
+        XCTAssertEqual(ZoomLadder.rungs.last, ZoomLadder.maximum)
+        XCTAssertEqual(ZoomLadder.rungs, Array(ZoomLadder.rungs).sorted())
+        XCTAssertEqual(Set(ZoomLadder.rungs).count, ZoomLadder.rungs.count, "no duplicates")
+        for value in ZoomLadder.rungs {
+            XCTAssertEqual(ZoomLadder.snap(value), value, "\(value) is not a rung")
+        }
+        // Every rung is one step from its neighbour.
+        for (lower, higher) in zip(ZoomLadder.rungs, ZoomLadder.rungs.dropFirst()) {
+            XCTAssertEqual(ZoomLadder.next(from: lower, delta: ZoomLadder.step), higher)
+        }
+    }
+
+    /// A delta from a corrupted settings file must neither overflow nor escape
+    /// the ladder.
+    ///
+    /// Asserted as "lands on a rung" rather than a specific value, because that
+    /// is what the guarantee is. The previous version asserted `100`, and it
+    /// passed for the wrong reason: with a ceiling of 100, a delta clamped to
+    /// `step * 10` overshot to 150 and was clamped back down to 100 by accident.
+    /// Raising the ceiling to 200 turned that coincidence into `150` and exposed
+    /// that the test had never been checking overflow at all.
     func testNextSurvivesAnOversizedDelta() {
-        XCTAssertEqual(ZoomLadder.next(from: 50, delta: Int.max), 100)
-        XCTAssertEqual(ZoomLadder.next(from: 100, delta: Int.min), 50)
+        for (from, delta) in [(50, Int.max), (200, Int.min), (50, Int.min),
+                              (200, Int.max), (0, Int.max), (0, Int.min),
+                              (Int.max, Int.max), (Int.min, Int.min)] {
+            let next = ZoomLadder.next(from: from, delta: delta)
+            XCTAssertTrue(ZoomLadder.rungs.contains(next),
+                          "next(from: \(from), delta: \(delta)) = \(next), off the ladder")
+        }
     }
 
     func testNextIsIdempotentOnAnAlreadySnappedValue() {
-        for value in stride(from: 50, through: 100, by: 10) {
+        for value in ZoomLadder.rungs {
             XCTAssertEqual(ZoomLadder.next(from: value, delta: 0), value)
         }
     }

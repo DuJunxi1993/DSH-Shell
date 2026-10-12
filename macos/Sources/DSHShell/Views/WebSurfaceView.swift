@@ -33,6 +33,13 @@ struct WebSurfaceView: NSViewRepresentable {
     /// outlive every view update (SwiftUI recreates `self` freely), and it has to
     /// be released explicitly when the app quits so the key monitor stops.
     let desktopBridge: DshDesktopBridge?
+    /// Hands back the window this webview is actually in.
+    ///
+    /// Preferred over looking one up in `NSApp.windows`, which can only guess:
+    /// with more than one window open it returned whichever came first in
+    /// z-order, so the status item and the title bar could end up driving a
+    /// window nobody was looking at.
+    var onWindowResolved: ((NSWindow) -> Void)?
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var bridge: WebBridge?
@@ -40,6 +47,17 @@ struct WebSurfaceView: NSViewRepresentable {
         /// that created it; the page keeps calling into it for the webview's
         /// whole life.
         var desktopBridge: DshDesktopBridge?
+        /// The endpoint this webview has already been pointed at.
+        ///
+        /// Deliberately not derived from `webView.url`: dsh consumes the
+        /// `?token=` on first load, so that value settles on a URL the shell
+        /// never handed out and differs from the one we are holding. Comparing
+        /// against what *we* loaded instead of what WebKit currently displays is
+        /// what turns "already loaded" into a question with a stable answer.
+        var loadedEndpoint: URL?
+        /// The zoom *we* last wrote, so a change WebKit made itself is read as
+        /// the user's and not undone. See `apply(_:to:context:)`.
+        var appliedZoom: CGFloat?
         /// Strong owner of the `WKUIDelegate`.
         ///
         /// `WKWebView.UIDelegate` is declared `weak` (see `WKWebView.h`:
@@ -102,7 +120,7 @@ struct WebSurfaceView: NSViewRepresentable {
         context.coordinator.uiLogger.notice("webView installed — uiDelegate=\(String(describing: view.uiDelegate), privacy: .public) navDelegate=\(String(describing: view.navigationDelegate), privacy: .public) url=\(url.absoluteString, privacy: .public)")
 
         context.coordinator.allowedOrigin = URLOrigin.of(url)
-        apply(zoomPercent, to: view)
+        apply(zoomPercent, to: view, context: context)
 
         // The desktop contract goes in before `view.load`, so `data-platform` is
         // set before any of dsh's own scripts run. Its bridge script shares the
@@ -143,7 +161,7 @@ struct WebSurfaceView: NSViewRepresentable {
             webView.navigationDelegate = context.coordinator
         }
         context.coordinator.allowedOrigin = URLOrigin.of(url)
-        apply(zoomPercent, to: webView)
+        apply(zoomPercent, to: webView, context: context)
         // SwiftUI can hand us a different webview than the one the bridge was
         // attached to; a desktop contract injected into the old one is not
         // running in the new one, and dsh would boot as a browser document with
@@ -151,17 +169,66 @@ struct WebSurfaceView: NSViewRepresentable {
         desktopBridge?.attach(to: webView)
         desktopBridge?.installKeyMonitor()
         context.coordinator.desktopBridge = desktopBridge
-        if webView.url != url {
+        // `webView.window`, not a search over `NSApp.windows` for one containing
+        // a `WKWebView`. The search returned the first such window in z-order,
+        // which is only ever the right one while there is exactly one — and
+        // `WebSurfaceView` already knows which window it is in.
+        //
+        // Nil until the view is in a window, which is why this is repeated here
+        // rather than done once in `makeNSView`.
+        if let window = webView.window {
+            onWindowResolved?(window)
+        }
+        // dsh answers the first request for `/?token=…` with a redirect that sets a
+        // cookie, so from then on `webView.url` is `http://127.0.0.1:3080/` —
+        // the token is gone from the URL, permanently and by design.
+        //
+        // Comparing that against the URL we were handed therefore said "changed"
+        // on *every* `updateNSView`, forever. SwiftUI calls it whenever any
+        // observed state moves — the page title, a bridge event, a console line
+        // — so the page reloaded in a loop: measured 51 reloads in 90 seconds,
+        // each one re-running the desktop bridge and re-subscribing to native
+        // keyboard input. The bridge attached once, the page loaded 51 times.
+        //
+        // What this actually needs to know is "has this webview already been
+        // pointed at this endpoint", which is a question about us, not about
+        // WebKit's current address bar. A new token from a restarted dsh is a
+        // different endpoint and must load; the same token is the same endpoint
+        // and must not.
+        if context.coordinator.loadedEndpoint != url {
+            context.coordinator.loadedEndpoint = url
             webView.load(URLRequest(url: url))
         }
     }
 
-    private func apply(_ percent: Int, to view: WKWebView) {
-        let clamped = min(100, max(50, percent))
-        let scale = CGFloat(clamped) / 100.0
+    /// Push `percent` onto the webview — but only when that is what the user
+    /// last asked for.
+    ///
+    /// `updateNSView` runs on every state change, so writing unconditionally is
+    /// not "apply the preference", it is "the preference overrules whatever
+    /// WebKit did last". ⌘+ in WebKit's own View menu, and ⌘-pinch, both move
+    /// `pageZoom`; the next update silently put it back, and the key looked
+    /// broken. That is what capped zoom at 100% in practice — not the ladder,
+    /// but a value that could never be moved away from the one we last set.
+    ///
+    /// `appliedZoom` is what *we* last wrote. When the webview now holds
+    /// something else, the page moved it and we leave it alone; the next
+    /// preference change — menu, status item, settings — arrives as a different
+    /// number and takes control back. Nothing needs to know which happened.
+    private func apply(_ percent: Int, to view: WKWebView, context: Context) {
+        let snapped = ZoomLadder.snap(percent)
+        let scale = CGFloat(snapped) / 100.0
         guard abs(view.pageZoom - scale) > 0.001 else { return }
+        if let applied = context.coordinator.appliedZoom,
+           abs(view.pageZoom - applied) <= 0.01 {
+            // The webview already holds the value we asked for, to WebKit's own
+            // rounding. Writing again would look like a change and make us
+            // permanently believe we own the zoom.
+            return
+        }
         view.pageZoom = scale
-        Log.debug("page zoom -> \(clamped)%")
+        context.coordinator.appliedZoom = scale
+        Log.debug("page zoom -> \(snapped)%")
     }
 }
 

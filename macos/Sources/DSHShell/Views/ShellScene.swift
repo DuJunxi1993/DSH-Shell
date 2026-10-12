@@ -1,14 +1,19 @@
 import SwiftUI
 import AppKit
-import WebKit
 import DSHShellCore
 import OSLog
 
-/// Identifies the main scene across the app: `WindowGroup(id:)` here, and
+/// Identifies the main scene across the app: `Window(_:id:)` here, and
 /// `openWindow(id:)` from the status item.
+///
+/// The titles are what the Window menu shows before a session sets its own, so
+/// they are the user-facing names rather than the identifiers.
 enum MainScene {
     static let id = "dsh"
+    static let title = "dsh"
+
     static let sessionsID = "sessions"
+    static let sessionsTitle = "Sessions"
 }
 
 /// Top-level scene. Shows one of three states: a loading overlay, the WKWebView,
@@ -58,9 +63,9 @@ struct ShellScene: View {
             WebSurfaceView(url: url, bridgeClient: coordinator,
                            zoomPercent: coordinator.zoomPercent,
                            allowedOrigin: URLOrigin.of(url),
-                           desktopBridge: coordinator.desktopBridge)
+                           desktopBridge: coordinator.desktopBridge,
+                           onWindowResolved: { coordinator.attach(window: $0) })
                 .ignoresSafeArea(edges: [.top, .bottom])
-                .onAppear { attachWindow() }
         case .failed(let reason):
             ErrorView(reason: reason) {
                 coordinator.reload()
@@ -73,20 +78,6 @@ struct ShellScene: View {
             LoadingView(title: "Connecting to existing dsh instance…")
         case .idle:
             LoadingView(title: "Idle")
-        }
-    }
-
-    /// Hand the coordinator the window the web surface ended up in.
-    ///
-    /// `onAppear` rather than `onDisappear`-style teardown: closing the sessions
-    /// panel must not tear down the main window's dsh, which is what the
-    /// previous `onDisappear { coordinator.shutdown() }` did.
-    private func attachWindow() {
-        DispatchQueue.main.async {
-            guard let window = NSApp.windows.first(where: { $0.contentView != nil
-                && $0.contentView?.subviews.contains(where: { $0 is WKWebView }) == true })
-            else { return }
-            coordinator.attach(window: window)
         }
     }
 
@@ -165,22 +156,27 @@ private final class TitlebarConfiguringNSView: NSView {
         // synchronously from these notifications happens before the next
         // frame composes, so the flash never becomes visible. The timer
         // remains as a backstop for rebuilds/restoration.
+        // `MainActor.assumeIsolated` rather than hopping through a `Task`: the
+        // whole point of these callbacks is to re-assert the style mask
+        // *before the next frame composes*, and a task hop gives that frame
+        // away. `queue: .main` above is what makes the assertion sound — these
+        // are main-queue deliveries, so the isolation holds.
         let center = NotificationCenter.default
         observers = [
             center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
-                self?.applyConfiguration()
+                MainActor.assumeIsolated { self?.applyConfiguration() }
             },
             center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
-                self?.applyConfiguration()
+                MainActor.assumeIsolated { self?.applyConfiguration() }
             },
             center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
-                self?.applyConfiguration()
-            }
+                MainActor.assumeIsolated { self?.applyConfiguration() }
+            },
         ]
 
         watchdog?.invalidate()
-        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
-            self?.applyConfiguration()
+        let timer = Timer(timeInterval: 1.5, repeats: true) { _ in
+            MainActor.assumeIsolated { self.applyConfiguration() }
         }
         RunLoop.main.add(timer, forMode: .common)
         watchdog = timer

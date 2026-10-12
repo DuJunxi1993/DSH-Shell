@@ -43,6 +43,10 @@ let trustedHost = "127.0.0.1:\(port)"
 /// appears on the last load is indistinguishable from a bug in that mode's
 /// script. Running a mode alone is what separates the two.
 let onlyMode = argValue("--only", "")
+/// Page zoom to measure at, as a percentage. The shell caps its own ladder at
+/// 100; this measures what dsh actually does past that, so the cap is an
+/// informed decision rather than an inherited one.
+let zoomPercent = Double(argValue("--zoom", "100")) ?? 100
 
 try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
 try? FileManager.default.createDirectory(atPath: dshHome, withIntermediateDirectories: true)
@@ -547,11 +551,31 @@ let measureJS = """
   }
 
   const vw = innerWidth, vh = innerHeight;
+  /* Zoom above 100% shrinks the CSS viewport, which can cross a responsive
+     breakpoint. Everything below measures whether it actually did, because
+     "the shell caps zoom at 100" is only a defensible rule if going past it
+     breaks the page. */
+  const out_zoom = { pageZoom: null, cssWidth: 0, layoutWidth: 0,
+                     columnsCollapsed: 0, sidebarVisible: false,
+                     matches: {}, horizontalOverflow: false };
   const out = { mode: window.__PROBE_MODE__ ?? null,
                 vw, vh, readyState: document.readyState, vars,
                 htmlAttrs: {}, dragRegionCount: 0,
                 appRegion: { supports: false, computed: null, webkitSupported: false },
-                columns: [], topStrip: [], leadingSeat: null };
+                columns: [], topStrip: [], leadingSeat: null, zoom: out_zoom };
+  out_zoom.pageZoom = Math.round(visualViewport ? visualViewport.scale * 100 : 0) / 100;
+  out_zoom.cssWidth = Math.round(document.documentElement.clientWidth);
+  out_zoom.layoutWidth = document.documentElement.scrollWidth;
+  out_zoom.horizontalOverflow = out_zoom.layoutWidth > out_zoom.cssWidth + 1;
+  for (const q of ['(max-width: 900px)', '(max-width: 700px)', '(max-width: 480px)']) {
+    out_zoom.matches[q] = matchMedia(q).matches;
+  }
+  const sidebar = document.querySelector('[data-pane="sidebar"]');
+  if (sidebar) {
+    const r = sidebar.getBoundingClientRect();
+    out_zoom.sidebarVisible = r.width > 1 && r.height > 1;
+    out_zoom.columnsCollapsed = sidebar.closest('[style*="--dsh-frame-leading-clearance"]') ? 1 : 0;
+  }
 
   for (const a of html.attributes) out.htmlAttrs[a.name] = a.value;
 
@@ -712,6 +736,7 @@ let reMeasureJS = """
 final class Probe {
     var webView: WKWebView!
     var window: NSWindow!
+    var zoomPercent: Double = 100
     let mode: Mode
     var result: [String: Any] = [:]
     var done = false
@@ -797,6 +822,13 @@ final class Probe {
 
     func load(_ url: URL) {
         webView.load(URLRequest(url: url))
+    }
+
+    /// Set the page zoom the way the shell does, without letting WebKit's own
+    /// menu clamp it. `--zoom <percent>` on the command line.
+    func setZoom(_ percent: Double) {
+        zoomPercent = percent
+        webView.pageZoom = CGFloat(percent) / 100.0
     }
 
     /// Poll until dsh's boot card is gone, then measure. The boot card sets a
@@ -932,6 +964,8 @@ for mode in modesToRun {
     logLine("--- mode \(mode.rawValue) ---")
     let probe = Probe(mode: mode)
     liveProbes.append(probe)   // kept alive on purpose; see finish()
+    probe.setZoom(zoomPercent)
+    logLine("zoom: \(Int(zoomPercent))%")
     probe.load(url)
     // let navigation commit before measuring
     let settle = Date().addingTimeInterval(3)

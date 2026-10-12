@@ -18,8 +18,15 @@ pub enum LaunchMode {
 
 /// Zoom ladder. Kept as constants rather than baked into the UI so raising the
 /// ceiling later is a one-line change, not a redesign of the control.
+///
+/// The ceiling is 200, matching `ZoomLadder` on the macOS shell. It was 100
+/// there and here, and nothing was defending it: measured against real dsh
+/// (`macos/tools/dsh-probe --zoom`), 200% costs nothing but a narrower CSS
+/// viewport, which crosses dsh's ≤900px and ≤700px breakpoints without a single
+/// page error or horizontal overflow. A cap that only ever denied a safe choice
+/// is a cap worth raising.
 pub const ZOOM_MIN: u8 = 50;
-pub const ZOOM_MAX: u8 = 100;
+pub const ZOOM_MAX: u8 = 200;
 pub const ZOOM_STEP: u8 = 10;
 pub const ZOOM_DEFAULT: u8 = 100;
 

@@ -200,23 +200,70 @@ final class AppCoordinator: ObservableObject {
         self.openMainScene = openMainScene
     }
 
-    /// Put the main window on screen, creating it if the scene is closed.
+    /// Put the main window on screen.
     ///
-    /// The menu-bar item and ⌘-click on the Dock icon are two ways to ask for
-    /// exactly this, and only one of them can reach the scene:
+    /// **An existing window is raised. A new one is only created when there is
+    /// none** — and that branch is the whole reason this is two steps rather than
+    /// an unconditional `openWindow(id:)`.
     ///
-    /// - Clicking the Dock icon makes macOS send
-    ///   `applicationShouldHandleReopen`, which SwiftUI answers by rebuilding
-    ///   the scene. That is why the Dock icon always worked.
-    /// - The menu-bar item used to do `NSApp.windows.first?.makeKeyAndOrderFront`.
-    ///   A closed `WindowGroup` scene keeps no `NSWindow` — it is deallocated —
-    ///   so that lookup found nothing, or found the settings window, and the
-    ///   click did nothing at all. "It minimises instead of hiding" was the same
-    ///   bug seen from the other side: `orderOut` leaves the app with no key
-    ///   window, which looks like a minimise.
+    /// Both callers used to take the unconditional path, and both could not work:
+    ///
+    /// - The menu-bar item did `NSApp.windows.first?.makeKeyAndOrderFront`. A
+    ///   closed scene keeps no `NSWindow` — it is deallocated — so that found
+    ///   nothing, or found the settings window, and the click did nothing. The
+    ///   "it minimises instead of hiding" impression was the same bug from the
+    ///   other side: `orderOut` leaves the app with no key window and a live Dock
+    ///   icon, which is what a minimise looks like.
+    /// - Switching to `openWindow(id:)` fixed that and broke the next thing: on a
+    ///   `WindowGroup` scene, *every* call opens another window. Each press of the
+    ///   menu item added one, with its own `WKWebView` and its own dsh connection.
+    ///
+    /// So the window that is already on screen is raised directly — which is what
+    /// the user asked for and what no scene type can take away — and
+    /// `openWindow(id:)` is left to do the only job it is still needed for,
+    /// which is making a window where none exists.
+    ///
+    /// Clicking the Dock icon goes through `applicationShouldHandleReopen`
+    /// instead, which macOS and SwiftUI agree on; it is not reimplemented here.
     func showMainWindow() {
-        openMainScene?()
+        if let window = mainWindow {
+            // Read before raising. After `makeKeyAndOrderFront` it is true by
+            // definition, so logging it afterwards says nothing — and "visible:
+            // true" on every line is exactly the shape a log has when the
+            // branch above it is dead.
+            let wasVisible = window.isVisible
+            window.makeKeyAndOrderFront(nil)
+            Log.info("showMainWindow: raised window #\(window.windowNumber) "
+                     + "(was \(wasVisible ? "visible" : "hidden"), "
+                     + "\(Self.visibleWindowCount) visible window(s))")
+        } else {
+            openMainScene?()
+            Log.info("showMainWindow: no window exists, asked the scene to make one "
+                     + "(\(Self.visibleWindowCount) visible window(s))")
+        }
         NSApp.activate()
+    }
+
+    /// Takes the main window off screen without destroying it.
+    ///
+    /// `orderOut` rather than `miniaturize`: a minimised window stays in the
+    /// Dock's window list, which is a different thing to have to undo.
+    func hideMainWindow() {
+        guard let window = mainWindow else { return }
+        window.orderOut(nil)
+        Log.info("hideMainWindow: hid window #\(window.windowNumber) "
+                 + "(\(Self.visibleWindowCount) visible window(s))")
+    }
+
+    /// On-screen windows belonging to this app, excluding ordered-out and
+    /// SwiftUI-internal ones.
+    ///
+    /// `NSApp.windows.count` is not this: it counts every window the app has ever
+    /// had, including hidden ones and the ones SwiftUI keeps around, so it read
+    /// "7" on a build that had exactly one window on screen. A number that does
+    /// not mean what it looks like is worse than no number in a diagnostic.
+    private static var visibleWindowCount: Int {
+        NSApp.windows.filter(\.isVisible).count
     }
 
     /// Whether the main window is currently on screen.

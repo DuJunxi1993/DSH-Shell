@@ -31,12 +31,12 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | One-command Release `.app` | ✅ `./scripts/build-app.sh`, ad-hoc signed, arm64 |
 | A launch that never leaves "Launching dsh web…" | ✅ was the pipe reader, not dsh — see below |
 | dsh's own stdout/stderr in the log, plus a diagnosis on timeout | ✅ previously the log held one line and nothing about dsh |
-| Unit tests for `DSHShellCore` | ✅ 153 passing, 0 failing |
+| Unit tests for `DSHShellCore` | ✅ 155 passing, 0 failing |
 | Hermetic lifecycle tests against `stub-dsh` | ✅ 13, every one ends by asserting the port is bindable again |
 | Single instance — a second launch raises the window, never fights for the port | ✅ `flock`, checked before anything else |
 | Menu-bar status item: show/hide, zoom reset, exit | ✅ carries the connection state; restores the window through the SwiftUI scene, not by hunting for an `NSWindow` that a closed scene no longer owns |
 | External links go to the default browser; `target=_blank` handled | ✅ one origin allowed, `http(s)` only |
-| Page zoom 50–100% in 10% steps, persisted | ✅ menu + status item |
+| Page zoom 50–200% in 10% steps, persisted | ✅ ⌘+/⌘-, status-item submenu listing every rung |
 | Daily rotating file log + `crash.log`, dsh's own output included | ✅ `~/Library/Application Support/DSHShell/logs/`; the test suite logs elsewhere so stub output cannot be mistaken for evidence |
 | dsh desktop-contract self-check reported to the log | ✅ `platform`, `--dsh-frame-*`, `-webkit-app-region` |
 | `swift build` and `xcodebuild` both clean | ✅ 0 errors; both are run by `build-app.sh` because `swift test` alone never compiles the app target |
@@ -116,7 +116,7 @@ Then ⌘R. The generated **shared scheme is committed**, which is what makes `-s
 ### Testing
 
 ```sh
-swift test      # 153 hermetic tests
+swift test      # 155 hermetic tests
 swift build     # compiles the app target too — `swift test` does NOT
 ```
 
@@ -154,7 +154,27 @@ Settings live at `~/Library/Application Support/dsh-swiftUI/settings.json`. Defa
 | `trustedHosts` | Hosts appended to `dsh web --trusted-host` (repeatable). |
 | `spawnTimeoutSeconds` | How long to wait for the `dsh web:` URL line on stdout before failing. Decides success or failure. |
 | `spawnStallReportSeconds` | How long dsh may be silent before the log explains what it is doing. **Not** a timeout — the one above still decides. Raise it if your dsh legitimately needs longer to load plugins. |
+| `zoomPercent` | Page zoom, 50–200 in steps of 10. See "Zoom" below. |
 | `autoRestartOnCrash` | Bounded exponential back-off restart on unexpected child exit: 3 attempts at 2s, 4s and 8s. The counter resets once an endpoint resolves, so a dsh that crashes once an hour is not treated as a crash loop. |
+
+### Zoom
+
+50–200% in 10% steps, on a ladder that lives in exactly one place (`ZoomLadder`) because the menu step, the status-item submenu and the settings file all have to agree.
+
+The ceiling was 100% and nothing was defending it. Measured against real dsh with the probe (`--zoom`):
+
+| zoom | CSS viewport | overflow | breakpoint crossed | page errors |
+|---|---|---|---|---|
+| 100% | 1280px | none | — | 0 |
+| 125% | 1024px | none | — | 0 |
+| 150% | 854px | none | ≤900px | 0 |
+| 200% | 640px | none | ≤900px, ≤700px | 0 |
+
+Past ~150% you are choosing to read dsh as a small window, not a bigger one — the CSS viewport narrows and dsh reflows. Nothing breaks: no errors, no horizontal overflow, clean boot. `windows/src-tauri/src/config.rs` carries the same ladder.
+
+Reachable three ways: ⌘+/⌘- and ⌘0 in the main menu bar, the **Zoom** submenu of the status item (every rung, check-marked), and the settings field. The submenu lives there rather than in the main menu bar because SwiftUI's main menu bar cannot host a nested menu — a `Menu` is a `View`, not `Commands`.
+
+WebKit's own ⌘+ and ⌘-pinch still work and are not overridden: the shell only pushes a zoom when the preference changed, not on every view update. The previous unconditional write silently undid the page's own zoom on the next state change, which is what made ⌘+ look stuck.
 
 The shell forwards no working directory to `dsh web` — the dsh SPA picks its own workspace inside the browser UI.
 

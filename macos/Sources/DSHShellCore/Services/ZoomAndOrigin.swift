@@ -1,6 +1,6 @@
 import Foundation
 
-/// The page-zoom ladder: 50–100 in 10% steps.
+/// The page-zoom ladder: 50–200 in 10% steps.
 ///
 /// It lives in `DSHShellCore` rather than beside the menu that uses it, for the
 /// same reason `config.rs` owns it on the Windows side: the menu's −/+, the
@@ -10,11 +10,38 @@ import Foundation
 ///
 /// Public so the app layer can ask "what does the next step look like" without
 /// re-implementing the clamp.
+///
+/// ## Why the top used to be 100
+///
+/// It was, and nothing was defending it. Measured against real dsh by the probe
+/// (`--zoom`), zooming past it costs nothing but layout:
+///
+/// | zoom | CSS viewport | horizontal overflow | breakpoint crossed | page errors |
+/// |---|---|---|---|---|
+/// | 100% | 1280px | none | — | 0 |
+/// | 125% | 1024px | none | — | 0 |
+/// | 150% | 854px | none | ≤900px | 0 |
+/// | 200% | 640px | none | ≤900px, ≤700px | 0 |
+///
+/// So a dsh at 200% boots clean and reflows into its narrow layout — which is
+/// the honest trade: past ~150% you are choosing to read dsh as a small window,
+/// not making it bigger. Capping at 100% did not prevent that, it just denied a
+/// choice that turns out to be available and safe. 200 is the point where the
+/// ≤700px layout takes over and further zooming only makes it smaller.
 public enum ZoomLadder {
     public static let minimum = 50
-    public static let maximum = 100
+    public static let maximum = 200
     public static let step = 10
     public static let `default` = 100
+
+    /// Every rung, ascending.
+    ///
+    /// Exists so the Zoom submenu cannot drift from the ladder: it enumerates
+    /// this rather than writing out its own percentages, which is how a menu
+    /// ends up offering a 130% that nothing can produce.
+    public static let rungs: [Int] = {
+        stride(from: minimum, through: maximum, by: step).map { $0 }
+    }()
 
     /// Clamp into range, then snap to the nearest rung.
     ///
