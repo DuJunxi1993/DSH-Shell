@@ -55,9 +55,10 @@ struct WebSurfaceView: NSViewRepresentable {
         /// against what *we* loaded instead of what WebKit currently displays is
         /// what turns "already loaded" into a question with a stable answer.
         var loadedEndpoint: URL?
-        /// The zoom *we* last wrote, so a change WebKit made itself is read as
-        /// the user's and not undone. See `apply(_:to:context:)`.
-        var appliedZoom: CGFloat?
+        /// The zoom preference this shell last pushed, so a pinch or WebKit's
+        /// own zoom is not undone, and a menu step still takes effect.
+        /// See `ZoomDecision`.
+        var appliedPercent: Int?
         /// Strong owner of the `WKUIDelegate`.
         ///
         /// `WKWebView.UIDelegate` is declared `weak` (see `WKWebView.h`:
@@ -201,34 +202,25 @@ struct WebSurfaceView: NSViewRepresentable {
         }
     }
 
-    /// Push `percent` onto the webview — but only when that is what the user
-    /// last asked for.
+    /// Push the zoom onto the webview, but only when our preference moved.
     ///
-    /// `updateNSView` runs on every state change, so writing unconditionally is
-    /// not "apply the preference", it is "the preference overrules whatever
-    /// WebKit did last". ⌘+ in WebKit's own View menu, and ⌘-pinch, both move
-    /// `pageZoom`; the next update silently put it back, and the key looked
-    /// broken. That is what capped zoom at 100% in practice — not the ladder,
-    /// but a value that could never be moved away from the one we last set.
-    ///
-    /// `appliedZoom` is what *we* last wrote. When the webview now holds
-    /// something else, the page moved it and we leave it alone; the next
-    /// preference change — menu, status item, settings — arrives as a different
-    /// number and takes control back. Nothing needs to know which happened.
+    /// The rule is deliberately about `percent` and never about the page's
+    /// current `pageZoom`. Writing unconditionally made every `updateNSView`
+    /// overrule WebKit — which broke ⌘-pinch. Comparing the page against the
+    /// value we last wrote was the opposite mistake and worse: it skipped
+    /// exactly when a new preference arrived, so the first ⌘- worked and every
+    /// one after it was dropped while `settings.json` still recorded the change.
+    /// The judgement itself lives in `ZoomDecision` so it can be tested.
     private func apply(_ percent: Int, to view: WKWebView, context: Context) {
-        let snapped = ZoomLadder.snap(percent)
-        let scale = CGFloat(snapped) / 100.0
-        guard abs(view.pageZoom - scale) > 0.001 else { return }
-        if let applied = context.coordinator.appliedZoom,
-           abs(view.pageZoom - applied) <= 0.01 {
-            // The webview already holds the value we asked for, to WebKit's own
-            // rounding. Writing again would look like a change and make us
-            // permanently believe we own the zoom.
+        switch ZoomDecision.decide(percent: percent,
+                                   appliedPercent: context.coordinator.appliedPercent) {
+        case .leaveAlone:
             return
+        case .apply(let snapped):
+            context.coordinator.appliedPercent = snapped
+            view.pageZoom = CGFloat(snapped) / 100.0
+            Log.debug("page zoom -> \(snapped)%")
         }
-        view.pageZoom = scale
-        context.coordinator.appliedZoom = scale
-        Log.debug("page zoom -> \(snapped)%")
     }
 }
 

@@ -43,7 +43,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func install() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        // Not `squareLength`: the whale is landscape (23.40 × 17.19 in dsh's own
+        // units), and a square slot would either squash it or leave the padding
+        // looking like a bug. A variable-length button fits the mark and still
+        // keeps the click target a comfortable size thanks to the 2pt inset.
+        let item = NSStatusBar.system.statusItem(withLength: FishLogoImage.width + 4)
         item.button?.image = Self.templateIcon()
         item.button?.toolTip = "DSH Shell"
 
@@ -104,13 +108,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// A template image, or nothing.
     ///
     /// A multicolour image in the menu bar is not recoloured for light and dark,
-    /// which is why dsh's whale mark cannot be used here as-is. A template image
-    /// is; an SF Symbol is already one.
+    /// dsh's own whale, drawn as a template image so AppKit handles light and
+    /// dark appearances. `FishLogoImage` explains why a coloured SVG is not
+    /// usable here and why redrawing the shape is.
     private static func templateIcon() -> NSImage? {
-        guard let symbol = NSImage(systemSymbolName: "terminal", accessibilityDescription: "DSH Shell")
-        else { return nil }
-        symbol.isTemplate = true
-        return symbol
+        FishLogoImage.make()
     }
 
     private func refreshTitle() {

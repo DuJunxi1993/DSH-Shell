@@ -95,6 +95,14 @@ fi
 
 # --- generate, test, build ---------------------------------------------------
 
+# Refresh the menu bar whale from the installed dsh, before anything compiles.
+# This is deliberately non-fatal: the generated file is committed, so a machine
+# without dsh — or with one too old to have the logo — still builds, and simply
+# keeps the whale it already has.
+echo "==> refreshing the menu bar whale from dsh"
+(cd "$ROOT" && DEVELOPER_DIR="$DEVELOPER_DIR" swift tools/extract-dsh-logo.swift) \
+  || echo "    (whale not refreshed; using the committed one)"
+
 echo "==> generating the Xcode project from project.yml"
 (cd "$ROOT" && xcodegen generate)
 
