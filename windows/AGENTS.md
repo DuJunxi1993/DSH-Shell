@@ -230,6 +230,35 @@ obvious and the Tauri docs do not put them together.
     and the toast carries no launch argument to fall back on. Do not spend time
     re-deriving this. Claim an AUMID only for an installed build, the way the
     plugin does — an unregistered AUMID makes the toast fail to appear at all.
+12. **`contractMissing` is the correct state on dsh `0.2.0-rc.2`, not a fault.**
+    The chrome declares the desktop host contract with two properties
+    (`html[data-windows-titlebar]` and `--dsh-windows-titlebar-height`) and then
+    reads back `--dsh-frame-chrome-top` to find out whether dsh answered. On
+    rc.2 it does not, and the log says so at WARN on every page load:
+
+        dsh did not answer the desktop contract (http://127.0.0.1:3402), so the
+        chrome is compensating geometrically.
+
+    That is the fallback working, not a regression. Measured against the CSS the
+    server actually serves (fetch the token URL, follow the 303, then read
+    `assets/index-*.css`): `--dsh-frame-top-clearance` appears **zero** times,
+    `--dsh-frame-chrome-top` appears once as a *consumer* (`var(…, 0px)`) and is
+    never defined, and the only `html[data-windows-titlebar]` rules that exist
+    are `--dsh-dockkit-float-top` on one dockkit float class. rc.2 does not
+    implement the contract.
+
+    Two traps in confirming this, both of which cost real time here:
+    - The rules *do* exist in `node_modules/@deepseek-ai/dsh-client-ui-layout/
+      lib/client.js`. That is the plugin's copy; the page never loads it. Grepping
+      the installed npm tree answers a question nobody asked.
+    - `row=none brandRow=none no left column found` in `chrome_report` says the
+      *content column's top row* was not located. It says nothing about whether
+      the page rendered at all, and reading it as "the page did not boot" is
+      wrong — the screenshot shows a fully working UI.
+
+    When a dsh release does implement the contract, the switch is automatic:
+    `runAvoidance` skips the geometric layer and clears whatever it had already
+    applied. Nothing here needs changing; do not "fix" the WARN.
 
 ## The repo has two implementations and one contract
 
