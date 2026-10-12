@@ -352,13 +352,14 @@ fn chrome_report(report: ChromeReport) {
         tracing::info!(
             target: "dsh_shell",
             "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} \
-             contract={} notifications={}",
+             contract={} top_clearance={:?} notifications={}",
             report.origin,
             round1(report.measured_bar_h),
             round1(report.measured_win_w),
             report.zoom,
             report.placeholder,
             report.contract,
+            report.contract_top_clearance,
             report.notifications
         );
     } else {

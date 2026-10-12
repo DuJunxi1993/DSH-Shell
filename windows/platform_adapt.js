@@ -24,9 +24,10 @@
  *
  * ## Clicking through
  *
- * The whole bar is `pointer-events: none` except the window buttons, because a
- * drag strip spanning it would silently swallow every click on the page's own
- * top row.
+ * The bar carries the three window buttons and nothing else. It is
+ * `pointer-events: none` apart from the buttons, and it draws no background, so
+ * the page's own content reaches every pixel of the window the buttons are not
+ * sitting on.
  *
  * ## The page's own layout
  *
@@ -132,9 +133,8 @@
   }
 
   /* dsh's reserved height, in logical pixels, or null when it publishes none.
-   * Used to sit the status line below dsh's own caption rather than below our
-   * own arithmetic, which is the difference between agreeing with the page and
-   * guessing at it. */
+   * Read-only, and reported so the log says how much room dsh claimed rather
+   * than leaving the number to be inferred from a screenshot. */
   function contractTopClearance() {
     if (contractState() !== "contractActive") return null;
     try {
@@ -318,10 +318,9 @@
 
   function install() {
     installStylesheet();
-    /* Layer 1 first: the page may already be laid out, and every pass below
-     * reads whether the contract took. Declaring it before the bar is built
-     * means the chrome and the page's reservation appear together rather than
-     * as two separate reflows. */
+    /* Declared before the bar is built so the chrome and the page's own
+       reservation appear together rather than as two separate reflows. This is
+       the only thing this file does to dsh: two properties on <html>. */
     declareDesktopContract();
 
     var bar = document.createElement("div");
@@ -438,68 +437,6 @@
       return fg;
     }
 
-    /* Status, centred in the *window* rather than in the leftover space, so it
-     * does not drift as the button cluster's width or the zoom changes. It is
-     * click-through, like the rest of the bar.
-     *
-     * Two things, both obtained without inventing an API: which dsh we are
-     * attached to and whether it is still answering, and the zoom - which has no
-     * other UI at all, since the shortcut is the only way to change it.
-     *
-     * The dot is deliberately three-state. A failed probe only means "down" once
-     * a probe has ever succeeded: a page whose own CSP blocked the request would
-     * otherwise report dsh as dead while dsh is serving it.
-     */
-    var status = document.createElement("div");
-    status.className = "dss-status";
-    status.style.cssText = [
-      "position:absolute",
-      "top:0",
-      "left:50%",
-      "transform:translateX(-50%)",
-      "height:" + px(BAR_H),
-      "line-height:" + px(BAR_H),
-      "padding:0 " + px(10),
-      "pointer-events:none",
-      "white-space:nowrap",
-      "overflow:hidden",
-      "text-overflow:ellipsis",
-      "max-width:60%",
-      "font-size:" + px(10.5),
-      "opacity:0.75",
-      "color:inherit"
-    ].join(";");
-    bar.appendChild(status);
-
-    var reachable = false;
-    var everReached = false;
-
-    function paintStatus() {
-      var tint = !everReached ? "inherit" : (reachable ? "#22c55e" : "#ef4444");
-      var parts = [
-        '<span style="color:' + tint + '">' + (everReached ? "●" : "○") + "</span>",
-        "dsh " + (location.host || "?"),
-        "· " + zoom + "%"
-      ];
-      status.innerHTML = parts.join(" ");
-    }
-
-    /* Same-origin probe: any answer at all proves dsh's HTTP server is up, and
-       the 401 from its auth fence counts. */
-    function probeDsh() {
-      fetch(location.origin + "/", { method: "HEAD", cache: "no-store" })
-        .then(function () {
-          reachable = true;
-          everReached = true;
-        })
-        .catch(function () {
-          reachable = false;
-        })
-        .then(function () {
-          paintStatus();
-        });
-    }
-
     /* --- window buttons --- */
     var winCluster = document.createElement("div");
     winCluster.className = "dss-cluster dss-win";
@@ -595,9 +532,6 @@
 
     paint(zoom);
 
-    paintStatus();
-    probeDsh();
-    setInterval(probeDsh, 4000);
     /* The foreground is measured rather than derived from a token, and a theme
        switch is not something an observer can see: it would watch childList, and
        swapping a theme is a class or custom-property change on an existing node.
@@ -659,15 +593,12 @@
           ready_state: document.readyState,
           origin: location.origin,
           notifications: notificationState(),
-          /* Which layer is doing the work. "contractActive" means dsh reserved
-             the caption itself and the geometric fallback is dormant;
-             "contractMissing" means we are still guessing, and the log line says
-             so rather than looking identical. A future dsh that dropped the
-             contract would be invisible without this field. */
+          /* Whether dsh reserved the caption for us. "contractActive" means the
+             page's own top row starts below the bar; "contractMissing" means
+             nothing is reserving it and the row runs under the chrome. */
           contract: contractState(),
           contract_top_clearance: contractTopClearance(),
           boxes: "bar=" + describe(node) +
-            " status=" + describe(status) +
             " winc=" + describe(winCluster) +
             " close=" + describe(close) +
             " color=" + getComputedStyle(node || bar).color
