@@ -300,9 +300,12 @@ fn nonzero_pid(state: &Arc<AppState>) -> Option<u32> {
 /// scale; and a follow-up "correction" claimed `GetDpiForWindow` returns 120 here,
 /// when it returns 96 like everything else.
 ///
-/// So there is no available input. `dpr / scale` needs a `scale` that nothing will
-/// tell you, which is why the menu marks the rung `zoom_percent` already holds
-/// rather than computing one. See `docs/cross-platform-lessons.md` §5.
+/// So nothing reachable *names* the divisor. It is still recoverable, because no
+/// API is needed: the shell pushes a known zoom before the page script runs, so the
+/// page measures `scale = devicePixelRatio / (pushedZoom / 100)` from that one
+/// known point and derives every later zoom from it. See `learnZoomScale` in
+/// `platform_adapt.js` — the readout follows a `Ctrl`+`=` because of it, and the
+/// anchor is the push rather than a number read from Windows.
 #[cfg(windows)]
 fn declare_dpi_awareness() {
     use windows::Win32::UI::HiDpi::{

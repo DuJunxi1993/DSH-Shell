@@ -82,6 +82,27 @@
 
 ### Fixed
 
+- **The app icon is built from dsh's own whale, and can be refreshed from it.**
+  It was a hand-vendored `dsh-whale.png` with no script to regenerate it, taken
+  from dsh's **favicon** — which is a different path from the mark dsh's own UI
+  draws. Both are four subpaths of one outline and three holes, so they look alike;
+  measured, the favicon's whale is aspect 1.3298 and `FISH_LOGO_PATH`'s is 1.3581,
+  and the shipped icon carried the former. `scripts/extract-dsh-whale.py` now reads
+  `FISH_LOGO_PATH` from `FishLogo.d.ts` and `FISH_LOGO_VIEWBOX` from `index.js`,
+  commits both the geometry and the rasterised mask so the build still needs no
+  dsh, and keeps the committed copy when dsh is absent or unparseable. Filling the
+  path is `scripts/svg_path_fill.py`, Pillow only, nonzero winding, viewBox rather
+  than bounding box.
+- **The caption's zoom percentage follows a hotkey.** It was drawn from
+  `zoom_percent` alone, and `Ctrl`+`±`/`0` change the page zoom without telling
+  anyone — so after one hotkey the readout sat on the configured value forever,
+  and the menu's tick was stale with it. The script now measures the display scale
+  from the one zoom it knows the shell pushed (`scale = devicePixelRatio /
+  (pushedZoom / 100)`, sampled twice to let the push land), rejects an implausible
+  result, and polls `devicePixelRatio` once a second to keep the status line and
+  the tick on the page. An off-ladder value — Chromium's 125% is not one of the
+  menu's rungs — is shown as-is with no rung ticked, rather than rounded to a zoom
+  the page is not at.
 - **The menu button's bars changed thickness with the zoom.** They are now three
   stroked SVG lines; they were three `<span>`s at `height:1.5px` with
   `border-radius:0.75px`. A fractional CSS height spans more than one physical

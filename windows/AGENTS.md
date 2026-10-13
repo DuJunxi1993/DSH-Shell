@@ -201,17 +201,39 @@ obvious and the Tauri docs do not put them together.
    `PerMonitorSettings\...\DpiValue=1` all say 96, and they say 96 from a process
    that has just set `PER_MONITOR_AWARE_V2`.
 
-   So the derivation is underdetermined rather than merely wrong — the divisor
-   exists and nothing reachable will name it. That is also why clicking 缩小
-   appeared to *enlarge* the page: the real zoom fell while a percentage divided by
-   1.0 rose. Two traps on the way there: `HKCU\Control Panel\Desktop\LogPixels` is
-   the DPI-*awareness* setting, not the scale, and a "correction" claiming
-   `GetDpiForWindow` returns 120 was wrong too — it returns 96 like everything else.
+   So **nothing reachable names the divisor** — the derivation needs a `scale` that
+   no API will give up. That is also why clicking 缩小 appeared to *enlarge* the
+   page: the real zoom fell while a percentage divided by 1.0 rose. Two traps on
+   the way there: `HKCU\Control Panel\Desktop\LogPixels` is the DPI-*awareness*
+   setting, not the scale, and a "correction" claiming `GetDpiForWindow` returns
+   120 was wrong too — it returns 96 like everything else.
 
-   `settings.json`'s `zoom_percent` is the only record of the zoom, and the menu's
-   radio check is drawn from it. `chrome::tests` asserts that the script never
-   forms a quotient out of `devicePixelRatio` and that it carries no ladder of its
-   own.
+   **It is still recoverable, because no API is needed.** The shell pushes a known
+   zoom before the page script runs, so the page has one known point on that
+   curve: `scale = devicePixelRatio / (pushedZoom / 100)`. `learnZoomScale` samples
+   it twice ~250 ms apart (the push is not synchronous), rejects an implausible
+   result, and `probeZoom` then reads the page's zoom back out every second and
+   moves the readout with it. So a `Ctrl`+`=` or `Ctrl`+wheel updates the status
+   line and the menu's tick instead of leaving both on the configured value
+   forever.
+
+   The value is **not** snapped onto the ladder when shown. Chromium's hotkey rungs
+   (110, 125, 150, …) are not ours (100, 110, 120, …), so the readout can legitimately
+   show 125% while no menu rung is ticked — which is the honest reading of "off the
+   ladder". The menu's tick and the status line are drawn from the same
+   `currentPercent`, so they cannot disagree with each other.
+
+   `settings.json`'s `zoom_percent` is the **anchor** rather than the whole answer:
+   it is what gets pushed on page load, and what survives a restart. A hotkey is
+   session-local — dsh is a SPA, so its client-side routing never reaches
+   `on_page_load`, and the next reload re-pushes the config. `chrome::tests` holds
+   the shape with `the_page_measures_its_own_display_scale`, which asserts the
+   divisor is *measured* and would catch it being hardcoded or handed in from Rust.
+
+   **A scale factor must not come back through the injected config.** That was the
+   original `osScale`, and the reason it fails is that a factor from Rust can only
+   come from an API, and every API lies here. Measuring it in the page is what
+   makes it right.
 
    **The push is unconditional, on every page load**, which is the second half of
    the decision and the half that needed measuring. WebView2 remembers a zoom

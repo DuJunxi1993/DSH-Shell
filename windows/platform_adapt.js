@@ -689,16 +689,98 @@
      * `zoom_ladder_step` cannot produce, which is exactly what happened before
      * `chrome::tests` started comparing the two.
      *
-     * `currentPercent` is the value from `settings.json`, not a measurement. It is
-     * the same "the shell knows what it decided" rule as `should_push_zoom` in
-     * `main.rs`: there is no honest way to read the page's zoom back out, and a
-     * percentage derived from `devicePixelRatio` was wrong twice on this machine.
+     * `currentPercent` starts as the value from `settings.json`, which is also
+     * what `main.rs` pushed onto the webview just before this script ran. From
+     * there it is **kept in step with the page**, not left at the configured
+     * value, because Chromium's own `Ctrl`+`±`/`0` change the page zoom without
+     * telling anyone — so a readout that only ever echoed the config would sit on
+     * 100% forever after one hotkey. See `learnZoomScale` / `probeZoom`.
      */
     var ZOOM_RUNGS = Array.isArray(CFG.zoomRungs) && CFG.zoomRungs.length
       ? CFG.zoomRungs
       : [50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200];
     var ZOOM_DEFAULT_PERCENT = num(CFG.zoomDefault, 100);
     var currentPercent = num(CFG.zoomPercent, ZOOM_DEFAULT_PERCENT);
+
+    /* Device pixels per CSS pixel at 100% zoom, or 0 until it is measured.
+     *
+     * This is the number that makes the readout honest, and getting it is the
+     * whole trick. `devicePixelRatio` is `displayScale x pageZoom`, and no Windows
+     * API will name `displayScale`: measured at three zooms on this machine, `dpr`
+     * is 0.63 / 1.25 / 1.88 for 50% / 100% / 150% — exactly 1.25 x zoom — while
+     * `GetDpiForSystem`, `GetDpiForWindow`, `GetDpiForMonitor` and `LOGPIXELSX`
+     * all report 96. See `main.rs::declare_dpi_awareness` for the two rounds of
+     * debugging that established it.
+     *
+     * It does not have to be fetched from an API, though, because the shell
+     * *knows* one point on the curve: it pushed `zoomPercent` before this script
+     * ran. So `scale = dpr / (zoomPercent / 100)` is measurable, and every later
+     * zoom is `scale x the same dpr`. */
+    var zoomScale = 0;
+
+    /* Measure `zoomScale` from the push that just happened.
+     *
+     * Sampled twice ~250 ms apart and required to agree, because `set_zoom` does
+     * not resize the page synchronously: the first read after it can still be the
+     * previous value, and learning the scale from a stale `dpr` would put the
+     * readout off by exactly the ratio of the two zooms. A reading that has stopped
+     * moving at a plausible scale is the signal that the push has landed.
+     *
+     * The plausible range is wide on purpose (0.5x to 4x, which covers every
+     * Windows scaling preset). It is there to reject a garbage reading, not to
+     * guess: a scale outside it means the sample is not trustworthy, and leaving
+     * `zoomScale` at 0 keeps the readout on the configured value rather than
+     * inventing a number. */
+    function learnZoomScale(pushedPercent) {
+      var expected = Number(pushedPercent);
+      if (!isFinite(expected) || expected <= 0) {
+        return;
+      }
+      var first = Number(window.devicePixelRatio);
+      window.setTimeout(function () {
+        var second = Number(window.devicePixelRatio);
+        if (!isFinite(first) || !isFinite(second) || first <= 0 || second <= 0) {
+          return;
+        }
+        if (Math.abs(first - second) > 0.001) {
+          return; // still settling
+        }
+        var scale = second / (expected / 100);
+        if (scale >= 0.5 && scale <= 4) {
+          zoomScale = scale;
+        }
+      }, 250);
+    }
+
+    /* Read the page's zoom back out of `devicePixelRatio`, and move the readout
+     * with it.
+     *
+     * A poll rather than an event: nothing fires when Chromium changes the page
+     * zoom, so this is the only way to notice. It is cheap — a property read and
+     * an integer compare — so it runs on its own 1s clock, where the 4s
+     * reachability probe would leave a hotkey visibly lagging.
+     *
+     * The result is **not** snapped onto the ladder. Chromium's hotkey rungs
+     * (110, 125, 150, ...) are not ours (100, 110, 120, ...), and rounding 125 to
+     * 130 would report a zoom the page is not at. Off-ladder therefore means the
+     * menu shows no ticked rung, which is the honest reading: the page is not on
+     * one. */
+    function probeZoom() {
+      if (!zoomScale) {
+        return;
+      }
+      var ratio = Number(window.devicePixelRatio);
+      if (!isFinite(ratio) || ratio <= 0) {
+        return;
+      }
+      var percent = Math.round(ratio / zoomScale * 100);
+      if (percent === currentPercent) {
+        return;
+      }
+      currentPercent = percent;
+      markCurrentRung();
+      paintStatus();
+    }
 
     /* One row in the panel.
      *
@@ -768,9 +850,14 @@
           currentPercent = Number(applied);
           markCurrentRung();
           // The status line shows the same number, so it has to move at the same
-          // moment. Without this it would sit at the old value until the next 4s
-          // probe, which reads as the readout being wrong rather than late.
+          // moment. Without this it would sit at the old value until the next poll,
+          // which reads as the readout being wrong rather than late.
           paintStatus();
+          // A menu click is a second known point on the `dpr` curve, and a better
+          // one than the page-load push: it happened just now, after the document
+          // settled. Re-learning here keeps the scale right even if the boot-time
+          // sample raced the push.
+          learnZoomScale(currentPercent);
           return applied;
         })
         .catch(function (error) {
@@ -1019,19 +1106,17 @@
 
       /* Reachability, which dsh, and the zoom.
        *
-       * The zoom is `currentPercent` — the same value the menu's radio check is
-       * drawn from, which is the same value `main.rs` pushes onto the webview on
-       * every page load. One source, so the status line and the menu cannot
-       * contradict each other.
+       * The zoom is `currentPercent`, which the menu's radio check is drawn from
+       * too — one value, so the status line and the menu cannot contradict each
+       * other. It starts at the pushed config value and `probeZoom` keeps it on
+       * the page from there, so a `Ctrl`+`=` or a `Ctrl`+wheel moves the readout
+       * as well.
        *
-       * It is deliberately *not* measured from `devicePixelRatio`. That derivation
-       * needs a display scale no Windows API on this machine will name — measured
-       * at three zooms, `dpr = 1.25 x zoom` while every DPI API reports 96 — so a
-       * measured figure would be a number the shell cannot substantiate.
-       *
-       * It goes stale after a `Ctrl`+`=` until the next navigation, exactly like the
-       * menu's tick, and for the same reason: Chromium changes the page without
-       * telling anyone, and the push that would resync it happens on page load. */
+       * An off-ladder value is shown as-is (125%, say) rather than rounded to the
+       * nearest rung: Chromium's hotkey steps are not our menu's steps, and a
+       * percentage that is not the real one is worse than one that does not match
+       * the menu. The menu shows no tick in that state, which is the honest
+       * reading of "off the ladder". */
       function paintStatus() {
         var tint = !everReached ? "inherit" : (reachable ? "#22c55e" : "#ef4444");
         status.innerHTML =
@@ -1183,17 +1268,24 @@
        slow poll costs a handful of computed-style reads a second. */
     setInterval(probeTheme, 1500);
     probeTheme();
-    paintStatus();
-    /* Repaint the status line on a slow clock.
-     *
-     * The second clock used to exist for the zoom readout: Chromium cannot be
-     * asked what the page zoom is and nothing fires when a `Ctrl`+`=` changes it,
-     * so the percentage had to be re-derived on a timer or it would sit at
-     * whatever it was when the page loaded. `paintStatus` is now reachability and
-     * host only, both of which `probeDsh` already refreshes every 4s, so this
-     * interval is gone with it. */
-    probeDsh();
-    setInterval(probeDsh, 4000);
+      paintStatus();
+      probeDsh();
+      setInterval(probeDsh, 4000);
+
+      /* Learn the display scale from the push the shell just made, then keep the
+         zoom readout on it.
+         *
+         * Two clocks, because they answer different questions at different speeds:
+         * reachability is dsh's HTTP server and 4s is plenty, while the zoom can be
+         * changed by a keystroke and anything slower than about a second reads as
+         * the readout being stuck. Both are a property read or a loopback HEAD, so
+         * the cost is nothing.
+         *
+         * `learnZoomScale` needs the document settled to trust its two agreeing
+         * samples, which is why it is called here rather than from the constructor:
+         * at this point the page has just finished loading. */
+      learnZoomScale(currentPercent);
+      setInterval(probeZoom, 1000);
 
     window.__DSH_SHELL_CHROME__ = {
       setMaximized: function (isMaximized) {

@@ -12,3 +12,7 @@ src-tauri/gen/schemas/
 
 # Crash dumps written by the release binary into %TEMP%.
 dsh-shell-crash.log
+
+# Python bytecode from the icon scripts in scripts/. The scripts themselves are
+# tracked; their caches are not source.
+__pycache__/

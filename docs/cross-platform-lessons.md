@@ -31,6 +31,26 @@ file: it is a path inside dsh's `dsh-client-ui-primitives` package.
   @deepseek-ai/dsh-client-ui-primitives/lib/index.js              # the viewBox
 ```
 
+On Windows the package sits one level deeper than that, under
+`@deepseek-ai/dsh/node_modules/`, because `dsh.cmd` is a shim rather than the
+symlink macOS resolves through. Both shapes have to be probed; see
+`windows/scripts/extract-dsh-whale.py`.
+
+### dsh ships the whale twice, and they are not the same path
+
+`FISH_LOGO_PATH` and the web app's `favicon.svg` are different drawings:
+
+| Source | Canvas | Path length | Whale aspect |
+|---|---|---|---|
+| `FISH_LOGO_PATH` (the UI's own mark) | 23.16 × 17.04 | 3448 | 1.3581 |
+| `dsh-web-frontend/dist/favicon.svg` | 50 × 50 | 3394 | 1.3298 |
+
+Both parse to `M`×4 / `C`×71 / `Z`×4 — one outline and three holes, the same
+topology — so they look alike and a diff of the rendered masks is what it takes to
+tell them apart. The Windows icon was originally built from the *favicon*, which
+is why it sat ~2% off dsh's UI mark; `FISH_LOGO_PATH` is what the macOS menu bar
+draws, and using it is what makes the two shells carry the same whale.
+
 ### Both are needed, and they disagree
 
 `FISH_LOGO_PATH` is in the `.d.ts` next to its sibling declaration.
@@ -68,10 +88,27 @@ build depend on the user's machine:
 - **Rewrite only on a real change.** An unchanged extraction leaves no git diff,
   so `git status` never lies about whether the logo moved.
 
-The Windows tray icon is the same asset and the same three rules. The only
-platform-specific part is rendering: macOS draws the path into an `NSImage` with
-`isTemplate`; Windows needs an `.ico` at several DPI levels, and if it is ever
-coloured, a light and a dark variant.
+The Windows tray icon is the same asset and the same three rules. Its extractor is
+`windows/scripts/extract-dsh-whale.py`, which reads the same two declarations and
+writes two committed artefacts: the geometry as
+`windows/scripts/dsh_whale_geometry.py`, and the rasterised mask as
+`windows/src-tauri/icons/dsh-whale.png` that `windows/scripts/make-icon.py` plates
+and recolours into `dsh-shell.png` for `cargo tauri icon`.
+
+The only platform-specific part is rendering. macOS draws the path into an
+`NSImage` with `isTemplate`; Windows needs a bitmap, so the extractor fills the
+path itself. Two things about that:
+
+- **Pillow only.** No `cairosvg`, `resvg`, `rsvg-convert`, `inkscape` or ImageMagick
+  is assumed — the icon is built a few times a year on whatever machine has the
+  repo, and Pillow is already required. Filling the path is therefore ~80 lines in
+  `windows/scripts/svg_path_fill.py`: flatten the cubics, then scanline-fill with
+  **nonzero winding**, which is what an SVG fill actually means. Filling the four
+  subpaths in order and hoping the outline comes first would break the moment dsh
+  reordered them.
+- **The mask is square with the viewBox letterboxed inside it**, because
+  `make-icon.py` scales the mask to a square. Rendering the 23.16 × 17.04 canvas
+  into an already-square raster would squash the mark before anything else saw it.
 
 ### The one thing to get wrong quietly
 
@@ -372,11 +409,23 @@ session, and the next menu click takes control back. Keying on the page instead
 forces a choice between clobbering the pinch and never applying a preference — a
 choice that does not need to exist.
 
-### Never derive the zoom from `devicePixelRatio`
+### Measuring the zoom, when no API will tell you the scale
 
-The reason the menu lists the ladder and ticks a rung instead of printing a
-percentage: deriving the current zoom from `devicePixelRatio / displayScale` needs
-a divisor that is not obtainable.
+The caption shows a zoom percentage, and it has to stay right even though
+Chromium's `Ctrl`+`±`/`0` change the page zoom without telling anyone. Three
+attempts; the third is the one that works.
+
+**1. A divisor injected from Rust** (`osScale`), read from a Windows DPI API. This
+is what shipped at first, and it was wrong by the ratio between the API's answer
+and reality: the caption claimed 125% for a page at 100%, and clicking *shrink*
+appeared to enlarge the page, because the real zoom fell while a percentage
+divided by 1.0 rose.
+
+**2. No percentage at all.** Cannot be wrong, and cannot follow a hotkey either.
+The menu marked a rung and the status line showed nothing.
+
+**3. Measure the scale in the page.** The shell pushes a known zoom before the page
+script runs, so the page already holds one known point on the curve.
 
 Measured on the Windows machine, at three zoom levels:
 
@@ -386,12 +435,10 @@ zoom 100%  -> dpr 1.25
 zoom 150%  -> dpr 1.88
 ```
 
-`dpr = 1.25 x zoom`, exactly, at every level. So the 1.25 is a **display** factor
-and is independent of the page zoom — which is worth knowing because for two
-rounds of debugging it was assumed to be the opposite ("`dpr` above 1 means Chromium
-is at 125%, so the caption is lying"). It is the display. And that is also why
-clicking the shrink item appeared to *enlarge* the page: the real zoom fell while
-a percentage divided by 1.0 rose.
+`dpr = 1.25 x zoom`, exactly, at every level. So the 1.25 is a **display** factor,
+independent of the page zoom — which is worth knowing because for two rounds of
+debugging it was assumed to be the opposite ("`dpr` above 1 means Chromium is at
+125%, so the caption is lying"). It is the display.
 
 **No Windows API reports that 1.25.** `GetDpiForSystem`, `GetDpiForWindow` on the
 real window, `GetDpiForMonitor`, `LOGPIXELSX` and the registry's
@@ -399,9 +446,20 @@ real window, `GetDpiForMonitor`, `LOGPIXELSX` and the registry's
 process that has just set `PER_MONITOR_AWARE_V2`, which is what the shell itself
 does (successfully; nothing is logged on that path).
 
-So the derivation is not merely wrong, it is **underdetermined**: the divisor
-exists in fact and is unavailable in every API you can reach. Two further traps on
-the way there:
+But no API is needed. `scale = devicePixelRatio / (pushedZoom / 100)` is arithmetic
+from a point the shell already knows, and every later zoom is `scale x the same
+dpr`. Two details make it reliable:
+
+- **Sample twice, ~250 ms apart, and require agreement.** `set_zoom` does not
+  resize the page synchronously, so the first `devicePixelRatio` read after a push
+  can still be the previous value — learning the scale from that puts the readout
+  off by exactly the ratio of the two zooms. Two agreeing samples is what "the push
+  has landed" looks like.
+- **Reject the implausible.** A reading outside 0.5x–4x is a garbage sample, not a
+  scale. Leaving the scale unset keeps the readout on the configured value rather
+  than inventing a number.
+
+Two further traps on the way there:
 
 - **`HKCU\Control Panel\Desktop\LogPixels` is the DPI-*awareness* setting, not
   the scale.** Reading it as the scale is what turned the first wrong path into a
@@ -410,9 +468,15 @@ the way there:
   returns 96 like everything else. Two rounds of confident measurement, both
   wrong, on a value that never had to be measured.
 
-The general rule: **a value the host cannot measure correctly should not be shown
-to the user, however well-commented the code computing it is.** Marking a rung you
-already know is a rung costs nothing and cannot be wrong.
+The readout is **not** snapped onto the ladder. Chromium's hotkey rungs (110, 125,
+150, …) are not the menu's (100, 110, 120, …), so 125% can be shown while no rung
+is ticked. Rounding it to 130 would report a zoom the page is not at; showing no
+tick is the honest reading of "off the ladder".
+
+The general rule: **a value the host cannot ask for is not the same as a value it
+cannot know.** One known reference point is enough, and it is usually already in
+hand. The older version of this section concluded the opposite — that the
+derivation was underdetermined — and that conclusion was the mistake.
 
 ### The ladder belongs in one place
 

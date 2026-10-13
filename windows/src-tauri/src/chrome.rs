@@ -17,10 +17,10 @@
 //! reserved caption band scales too, and the two cannot drift apart. Dividing the
 //! chrome out while dsh scaled in would have been the thing keeping them aligned.
 //!
-//! What this module must *not* grow back is a **scale factor**. There was an
-//! `osScale` in the injected config, feeding a caption zoom percentage derived
-//! from `devicePixelRatio`, and it was wrong because the divisor it needed is not
-//! obtainable on this machine. Measured at three zoom levels:
+//! What this module must *not* grow back is a **scale factor in the injected
+//! config**. There was an `osScale` here, feeding a caption zoom percentage
+//! derived from `devicePixelRatio` divided by an API reading, and the reading was
+//! the problem. Measured at three zoom levels:
 //!
 //! ```text
 //! zoom  50%  -> dpr 0.63
@@ -31,9 +31,15 @@
 //! `dpr = 1.25 x zoom` exactly, so the 1.25 is a display factor independent of the
 //! page zoom — while `GetDpiForSystem`, `GetDpiForWindow` on the real window,
 //! `GetDpiForMonitor`, `LOGPIXELSX` and the registry's `DpiValue=1` all report 96,
-//! and report 96 from a process that has just set `PER_MONITOR_AWARE_V2`. There is
-//! no input for `dpr / scale`. See `declare_dpi_awareness` in
-//! `main.rs`.
+//! and report 96 from a process that has just set `PER_MONITOR_AWARE_V2`. No API
+//! names the 1.25. See `declare_dpi_awareness` in `main.rs`.
+//!
+//! The script still derives the zoom from `devicePixelRatio`, but the divisor
+//! comes from **measuring one known point on that curve** — the zoom the shell
+//! pushed immediately before the script ran — rather than from an API that cannot
+//! answer. So the rule is about *where the factor comes from*, not about whether
+//! one exists: `learnZoomScale` in `platform_adapt.js`, and
+//! `the_page_measures_its_own_display_scale` in this file's tests.
 //!
 //! The OS DPI scale is untouched by any of this, because it scales everything
 //! equally.
@@ -145,10 +151,11 @@ pub fn window_cluster_width() -> f64 {
 /// the first time either copy is edited — the menu ends up offering a 130% that
 /// `config::zoom_ladder_step` cannot produce, which is exactly what happened.
 ///
-/// `zoomPercent` is what `settings.json` says, not a measurement of the page.
-/// There is no honest way to read WebView2's zoom back out, and the one inference
-/// that existed — `devicePixelRatio` over the display scale — was wrong twice on
-/// this machine. See `should_push_zoom` in `main.rs` for the same decision.
+/// `zoomPercent` is what `settings.json` says, which is also the value
+/// `main.rs` pushes onto the webview on every page load. The script *starts* the
+/// readout there and then keeps it on the page by measuring `devicePixelRatio`
+/// against that known push — the config is the anchor, not the whole answer, the
+/// same split as `ZoomDecision` in the macOS shell.
 pub fn script(zoom_percent: u8) -> String {
     let rungs = crate::config::zoom_rungs()
         .iter()
@@ -276,42 +283,27 @@ mod tests {
                 "{name} is not injected as {value}"
             );
         }
-        /* No scale factor, and nothing that divides one out.
+        /* No scale factor comes in through the injected config.
          *
-         * `osScale` used to be injected here so the script could divide
+         * There was an `osScale` here, so the script could divide
          * `devicePixelRatio` by the display's factor and recover a caption zoom
-         * percentage. That number was wrong twice: the divisor read 1.0 while
-         * Chromium rendered at 1.25, so the caption claimed 125% for a page at
-         * 100%, and clicking "shrink" appeared to enlarge the page because the real
-         * zoom really did fall while the reported number rose. Nothing crashed and
-         * nothing looked obviously broken.
+         * percentage. It was wrong because the divisor is not obtainable: measured
+         * at three zooms on this machine, `dpr` is 0.63 / 1.25 / 1.88 for 50% /
+         * 100% / 150% — exactly 1.25 x zoom — while `GetDpiForSystem`,
+         * `GetDpiForWindow`, `GetDpiForMonitor` and `LOGPIXELSX` all report 96.
+         * Nothing reachable names the 1.25.
          *
-         * The webview's page zoom is back, but it is still *read from config* and
-         * never derived here. If a display scale creeps back in, the shell owns a
-         * second, independent idea of how big the page is — which is the state this
-         * exists to prevent. */
+         * The script *does* derive the zoom from `devicePixelRatio` again, but
+         * from a scale it measures rather than one it is handed — see
+         * `learnZoomScale` in the script and `the_page_measures_its_own_display_scale`
+         * below, which is the assertion that holds that shape. What must not come
+         * back through *this* config is a pre-computed factor, because a factor
+         * from Rust would be a second source for a number the page can measure. */
         let code = code_only(&js);
         assert!(
             !code.contains("osScale"),
             "a display scale factor must not come back into the injected config"
         );
-        /* `devicePixelRatio` is still reported, as a raw reading — see the note on
-         * `ChromeReport::dpr`. What must not return is the *division* that turned
-         * it into a zoom percentage, so this looks for a quotient rather than for
-         * the name: asserting on the property alone would forbid the one
-         * deliberate use that remains.
-         *
-         * Both operand orders, because the original was `ratio / scale` and a
-         * rewrite could just as easily have been `scale / ratio`. */
-        for pattern in [
-            "devicePixelRatio /", "/ devicePixelRatio", "dpr /", "/ dpr",
-        ] {
-            assert!(
-                !code.contains(pattern),
-                "`{pattern}` is a zoom being derived from devicePixelRatio again; \
-                 the caption percentage it fed is gone"
-            );
-        }
         // The page cannot set the zoom itself: `set_zoom` is Rust's, behind the
         // `set_page_zoom` command, because it clamps onto the ladder. A direct
         // call from the page would let the menu and the ladder disagree.
@@ -319,6 +311,47 @@ mod tests {
             !code.contains("set_zoom"),
             "the zoom goes through Rust so it lands on the ladder; the page must not \
              call WebView2's set_zoom itself"
+        );
+    }
+
+    /// The zoom readout is derived from `devicePixelRatio`, and the divisor is
+    /// **measured** rather than declared.
+    ///
+    /// This is the shape that matters, and it is the third attempt at this number:
+    ///
+    /// 1. a divisor injected from Rust (`osScale`), read from an API that reports
+    ///    96 on a display `devicePixelRatio` puts at 1.25 — wrong by that ratio, so
+    ///    the caption claimed 125% for a page at 100%;
+    /// 2. no readout at all, which cannot be wrong but also cannot follow a hotkey;
+    /// 3. this: one known point on the curve, because the shell pushed
+    ///    `zoomPercent` before the script ran, from which the scale is arithmetic.
+    ///
+    /// The assertion is on the *source* of the divisor, because that is what
+    /// distinguishes a measurement from a guess. Dropping `learnZoomScale` and
+    /// hardcoding a scale would restore failure mode 1 and this test would catch it.
+    #[test]
+    fn the_page_measures_its_own_display_scale() {
+        let code = code_only(&script(100));
+        assert!(
+            code.contains("function learnZoomScale"),
+            "the display scale has to be measured from a known push: {code}"
+        );
+        // Learned from the zoom the shell just pushed, not from the config alone.
+        assert!(
+            code.contains("second / (expected / 100)"),
+            "the scale must come from dpr over a known zoom: {code}"
+        );
+        // And applied on a poll, because nothing fires when Chromium zooms.
+        assert!(
+            code.contains("function probeZoom") && code.contains("setInterval(probeZoom"),
+            "the readout has to be driven by a poll: {code}"
+        );
+        // A scale outside this band means the sample was garbage, and leaving it
+        // unset is what keeps the readout on the configured value instead of
+        // inventing a number.
+        assert!(
+            code.contains("scale >= 0.5 && scale <= 4"),
+            "an implausible measurement must be rejected, not used: {code}"
         );
     }
 
