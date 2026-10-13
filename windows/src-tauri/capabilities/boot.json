@@ -11,6 +11,7 @@
     "core:window:allow-close",
     "allow-hide-to-tray",
     "allow-set-page-zoom",
+    "allow-startup-retry",
     "allow-chrome-report",
     "allow-chrome-error"
   ]

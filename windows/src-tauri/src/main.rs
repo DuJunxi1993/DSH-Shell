@@ -56,6 +56,41 @@ struct AppState {
     /// theoretical.
     starting_pid: AtomicU32,
     shutting_down: AtomicBool,
+    /// Whether a lifecycle loop is currently owning dsh.
+    ///
+    /// The claim is taken by [`start_lifecycle`] and released by
+    /// [`supervise_dsh`] as soon as it is past the reclaim and about to spawn.
+    /// Releasing there rather than on exit is deliberate: what has to be unique
+    /// is the *spawn*, so a retry arriving while the previous loop is winding down
+    /// after a failure is exactly the case that must be allowed to start a new
+    /// one. Without this, two loops each spawn a dsh, and the second one's failure
+    /// to bind the port is what the user is looking at.
+    lifecycle_running: Arc<AtomicBool>,
+    /// Whether the startup reclaim has already run for this launch.
+    ///
+    /// A retry that asks for cleanup has to be able to ask again — that is the
+    /// entire point of the button — so this is set by the reclaim itself rather
+    /// than implied by the launch.
+    cleanup_done: Arc<AtomicBool>,
+    /// The zoom currently on the webview, as of our last push.
+    ///
+    /// **Read for the log only.** An earlier version used this to decide whether to
+    /// push at all — the macOS `ZoomDecision` rule, ported literally — and that was
+    /// wrong on Windows, for a reason only visible with two origins in play.
+    ///
+    /// WebView2 remembers a zoom *per origin*, and the two documents are different
+    /// origins: the boot placeholder is `tauri.localhost`, the dsh page is
+    /// `127.0.0.1:3080`. So the conditional rule pushed 100% to the placeholder,
+    /// recorded "already applied", and then skipped the dsh page — which still had
+    /// its own 125% from an earlier session. The menu ticked 100% over a page
+    /// rendered at 125%.
+    ///
+    /// The cost of pushing unconditionally is that a `Ctrl`+`=` is session-local:
+    /// it holds until you navigate (dsh's client-side routing never reaches
+    /// `on_page_load`) and is gone after a reload. The configured rung is what
+    /// survives a restart, which is what "keep the zoom I had last time" has to
+    /// mean when two origins can each remember a different one.
+    applied_zoom: parking_lot::Mutex<Option<u8>>,
     /// Origin of the dsh page the window is allowed to navigate within, as
     /// `scheme://host:port`. Empty until dsh resolves, while only the local boot
     /// placeholder is reachable.
@@ -103,7 +138,10 @@ fn main() {
         starting_pid: AtomicU32::new(0),
         shutting_down: AtomicBool::new(false),
         dsh_origin: parking_lot::RwLock::new(String::new()),
-    });
+          lifecycle_running: Arc::new(AtomicBool::new(false)),
+          cleanup_done: Arc::new(AtomicBool::new(false)),
+          applied_zoom: parking_lot::Mutex::new(None),
+      });
 
     let app = match build(state.clone()) {
         Ok(app) => app,
@@ -225,53 +263,46 @@ fn nonzero_pid(state: &Arc<AppState>) -> Option<u32> {
     }
 }
 
-/// The display's scaling as a multiple of 96 DPI.
-///
-/// This is the denominator that turns the page's `devicePixelRatio` back into a
-/// zoom: Chromium reports `dpr = system scale × page zoom`, and Tauri can read
-/// neither factor, so the one it can read has to be baked in and handed over.
-///
-/// `GetDpiForSystem` is used rather than `primary_monitor().scale_factor()`
-/// because the latter answers in the process's DPI awareness context, and a debug
-/// run had none — so it reported 1.0 while the display was genuinely 120 DPI.
-/// `declare_dpi_awareness` fixes that, and this API does not depend on it at all.
-///
-/// Falls back to 1.0 rather than 0: a wrong-but-usable scale makes the caption's
-/// zoom readout off by a constant factor, whereas 0 would divide to nothing and
-/// take the whole chrome down with it.
-#[cfg(windows)]
-fn system_dpi_scale() -> f64 {
-    use windows::Win32::UI::HiDpi::GetDpiForSystem;
-    let dpi = unsafe { GetDpiForSystem() };
-    if dpi == 0 {
-        1.0
-    } else {
-        f64::from(dpi) / 96.0
-    }
-}
-
-#[cfg(not(windows))]
-fn system_dpi_scale() -> f64 {
-    1.0
-}
-
 /// Opt into per-monitor DPI awareness, before any window exists.
 ///
-/// This is not a nicety. A DPI-*unaware* process is told the display is 96 DPI no
-/// matter what it really is, and this process was one: `primary_monitor()`,
-/// `window.scale_factor()` and `GetDpiForSystem()` all reported a scale of 1.0 on
-/// a display whose real DPI was 119, while WebView2 — which does its own
-/// awareness — rendered the page at `devicePixelRatio` 1.25.
-///
-/// That single wrong number made the caption's zoom readout lie by a constant
-/// factor: it divided 1.25 by 1.0 and reported "125%" for a page that was at
-/// 100%. Nothing crashed and nothing looked broken, which is why it survived
-/// being written twice.
+/// Nothing in the chrome reads a scale — the menu marks the rung `zoom_percent`
+/// says rather than deriving one — but the window itself still has to be told: a
+/// DPI-*unaware* window is laid out at 96 DPI and then bitmap-stretched by the
+/// compositor, so the caption's controls land in the wrong places on a display
+/// that is not at 100%.
 ///
 /// Must run before Tauri creates anything; afterwards the call fails with
 /// `ERROR_ACCESS_DENIED`, which is harmless — the manifest already set awareness
 /// for packaged builds — so the error is logged rather than treated as failure.
-#[cfg(windows)]
+///
+/// The `GetDpiFor*` calls that used to sit here, feeding a caption zoom percentage,
+/// are gone with the percentage. Measured on this machine, at three zoom levels:
+///
+/// ```text
+/// zoom  50%  -> dpr 0.63
+/// zoom 100%  -> dpr 1.25
+/// zoom 150%  -> dpr 1.88
+/// ```
+///
+/// `dpr = 1.25 x zoom`, exactly, at every level. So the 1.25 is a **display**
+/// factor that is independent of the page zoom — the opposite of what was assumed
+/// for two rounds of debugging ("`dpr` above 1 means Chromium is at 125%, so the
+/// caption is lying"), and it is the reason clicking 缩小 appeared to enlarge the
+/// page: the real zoom fell while a percentage divided by 1.0 rose.
+///
+/// The part that makes the derivation impossible rather than merely wrong: **no
+/// Windows API reports that 1.25.** `GetDpiForSystem`, `GetDpiForWindow` on the
+/// real window, `GetDpiForMonitor`, `LOGPIXELSX` and the registry's
+/// `PerMonitorSettings\...\DpiValue=1` all say 96, and they keep saying it from a
+/// process that has just set `PER_MONITOR_AWARE_V2` — which is what this function
+/// does, successfully, since nothing is logged. Two further traps on the way:
+/// `HKCU\Control Panel\Desktop\LogPixels` is the DPI-*awareness* setting, not the
+/// scale; and a follow-up "correction" claimed `GetDpiForWindow` returns 120 here,
+/// when it returns 96 like everything else.
+///
+/// So there is no available input. `dpr / scale` needs a `scale` that nothing will
+/// tell you, which is why the menu marks the rung `zoom_percent` already holds
+/// rather than computing one. See `docs/cross-platform-lessons.md` §5.
 #[cfg(windows)]
 fn declare_dpi_awareness() {
     use windows::Win32::UI::HiDpi::{
@@ -290,43 +321,83 @@ fn declare_dpi_awareness() {
 #[cfg(not(windows))]
 fn declare_dpi_awareness() {}
 
-/// The chrome script, with its geometry and the display's scale factor baked in.///
-/// `initialization_script` is re-run on every navigation, so this covers both
-/// the local boot placeholder and the remote dsh origin.
-fn chrome_script(os_scale: f64) -> String {
-    chrome::script(os_scale)
+/// Set the page zoom to an absolute percentage, and remember it.
+///
+/// Absolute rather than a delta, and that is the whole design: WebView2 reports
+/// its current zoom to nobody, so a command that stepped from a remembered value
+/// would drift from the real one. The page measures what it can and asks for the
+/// rung it wants; Rust's job is to clamp it onto the ladder and record the choice
+/// so the next launch starts where the user left off.
+#[tauri::command]
+fn set_page_zoom(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    percent: u8,
+) -> CommandResult<u8> {
+    let next = config::normalize_zoom(percent);
+    apply_page_zoom(&window, &state, next)?;
+    persist_zoom(next);
+    Ok(next)
 }
 
-/// Set the page zoom to an absolute percentage.
+/// Push `percent` onto the webview and record it, without persisting.
 ///
-/// Absolute rather than a delta, and that is the whole design: the hotkeys are
-/// Chromium's, so we cannot know what the user last did to the zoom, and a
-/// command that stepped from our own remembered value would drift away from the
-/// real one the first time they pressed `Ctrl+=`. The page works it out instead -
-/// `devicePixelRatio` over the system scale it is given - and asks for the rung
-/// it wants. Rust's job is only to clamp it onto the ladder.
-///
-/// Nothing is persisted: WebView2 restores the last zoom per origin on its own.
-#[tauri::command]
-fn set_page_zoom(window: WebviewWindow, percent: u8) -> CommandResult<u8> {
+/// Split from [`set_page_zoom`] because the page-load hook must not rewrite
+/// `settings.json` on every navigation — that would make a read of the config
+/// into a write of it, and the file would churn behind the user's back.
+fn apply_page_zoom(
+    window: &WebviewWindow,
+    state: &AppState,
+    percent: u8,
+) -> CommandResult<u8> {
     let next = config::normalize_zoom(percent);
     window
         .set_zoom(f64::from(next) / 100.0)
         .map_err(|err| format!("could not set zoom: {err}"))?;
+    *state.applied_zoom.lock() = Some(next);
     tracing::info!(target: "dsh_shell", "page zoom set to {next}%");
     Ok(next)
 }
 
+/// Record the user's zoom choice, and do nothing else if it has not moved.
+///
+/// A failed save is logged rather than surfaced: the zoom works either way, and a
+/// dialog about a config file the user may have opened read-only would be worse
+/// than a preference that does not survive a restart.
+fn persist_zoom(percent: u8) {
+    let mut config = Config::load_or_default();
+    if config.zoom_percent == percent {
+        return;
+    }
+    config.zoom_percent = percent;
+    if let Err(err) = config.save() {
+        tracing::warn!(target: "dsh_shell", "could not persist zoom_percent: {err}");
+    }
+}
+
 /// Back to 100%, from the tray.
-fn reset_zoom(app: &AppHandle) {
+fn reset_zoom(app: &AppHandle, state: &Arc<AppState>) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
-    match set_page_zoom(window, config::ZOOM_DEFAULT) {
-        Ok(percent) => tracing::info!(target: "dsh_shell", "zoom reset to {percent}% from the tray"),
+    match apply_page_zoom(&window, state, config::ZOOM_DEFAULT) {
+        Ok(percent) => {
+            tracing::info!(target: "dsh_shell", "zoom reset to {percent}% from the tray");
+            persist_zoom(percent);
+        }
         Err(err) => tracing::warn!(target: "dsh_shell", "zoom reset failed: {err}"),
     }
 }
+
+/// The chrome script.
+///
+/// `initialization_script` is re-run on every navigation, so this covers both
+/// the local boot placeholder and the remote dsh origin. The zoom it carries is
+/// the configured preference, which is what the menu's radio check is drawn from.
+fn chrome_script(zoom_percent: u8) -> String {
+    chrome::script(zoom_percent)
+}
+
 
 /// How long a page is given to answer the desktop contract before its silence is
 /// worth a warning. Must match `CONTRACT_SETTLE_MS` in `platform_adapt.js`, which
@@ -356,22 +427,16 @@ fn chrome_report(report: ChromeReport) {
     }
 
     // The invariant, checked against the constants that live here rather than
-    // in the script. The page multiplies its measurements by the zoom, so these
-    // must come back as the design lengths. They did not once: dividing the
-    // lengths *and* counter-scaling the clusters applied the correction twice,
-    // and zooming out made the chrome grow. The pixel figures from that build
+    // in the script. The measurements come back as plain CSS pixels, so these
+    // must equal the design lengths. They did not once: dividing the lengths
+    // *and* counter-scaling the clusters applied a correction twice, and the
+    // chrome grew when the text got smaller. The pixel figures from that build
     // are not recoverable, and a comment asserting a number nothing checks is a
     // comment that will be edited into a lie; the round trip is the assertion,
     // and `chrome::tests` holds it.
     let expected = [
         ("bar height", report.measured_bar_h, chrome::BAR_H),
-        // The window cluster is the whole reserved corner now that the zoom
-        // control is gone, so one measurement covers both.
-        (
-            "reserved width",
-            report.measured_win_w,
-            chrome::reserved_width(),
-        ),
+        ("reserved width", report.measured_win_w, chrome::reserved_width()),
     ];
     let wrong: Vec<String> = expected
         .iter()
@@ -401,24 +466,22 @@ fn chrome_report(report: ChromeReport) {
     if wrong.is_empty() {
         tracing::info!(
             target: "dsh_shell",
-            "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} \
-             contract={} top_clearance={:?} notifications={} dpr={} os_scale={}",
+            "chrome ok: origin={} bar={}px reserved={}px placeholder={} \
+             contract={} top_clearance={:?} notifications={} dpr={}",
             report.origin,
             round1(report.measured_bar_h),
             round1(report.measured_win_w),
-            report.zoom,
             report.placeholder,
             report.contract,
             report.contract_top_clearance,
             report.notifications,
-            round2(report.dpr),
-            round2(report.os_scale)
+            round2(report.dpr)
         );
     } else {
         tracing::warn!(
             target: "dsh_shell",
-            "chrome geometry is WRONG: {}. The 1/zoom correction must be applied exactly \
-             once, in chrome::css_len. notifications={} {}",
+            "chrome geometry is WRONG: {}. The measurements must come back as the design \
+             pixels, unchanged. notifications={} {}",
             wrong.join("; "),
             report.notifications,
             report.boxes
@@ -435,9 +498,9 @@ fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
-/// Two decimals, for the scale factors. `dpr` and `os_scale` are thirds and
-/// quarters more often than they are halves, and rounding them to one decimal
-/// would print `1.6 / 1.2` for a division that is meant to come out exact.
+/// Two decimals, for `dpr`. Thirds and quarters are more common than halves
+/// there, and one decimal would print `1.6 / 1.2` for a reading that should come
+/// out exact.
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
@@ -448,18 +511,19 @@ struct ChromeReport {
     /// Whether the bar was still in the document a moment after install, which
     /// is how a SPA that rewrites `<body>` shows up.
     still_present: bool,
-    /// Bar height multiplied by the page zoom, i.e. in logical pixels. Compared
-    /// against [`chrome::BAR_H`].
+    /// Bar height in CSS pixels. Compared against [`chrome::BAR_H`].
     measured_bar_h: f64,
-    /// Window-button cluster width, multiplied by the page zoom. Compared
-    /// against [`chrome::window_cluster_width`].
+    /// Window-button cluster width in CSS pixels. Compared against
+    /// [`chrome::reserved_width`].
     measured_win_w: f64,
-    zoom: f64,
-    /// The page's `devicePixelRatio` as reported, and the system scale factor
-    /// `zoom` was derived by dividing out. Both are logged so the caption's zoom
-    /// percentage can be checked rather than taken on trust.
+    /// Chromium's `devicePixelRatio`, logged but not interpreted.
+    ///
+    /// It is the display's scaling multiplied by any page zoom, and neither of
+    /// those belongs to this file any more. It stays because it is the one reading
+    /// that shows a *display* scale in play when a measurement looks wrong, and
+    /// because a `dpr` above 1 with no matching monitor DPI is a real state worth
+    /// being able to see rather than re-derive. See `declare_dpi_awareness`.
     dpr: f64,
-    os_scale: f64,
     placeholder: bool,
     ready_state: String,
     origin: String,
@@ -504,7 +568,7 @@ fn chrome_error(message: String) {
 /// remaining way out. Left click raises the window because that is what a user
 /// double-clicking a tray icon expects; the menu is on the right click, where a
 /// menu is expected.
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+fn build_tray(app: &tauri::App, state: &Arc<AppState>) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(app, TRAY_TOGGLE, "显示 / 隐藏", true, None::<&str>)?;
     let reset = MenuItem::with_id(app, TRAY_ZOOM_RESET, "缩放复位 100%", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, TRAY_QUIT, "退出（关闭 dsh）", true, None::<&str>)?;
@@ -516,9 +580,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
     }
-    tray.on_menu_event(|app, event| match event.id().as_ref() {
+    let tray_state = state.clone();
+    tray.on_menu_event(move |app, event| match event.id().as_ref() {
         TRAY_TOGGLE => toggle_window(app),
-        TRAY_ZOOM_RESET => reset_zoom(app),
+        TRAY_ZOOM_RESET => reset_zoom(app, &tray_state),
         TRAY_QUIT => {
             // The normal exit: ExitRequested runs the dsh tree kill.
             app.exit(0);
@@ -581,9 +646,14 @@ fn open_externally(url: &tauri::Url) {
 }
 
 fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
+    // For `.manage()` below, which needs the last clone. The builder keeps
+    // `state` alive inside the runtime from here on, so the individual closures
+    // take their own clones.
+    let managed_state = state.clone();
     let setup_state = state.clone();
     let nav_state = state.clone();
     let new_window_state = state.clone();
+    let tray_state = state.clone();
     tauri::Builder::default()
         // A second launch raises the window that is already running instead of
         // starting a rival one - which would otherwise race dsh for the port and
@@ -597,25 +667,16 @@ fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
         // Toast only, and only from Rust: the page never gets a notification
         // capability, because a dsh page has no business posting toasts as us.
         .plugin(tauri_plugin_notification::init())
-        .manage(state)
+        .manage(managed_state)
         .setup(move |app| {
-            build_tray(app)?;
-            // The window's *system* DPI, not Tauri's idea of the monitor's scale
-            // factor. `primary_monitor().scale_factor()` and even
-            // `window.scale_factor()` both reported 1.0 on a 125% display while
-            // WebView2 was rendering at 1.25 — the process is not per-monitor DPI
-            // aware, so Windows virtualises every scale query it makes. That is
-            // not cosmetic: this number is the denominator that turns
-            // `devicePixelRatio` back into a page zoom, and getting it wrong made
-            // the caption claim 125% when the zoom was 100%.
-            //
-            // `GetDpiForSystem` is documented as unaffected by the calling
-            // process's awareness, which is exactly the property needed here.
-            let os_scale = system_dpi_scale();
-            tracing::info!(target: "dsh_shell", "display scale factor = {os_scale}");
+            build_tray(app, &tray_state)?;
 
-            let chrome = chrome_script(os_scale);
+            let chrome = chrome_script(Config::load_or_default().zoom_percent);
             let page_load_chrome = chrome.clone();
+            // The page-load hook needs the state so it can honour the zoom
+            // preference; it cannot capture the window, which does not exist yet
+            // either.
+            let zoom_state = state.clone();
             let window = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
                 .title("DSH Shell")
                 .inner_size(1280.0, 800.0)
@@ -630,12 +691,18 @@ fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
                 // cannot be dragged onto the dsh page. Hand drops back to the
                 // page; it has its own drop target for the chat composer.
                 .disable_drag_drop_handler()
-                // Chromium's own zoom hotkeys. Written explicitly rather than
-                // left to the default: the default is a `#[serde(default)]`
-                // bool, which is false, and this used to be disabled on purpose
-                // so the chrome could divide the zoom out. Now the chrome scales
-                // with the page the way dsh's own content does, so the hotkeys are
-                // wanted and the division is gone.
+                // Chromium's own zoom hotkeys, on purpose and written out: the
+                // default is a `#[serde(default)]` bool, which is false, so
+                // omitting this silently disables `Ctrl`+`±`/`0`.
+                //
+                // These are not intercepted. Letting Chromium handle them is what
+                // keeps `Ctrl`+`=` and a click on a menu rung the same operation,
+                // and it is what the macOS shell does too — `WKWebView` has no way
+                // to suppress its own, and the comment there says a percentage
+                // that drifts from the real zoom is worse than no percentage at all.
+                //
+                // A hotkey therefore moves the page without moving `zoom_percent`,
+                // and it lasts until the next navigation — see the push below.
                 .zoom_hotkeys_enabled(true)
                 // Runs before any page script, on every navigation, so it cannot
                 // be lost to a race with the SPA booting.
@@ -650,6 +717,28 @@ fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
                     // no-op.
                     if payload.event() != tauri::webview::PageLoadEvent::Finished {
                         return;
+                    }
+                    // The configured zoom, pushed unconditionally on every
+                    // navigation.
+                    //
+                    // Unconditional is the second half of this decision, and the
+                    // half that needed measuring. WebView2 remembers a zoom *per
+                    // origin*, and there are two: the placeholder is
+                    // `tauri.localhost`, dsh is `127.0.0.1:3080`. The macOS
+                    // `ZoomDecision` rule — push only when our own preference moved
+                    // — pushed 100% to the placeholder, recorded "already applied",
+                    // and then skipped the dsh page, which still carried its own
+                    // 125% from an earlier session. The menu ticked 100% over a
+                    // page rendered at 125%.
+                    //
+                    // So a `Ctrl`+`=` is session-local: it holds until you navigate
+                    // — dsh's client-side routing never reaches this hook — and is
+                    // gone after a reload. The configured rung is what survives a
+                    // restart, which is the only meaning "keep the zoom I had last
+                    // time" can have when two origins can each remember one.
+                    let preference = config::normalize_zoom(Config::load_or_default().zoom_percent);
+                    if let Err(err) = apply_page_zoom(&window, &zoom_state, preference) {
+                        tracing::warn!(target: "dsh_shell", "could not apply zoom: {err}");
                     }
                     if let Err(err) = window.eval(page_load_chrome.clone()) {
                         tracing::error!(target: "dsh_shell", "could not inject chrome: {err}");
@@ -686,26 +775,29 @@ fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
                 .build()?;
 
             let state = setup_state.clone();
-            tauri::async_runtime::spawn(async move {
-                let config = Config::load_or_default();
-                tracing::info!(
-                    target: "dsh_shell",
-                    "starting: mode={:?} port={} host={} binary={} auto_restart={} os_scale={os_scale}",
-                    config.launch_mode,
-                    config.preferred_port,
-                    config.listen_host,
-                    config.dsh_binary_path.display(),
-                    config.auto_restart_on_crash,
-                );
-
-                supervise_dsh(&window, state, config).await;
-            });
+            let config = Config::load_or_default();
+            tracing::info!(
+                target: "dsh_shell",
+                "starting: mode={:?} port={} host={} binary={} auto_restart={}",
+                config.launch_mode,
+                config.preferred_port,
+                config.listen_host,
+                config.dsh_binary_path.display(),
+                config.auto_restart_on_crash,
+            );
+            // Through `start_lifecycle` like every later launch, so the startup
+            // and a retry are the same code path with the same guard. This is the
+            // only claim that is taken outside the page.
+            start_lifecycle(&window, &state, false);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             hide_to_tray,
+            // The caption menu's zoom controls, and the two buttons on the failure
+            // page.
             set_page_zoom,
+            startup_retry,
             chrome_report,
             chrome_error
         ])
@@ -719,15 +811,33 @@ fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
 /// has to: a process that crashes after nine hours is a new failure, not a
 /// continuation of the one that was fixed at lunchtime, and without the reset the
 /// third crash of the morning would never be retried.
-async fn supervise_dsh(window: &WebviewWindow, state: Arc<AppState>, config: Config) {
+async fn supervise_dsh(
+    window: &WebviewWindow,
+    state: Arc<AppState>,
+    config: Config,
+    lifecycle_running: Arc<AtomicBool>,
+    cleanup_done: Arc<AtomicBool>,
+) {
     let mut attempt: u32 = 0;
     loop {
         // Before the first spawn, and only then: a dsh orphaned by a previous
         // run holds the port this launch needs, and `starting_pid` cannot know
         // about it because it never saw the process.
-          if attempt == 0 {
-              orphan::reclaim_orphan(&config, orphan::ReclaimReason::AtStartup);
-          }
+        if attempt == 0 && !cleanup_done.load(Ordering::SeqCst) {
+            // Whichever reclaim runs last must be the only one that runs, so the
+            // flag is claimed *before* the work: two callers racing this would
+            // otherwise both see `false` and both kill. The reclaim is
+            // idempotent in effect but not in log output, and a second kill of an
+            // already-dying tree is a PID-reuse window we do not need to open.
+            if cleanup_done.swap(true, Ordering::SeqCst) {
+                tracing::debug!(target: "dsh_shell", "reclaim already done for this attempt");
+            } else {
+                orphan::reclaim_orphan(&config, orphan::ReclaimReason::AtStartup);
+            }
+        }
+        // Reclaimed or not, this loop is now the live one; a retry that arrives
+        // afterwards must not start a second.
+        lifecycle_running.store(false, Ordering::SeqCst);
         let started = std::time::Instant::now();
         let dsh = match launch_recording_pid(&state, config.clone()).await {
             Ok(dsh) => dsh,
@@ -792,6 +902,181 @@ async fn supervise_dsh(window: &WebviewWindow, state: Arc<AppState>, config: Con
         tokio::time::sleep(wait).await;
         tracing::info!(target: "dsh_shell", "restarting dsh after a crash");
     }
+}
+
+/// Take the single-owner claim, or report that somebody else has it.
+///
+/// `swap`, not a check followed by a set: two clicks arriving in the same
+/// millisecond have to produce exactly one winner, and a load-then-store pair
+/// lets both threads see `false` and both proceed. That race is not theoretical
+/// here — a double-click on the retry button is exactly two invocations landing
+/// close together, and the failure it produces is two dsh processes fighting over
+/// one port, which presents as an intermittent "port already in use" that nobody
+/// can reproduce on demand.
+fn claim_lifecycle(flag: &AtomicBool) -> bool {
+    !flag.swap(true, Ordering::SeqCst)
+}
+
+/// Start dsh, unless a lifecycle loop already owns it.
+///
+/// Returns `false` when another loop holds the claim, and the caller does
+/// nothing. That is the guard behind the retry buttons: each press starts a
+/// `supervise_dsh`, and two of them would race for the port that the first one
+/// is failing to bind — turning a clear "port already in use" into an
+/// intermittent one.
+fn start_lifecycle(
+    window: &WebviewWindow,
+    state: &Arc<AppState>,
+    cleanup: bool,
+) -> bool {
+    if !claim_lifecycle(&state.lifecycle_running) {
+        tracing::info!(target: "dsh_shell", "a lifecycle is already running; ignoring the request");
+        return false;
+    }
+    if cleanup {
+        // Asked for explicitly, so it runs whether or not the automatic one has:
+        // this button exists for the launch where the automatic reclaim declined,
+        // and it must not be a no-op because an earlier, successful reclaim ran.
+        state.cleanup_done.store(false, Ordering::SeqCst);
+    }
+    let config = Config::load_or_default();
+    let state = state.clone();
+    let window = window.clone();
+    let lifecycle_running = state.lifecycle_running.clone();
+    let cleanup_done = state.cleanup_done.clone();
+    tauri::async_runtime::spawn(async move {
+        supervise_dsh(
+            &window,
+            state,
+            config,
+            lifecycle_running,
+            cleanup_done,
+        )
+        .await;
+    });
+    true
+}
+
+/// What the failure page needs to show, gathered from the port rather than
+/// guessed from the error.
+///
+/// The error says the port was taken; this says by whom, and whether we are
+/// allowed to end that. Both go into the log and onto the screen from this one
+/// value, so the page cannot tell a story the log would contradict.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OccupantView {
+    pid: u32,
+    reclaimable: bool,
+    /// Why we will not touch it. Empty when `reclaimable`.
+    verdict: String,
+    command_line: String,
+}
+
+/// The failure payload, as sent to the page.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupFailure {
+    reason: String,
+    port: u16,
+    occupants: Vec<OccupantView>,
+}
+
+impl StartupFailure {
+    fn gather(config: &Config, err: &ShellError) -> Self {
+        let occupant = orphan::inspect_port(config);
+        let people = occupant
+            .info
+            .iter()
+            .map(|info| OccupantView {
+                pid: info.pid,
+                reclaimable: occupant.reclaimable,
+                verdict: if occupant.reclaimable {
+                    String::new()
+                } else {
+                    occupant.reason.clone()
+                },
+                command_line: info.command_line.clone(),
+            })
+            .collect();
+        Self {
+            reason: err.to_string(),
+            port: occupant.port,
+            occupants: people,
+        }
+    }
+}
+
+/// Surface a startup failure in the window itself. A release build has no
+/// console, so a silent exit here is indistinguishable from a hung app.
+///
+/// Carries the port evidence, not just the message. The previous version set two
+/// text nodes and stopped there, which made a refusal to kill somebody else's
+/// server look identical to a hang: the page said why in one line and offered no
+/// way to do anything about it.
+fn report_failure(window: &WebviewWindow, err: &ShellError) {
+    tracing::error!(target: "dsh_shell", "startup failed: {err}");
+    write_crash_log(&format!("startup failed: {err}"));
+    notify(
+        window.app_handle(),
+        "dsh 启动失败",
+        format!("DSH Shell 无法启动 dsh：{err}"),
+    );
+
+    let failure = StartupFailure::gather(&Config::load_or_default(), err);
+    if !failure.occupants.is_empty() {
+        tracing::warn!(
+            target: "dsh_shell",
+            "port {} is held by {} process(es), {} of them reclaimable",
+            failure.port,
+            failure.occupants.len(),
+            failure
+                .occupants
+                .iter()
+                .filter(|person| person.reclaimable)
+                .count()
+        );
+    }
+    let payload = serde_json::to_string(&failure).unwrap_or_else(|_| "{}".into());
+    // The message is the same payload: the page shows `reason`, and setting
+    // `#detail` to the JSON as well would print a second, differently-formatted
+    // copy of the same failure on the same screen.
+    let script = format!(
+        "window.__DSH_SHELL_SHOW_FAILURE__ && window.__DSH_SHELL_SHOW_FAILURE__({payload});"
+    );
+    let _ = window.eval(&script);
+}
+
+/// Retry a failed launch, optionally closing a proven orphan first.
+///
+/// Two commands rather than one with a flag inside the reclaim, because the flag
+/// chooses between two different *intents*: "try again" and "I have looked at the
+/// evidence and it is safe to end that process". `cleanup` is the second one, and
+/// the page only offers the button when the reclaim rule agreed there was
+/// something of ours to end.
+#[tauri::command]
+async fn startup_retry(
+    window: WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    cleanup: bool,
+) -> CommandResult<()> {
+    if state.shutting_down.load(Ordering::SeqCst) {
+        return Err("the app is exiting".into());
+    }
+    // Reset the page first: if the claim is refused because a lifecycle is
+    // already running, that lifecycle will report its own outcome, and leaving the
+    // stale evidence on screen would misattribute it.
+    let _ = window.eval("window.__DSH_SHELL_RESET_BOOT__ && window.__DSH_SHELL_RESET_BOOT__();");
+    // A refused claim is not an error: it means the lifecycle that is already
+    // running will report its own outcome, and reporting a failure here as well
+    // would put two contradicting messages on the page. The page is left
+    // disabled either way until dsh navigates away or this launch fails again.
+    if start_lifecycle(&window, state.inner(), cleanup) {
+        tracing::info!(target: "dsh_shell", "retry requested (cleanup={cleanup})");
+    } else {
+        tracing::warn!(target: "dsh_shell", "retry ignored: a lifecycle is already running");
+    }
+    Ok(())
 }
 
 /// How long to keep waiting for a crashed dsh to release its port.
@@ -943,26 +1228,6 @@ fn notify(app: &AppHandle, title: &str, body: String) {
     toast::show_clickable(app, title, body);
 }
 
-/// Surface a startup failure in the window itself. A release build has no
-/// console, so a silent exit here is indistinguishable from a hung app.
-fn report_failure(window: &WebviewWindow, err: &ShellError) {
-    tracing::error!(target: "dsh_shell", "startup failed: {err}");
-    write_crash_log(&format!("startup failed: {err}"));
-    notify(
-        window.app_handle(),
-        "dsh 启动失败",
-        format!("DSH Shell 无法启动 dsh：{err}"),
-    );
-
-    let message = serde_json::to_string(&err.to_string()).unwrap_or_else(|_| "\"unknown\"".into());
-    let script = format!(
-        "document.getElementById('status') && (document.getElementById('status').textContent = 'Failed to start dsh');
-         document.getElementById('detail') && (document.getElementById('detail').textContent = {message});
-         document.body && document.body.classList.add('failed');"
-    );
-    let _ = window.eval(&script);
-}
-
 fn log_dir() -> std::path::PathBuf {
     directories::ProjectDirs::from("ai", "deepseek", "dsh-shell")
         .map(|dirs| dirs.data_dir().join("logs"))
@@ -1014,4 +1279,59 @@ fn init_tracing() {
     let _ = subscriber.try_init();
 
     tracing::info!(target: "dsh_shell", "logging to {}", dir.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A double-click on "Retry" fires two invocations, and only one may start a
+    /// lifecycle. Without this, both spawn a dsh, they race for the port the
+    /// first one is failing to bind, and the user sees an intermittent
+    /// "port already in use" that cannot be reproduced on demand.
+    #[test]
+    fn only_one_caller_takes_the_lifecycle_claim() {
+        let flag = AtomicBool::new(false);
+        assert!(claim_lifecycle(&flag), "the first caller wins");
+        assert!(!claim_lifecycle(&flag), "the second is refused");
+        assert!(!claim_lifecycle(&flag), "and stays refused");
+    }
+
+    /// Concurrent, because the whole point is that two clicks can land in the same
+    /// millisecond. A check-then-set would let both threads read `false`.
+    #[test]
+    fn the_claim_admits_exactly_one_of_many_threads() {
+        for _ in 0..64 {
+            let flag = Arc::new(AtomicBool::new(false));
+            let winners = Arc::new(AtomicU32::new(0));
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    let flag = flag.clone();
+                    let winners = winners.clone();
+                    scope.spawn(move || {
+                        if claim_lifecycle(&flag) {
+                            winners.fetch_add(1, Ordering::SeqCst);
+                        }
+                    });
+                }
+            });
+            assert_eq!(
+                winners.load(Ordering::SeqCst),
+                1,
+                "exactly one caller may start a dsh"
+            );
+        }
+    }
+
+    /// The claim is released once the loop is past its reclaim and about to
+    /// spawn, so a retry arriving after a failure is allowed to start a new one.
+    /// A flag that stayed set would make the retry button permanently dead — and
+    /// silently so, since the page disables itself while "busy".
+    #[test]
+    fn the_claim_is_releasable_so_a_retry_can_come_after_a_failure() {
+        let flag = AtomicBool::new(false);
+        assert!(claim_lifecycle(&flag));
+        flag.store(false, Ordering::SeqCst);
+        assert!(claim_lifecycle(&flag), "a retry after a failed launch must work");
+    }
 }

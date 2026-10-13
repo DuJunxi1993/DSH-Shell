@@ -13,19 +13,25 @@
  *    dsh's Content-Security-Policy, so the real page gets this from Rust via
  *    `eval` on page load; the early return below makes that idempotent.
  *
- * ## Zoom
+ *  ## Zoom
  *
- * Zoom is Chromium's. `Ctrl`+`±`/`0` is not intercepted here, and every length
- * below is a plain CSS pixel, so the chrome scales with the page exactly as
- * dsh's own content does. That is what dsh's contract assumes too:
- * `--dsh-windows-titlebar-height` is a CSS length, so the reserved caption band
- * scales with everything else and the two cannot drift apart.
+ *  Zoom is the webview's, and it is Chromium's hotkeys that change it:
+ *  `Ctrl`+`±`/`0` are not intercepted here. Every length below is a plain CSS
+ *  pixel, so the chrome scales with the page exactly as dsh's own content does.
+ *  That is what dsh's contract assumes too: `--dsh-windows-titlebar-height` is a
+ *  CSS length, so the reserved caption band scales with everything else and the
+ *  two cannot drift apart.
  *
- * The one thing this file still has to do about zoom is *report* it, and that
- * needs a little care: Chromium applies zoom on top of the display's own scaling
- * and Tauri can read neither. `devicePixelRatio` divided by the injected system
- * scale is the whole signal, which is why `osScale` comes from Rust rather than
- * being guessed here.
+   *  The menu lists the ladder and marks the current rung, rather than showing a
+   *  number it had to work out. Working it out means dividing `devicePixelRatio` by
+   *  the display's scale, and that divisor is not obtainable here: measured at
+   *  three zoom levels, `dpr` is 0.63 / 1.25 / 1.88 for 50% / 100% / 150% — exactly
+   *  1.25 x zoom — while `GetDpiForSystem`, `GetDpiForWindow`, `GetDpiForMonitor`
+   *  and `LOGPIXELSX` all report 96. The factor is real; it is just not one any of
+   *  them will name. That is also why clicking 缩小 appeared to enlarge the page:
+   *  the real zoom fell while a percentage divided by 1.0 rose.
+   *  `settings.json`'s `zoom_percent` is the only record of the zoom, and it is what
+   *  the menu reads. See AGENTS.md fact 6.
  *
  * ## Clicking through
  *
@@ -60,10 +66,6 @@
   var CONTROL_H = num(CFG.controlH, 28);
   var CONTROL_TOP = num(CFG.controlTop, 4);
   var EDGE_INSET = num(CFG.edgeInset, 10);
-  /* Injected by `chrome::script` from `window.scale_factor()`. Read it here
-     rather than in the Rust side: it is the denominator that turns
-     `devicePixelRatio` back into a page zoom. */
-  var OS_SCALE = num(CFG.osScale, 1);
   var RESERVED_W = 3 * WIN_W;
 
   var STYLE_ID = "dsh-shell-chrome-style";
@@ -103,8 +105,8 @@
    *
    * `--dsh-windows-titlebar-height` is *read* by dsh and never set by it, which
    * is what makes the host the owner of the number. It is a CSS length, so the
-   * page zoom multiplies it exactly like everything else in the document, and it
-   * stays aligned with our bar for that reason.
+   * browser scales it exactly like everything else in the document, and it stays
+   * aligned with our bar for that reason.
    */
   function declareDesktopContract() {
     var html = document.documentElement;
@@ -188,35 +190,14 @@
   /* Every length in this file is a plain CSS pixel.
    *
    * This used to divide by the page zoom, so the chrome kept a fixed physical
-   * size while the page around it scaled. Zoom is Chromium's now and the hotkeys
-   * are not intercepted, and dividing the chrome out is not merely unnecessary
-   * but wrong: dsh's reserved caption band is `--dsh-windows-titlebar-height`,
-   * a CSS length, so it scales with the zoom along with everything else. Scaling
-   * in step is what keeps our bar and dsh's band agreeing at every zoom level.
+   * size while the page around it scaled. That was the single most bug-prone line
+   * in the file — applied twice once, which made "the menu bar grows when I zoom
+   * out" — and it was never needed. dsh's reserved caption band is
+   * `--dsh-windows-titlebar-height`, a CSS length, so it scales with everything
+   * else; scaling in step is what keeps our bar and dsh's band agreeing.
    */
   function px(designPx) {
     return designPx + "px";
-  }
-
-  /* The page's current zoom, as a fraction.
-   *
-   * Chromium multiplies the display's own scale factor into `devicePixelRatio`
-   * and then applies the page zoom on top, and Tauri can read the first but
-   * exposes no getter for the second. Dividing one by the other - the system
-   * scale is injected from Rust - is the only way to learn the zoom from inside
-   * the page while the hotkeys belong to Chromium.
-   *
-   * This is what the menu steps from and what it displays. It is deliberately
-   * derived rather than cached: a cached value goes stale the moment the user
-   * presses Ctrl+=, and a menu that claims a percentage that is not the real one
-   * is worse than no menu.
-   */
-  function currentZoom() {
-    var ratio = Number(window.devicePixelRatio);
-    if (!isFinite(ratio) || ratio <= 0 || OS_SCALE <= 0) {
-      return 1;
-    }
-    return ratio / OS_SCALE;
   }
 
   function invoke(cmd, args) {
@@ -292,10 +273,64 @@
       "#" + ROOT_ID + " .dss-panel-item:hover:not([disabled]) {",
       "  background: rgba(127,127,127,0.22);",
       "}",
-      "#" + ROOT_ID + " .dss-panel-item {",
-      "  transition: background-color 120ms ease;",
-      "}",
-      "#" + ROOT_ID + " svg { display: block; }"
+        "#" + ROOT_ID + " .dss-panel-item {",
+        "  transition: background-color 120ms ease;",
+        "}",
+        /* The radio marker for the current rung.
+         *
+         * Drawn as a leading glyph rather than with a `::before` on the row: the
+         * check has to sit in the flex row without shifting the label when it
+         * appears or disappears, and a text node with a fixed-width slot does that
+         * for free. `data-checked` rather than a class so the state is readable
+         * from `markCurrentRung` without touching a stylesheet.
+         *
+         * `[disabled]` keeps its own rule above: the reset row is disabled at
+         * 100%, and a disabled row must not get the marker slot's hover either. */
+        "#" + ROOT_ID + " .dss-panel-item[data-percent] {",
+        "  padding-left:" + px(26),
+        "}",
+        "#" + ROOT_ID + " .dss-panel-item[data-percent]::before {",
+        "  content: '';",
+        "  position: absolute;",
+        "  left:" + px(10),
+        "  width:" + px(8),
+        "  font-size:" + px(11),
+        "  opacity: 0;",
+        "}",
+        "#" + ROOT_ID + " .dss-panel-item[data-checked='true']::before {",
+        "  content: '\\2713';",
+        "  opacity: 0.85;",
+        "}",
+        "#" + ROOT_ID + " .dss-panel-item {",
+        "  position: relative;",
+        "}",
+        /* The scrollbar is styled rather than inherited.
+         *
+         * The chrome is injected into a document we do not own, so a bare
+         * `overflow-y: auto` would take dsh's scrollbar styling — including its
+         * width and colours, which are set from `--dsw-*` tokens in the page. That
+         * makes the one control that appears only when the window is short into a
+         * thing that follows the document, which is exactly what the rest of the
+         * chrome refuses to be.
+         *
+         * `transparent` track with a faint thumb: the panel has no background of its
+         * own either (see `panelSurface`), so a themed track would be a visible
+         * bar sitting inside a transparent dropdown. */
+        "#" + ROOT_ID + " .dss-panel::-webkit-scrollbar {",
+        "  width: " + px(8) + ";",
+        "}",
+        "#" + ROOT_ID + " .dss-panel::-webkit-scrollbar-track {",
+        "  background: transparent;",
+        "}",
+        "#" + ROOT_ID + " .dss-panel::-webkit-scrollbar-thumb {",
+        "  background: currentColor;",
+        "  opacity: 0.22;",
+        "  border-radius: " + px(4) + ";",
+        "}",
+        "#" + ROOT_ID + " .dss-panel::-webkit-scrollbar-thumb:hover {",
+        "  opacity: 0.38;",
+        "}",
+        "#" + ROOT_ID + " svg { display: block; }"
     ].join("\n");
 
     try {
@@ -540,7 +575,7 @@
       return fg;
     }
 
-    /* --- the menu button, and the zoom panel behind it ---
+    /* --- the menu button, and the panel behind it ---
      *
      * On the right, immediately before the window buttons, and that is not a
      * style choice. The caption's left edge is dsh's: its contract pins the
@@ -551,7 +586,7 @@
      * window buttons' own, and we know exactly how wide that is.
      *
      * The panel is a dropdown rather than a permanent row because there is only
-     * one thing to put in it, and a row of zoom controls sitting in the caption
+     * one thing to put in it, and a row of text-size controls sitting in the caption
      * all day would be chrome competing with dsh's own content for the same
      * pixels.
      */
@@ -603,16 +638,37 @@
       "right:" + px(RESERVED_W + EDGE_INSET),
       "top:" + px(BAR_H),
       "min-width:" + px(150),
-      "padding:" + px(5),
-      "pointer-events:auto",
-      "border-radius:" + px(CORNER_R + 1),
-      "box-shadow:0 6px 20px rgba(0,0,0,0.32)",
-      /* A gap between the items, not padding inside each: it keeps the rows the
-         same height whether or not they carry a label, and a hover highlight then
-         covers one row rather than bleeding into its neighbour. */
-      "flex-direction:column",
-      "gap:" + px(2),
-      "font-size:" + px(12.5),
+        "padding:" + px(5),
+        "pointer-events:auto",
+        "border-radius:" + px(CORNER_R + 1),
+        "box-shadow:0 6px 20px rgba(0,0,0,0.32)",
+        /* A gap between the items, not padding inside each: it keeps the rows the
+           same height whether or not they carry a label, and a hover highlight then
+           covers one row rather than bleeding into its neighbour. */
+        "flex-direction:column",
+        "gap:" + px(2),
+        /* The ladder is sixteen rows. On a short window they do not fit, and a
+           panel with no bound runs off the bottom of the screen with no way to
+           reach the rows past the edge.
+           *
+           * `max-height` is a fraction of the *viewport* rather than a fixed pixel
+           count, because the panel is anchored to the top of the window: the space
+           below it is whatever is left, and that changes with the window height.
+           * `100vh` is the ceiling so it can never be taller than the window it is
+           * anchored to.
+           *
+           * `overflow-y: auto` shows a scrollbar only when it is needed, so the
+           * common case (a window tall enough for everything) is unaltered. The
+           * thin bar and the padding are ours to style because this is
+           * `-webkit-app-region` territory: a scrollbar that inherits dsh's page
+           * styling would be the one control in the chrome that follows the
+           * document. */
+        "max-height:calc(100vh - " + px(BAR_H + 8) + ")",
+        "overflow-y:auto",
+        "overscroll-behavior:contain",
+        "scrollbar-width:thin",
+        "scrollbar-color:currentColor transparent",
+        "font-size:" + px(12.5),
       "line-height:" + px(1.35),
       /* Opacity and a small rise rather than `display`, so the panel can fade in
          instead of appearing between two frames. `visibility` keeps it out of the
@@ -624,48 +680,44 @@
       "transition:opacity 140ms ease, transform 140ms ease, visibility 0s linear 140ms"
     ].join(";");
 
-    /* Zoom is a ladder, not a free scale: Chromium's hotkeys land on its own
-       rungs, so stepping by a tenth from wherever we actually are is the only
-       way a "+/-" pair behaves predictably next to them. Rust clamps to the same
-       ladder before it calls `set_zoom`, so these are a courtesy to the UI and
-       not the enforcement point. */
-    var ZOOM_MIN = 50;
-    var ZOOM_MAX = 200;
-    var ZOOM_STEP = 10;
-
-    function zoomPercent() {
-      return Math.round(currentZoom() * 100);
-    }
+    /* The ladder, injected from Rust.
+     *
+     * `zoomRungs` is the whole list rather than a min/step to recompute here: this
+     * file had its own `ZOOM_MIN`/`ZOOM_MAX`/`ZOOM_STEP` for a while, and a ladder
+     * written down twice is a ladder that disagrees with itself the first time
+     * either copy is edited — the menu ends up offering a 130% that
+     * `zoom_ladder_step` cannot produce, which is exactly what happened before
+     * `chrome::tests` started comparing the two.
+     *
+     * `currentPercent` is the value from `settings.json`, not a measurement. It is
+     * the same "the shell knows what it decided" rule as `should_push_zoom` in
+     * `main.rs`: there is no honest way to read the page's zoom back out, and a
+     * percentage derived from `devicePixelRatio` was wrong twice on this machine.
+     */
+    var ZOOM_RUNGS = Array.isArray(CFG.zoomRungs) && CFG.zoomRungs.length
+      ? CFG.zoomRungs
+      : [50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200];
+    var ZOOM_DEFAULT_PERCENT = num(CFG.zoomDefault, 100);
+    var currentPercent = num(CFG.zoomPercent, ZOOM_DEFAULT_PERCENT);
 
     /* One row in the panel.
      *
      * `min-height` rather than padding alone, because a 12.5px label with 2px of
-     * padding is a 20px row and four of them read as one crowded block — the rows
-     * have to be comfortably taller than the text before they stop looking stuck
-     * together. The readout is a row too, so the column keeps one rhythm whether
-     * or not an item has a label.
+     * padding is a 20px row and sixteen of them read as one crowded block — the
+     * rows have to be comfortably taller than the text before they stop looking
+     * stuck together.
      */
-    function zoomItem(label, onClick, role) {
+    function zoomItem(label, onClick) {
       var item = document.createElement("button");
       item.type = "button";
       item.className = "dss-panel-item";
       item.textContent = label;
-      if (role) {
-        item.dataset.role = role;
-      }
-      var readout = role === "readout";
-      item.setAttribute("aria-live", readout ? "polite" : "false");
-      if (readout) {
-        /* Not focusable and not clickable: it is a value, not a control, and a
-           disabled button invites the question of why it cannot be pressed. */
-        item.disabled = true;
-      }
       item.style.cssText = [
         "display:flex",
         "align-items:center",
         "justify-content:space-between",
         "width:100%",
-        "min-height:" + px(30),
+        "min-height:" + px(26),
         "box-sizing:border-box",
           "text-align:left",
           /* No inline background: `.dss-panel-item:hover:not([disabled])` lives in
@@ -677,27 +729,20 @@
         "font:inherit",
         "font-size:" + px(12.5),
         "color:inherit",
-        "cursor:default",
-        readout ? "opacity:0.7" : "",
-        /* Tabular figures so the readout does not shift sideways as the number
-           changes width. */
-        readout ? "font-variant-numeric:tabular-nums" : ""
+        "cursor:default"
       ].join(";");
-      if (!readout) {
-        item.addEventListener("click", function (event) {
-          event.preventDefault();
-          event.stopPropagation();
-          onClick();
-          paintZoomPanel();
-        });
-      }
+      item.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      });
       zoomPanel.appendChild(item);
       return item;
     }
 
-    /* A hairline between the zoom controls and the one action that is not a zoom
-       step. Drawn as a pseudo-element on the row rather than as a separate
-       element so there is nothing extra to lay out. */
+    /* A hairline between the ladder and the reset behind it.
+       Drawn as a pseudo-element on the row rather than as a separate element so
+       there is nothing extra to lay out. */
     function zoomSeparator() {
       var rule = document.createElement("div");
       rule.style.cssText = [
@@ -710,49 +755,75 @@
       zoomPanel.appendChild(rule);
     }
 
-    function setZoomPercent(percent) {
-      var clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, percent));
-      return invoke("set_page_zoom", { percent: clamped }).catch(function (error) {
-        invoke("chrome_error", { message: "set_page_zoom failed: " + error }).catch(function () {});
-      });
-    }
-
-    function paintZoomPanel() {
-      var here = zoomPercent();
-      zoomPanel.querySelectorAll(".dss-panel-item").forEach(function (item) {
-        if (item.dataset.role === "readout") {
-          item.textContent = here + "%";
-        }
-      });
-    }
-
-    function stepZoom(direction) {
-      var here = zoomPercent();
-      /* Align to the ladder before stepping, so repeated presses do not drift
-         off it: from 137%, "−" means the rung below 130, not 127. */
-      var offset = here - ZOOM_MIN;
-      var steps = Math.round(offset / ZOOM_STEP);
-      if (direction < 0 && steps * ZOOM_STEP + ZOOM_MIN < here) {
-        steps -= 1;
-      }
-      if (direction > 0 && steps * ZOOM_STEP + ZOOM_MIN > here) {
-        steps += 1;
-      }
-      return setZoomPercent(ZOOM_MIN + (steps + direction) * ZOOM_STEP);
-    }
-
-    /* The readout first, then the two steps, then the reset behind a rule.
+    /* Ask Rust for a rung, and move the check to whatever it says came back.
      *
-     * The value belongs at the top of the panel, not between the two controls
-     * that change it: a number sitting between a "+" and a "-" reads as the third
-     * control rather than as the state the other two act on.
+     * The check follows the answer rather than the click, because the answer is
+     * the only thing that knows whether the ladder clamped. Clicking 250% lands on
+     * 200%, and a menu that kept showing 250% as checked would be claiming a zoom
+     * that does not exist.
      */
-    zoomItem("100%", null, "readout");
-    zoomItem("放大", function () { stepZoom(1); });
-    zoomItem("缩小", function () { stepZoom(-1); });
-    zoomSeparator();
-    zoomItem("复位 100%", function () { setZoomPercent(100); });
+    function applyZoom(percent) {
+      return invoke("set_page_zoom", { percent: percent })
+        .then(function (applied) {
+          currentPercent = Number(applied);
+          markCurrentRung();
+          // The status line shows the same number, so it has to move at the same
+          // moment. Without this it would sit at the old value until the next 4s
+          // probe, which reads as the readout being wrong rather than late.
+          paintStatus();
+          return applied;
+        })
+        .catch(function (error) {
+          invoke("chrome_error", { message: "set_page_zoom failed: " + error }).catch(function () {});
+        });
+    }
 
+    /* Move the radio check to `currentPercent`.
+     *
+     * The check is drawn as a text marker rather than a real radio input because
+     * the whole panel is DOM inside a document we do not own; a stray focusable
+     * element up there would fight dsh's own keyboard handling. `aria-checked` on
+     * a `menuitemradio` role is what makes it still announce correctly.
+     */
+    function markCurrentRung() {
+      zoomPanel.querySelectorAll(".dss-panel-item[data-percent]").forEach(function (item) {
+        var percent = Number(item.dataset.percent);
+        var on = percent === currentPercent;
+        item.dataset.checked = on ? "true" : "false";
+        item.setAttribute("role", "menuitemradio");
+        item.setAttribute("aria-checked", on ? "true" : "false");
+        item.title = on ? "当前" : "";
+      });
+      var reset = zoomPanel.querySelector(".dss-panel-item[data-reset]");
+      if (reset) {
+        // Disabled rather than hidden when already at 100%: a control that vanishes
+        // moves the rows above it, and the ladder is worth reading at a glance.
+        reset.disabled = currentPercent === ZOOM_DEFAULT_PERCENT;
+      }
+    }
+
+    /* Every rung, then the reset behind a rule.
+     *
+     * A list of rungs rather than 放大/缩小 because the ladder has sixteen steps
+     * and the ones worth reaching are not adjacent: 50% for a dense transcript,
+     * 200% for text across a room. Walking there one press at a time is why the
+     * ladder used to stop at 100% — the far rungs were not worth reaching.
+     *
+     * Enumerated from the injected `zoomRungs`, so the menu cannot offer a
+     * percentage `zoom_ladder_step` could never produce, and cannot miss one
+     * either. This is the same arrangement as `ZoomLadder.rungs` in the macOS
+     * shell, and the same reason.
+     */
+    ZOOM_RUNGS.forEach(function (percent) {
+      var item = zoomItem(percent + "%", function () { applyZoom(percent); });
+      item.dataset.percent = String(percent);
+    });
+    zoomSeparator();
+    var resetItem = zoomItem("复位 " + ZOOM_DEFAULT_PERCENT + "%", function () {
+      applyZoom(ZOOM_DEFAULT_PERCENT);
+    });
+    resetItem.dataset.reset = "true";
+    markCurrentRung();
     /* Open and close are driven by opacity, not `display`, so the panel fades.
      *
      * `visibility` is switched alongside it rather than left to the opacity: a
@@ -769,16 +840,30 @@
       zoomPanel.style.transition = open
         ? "opacity 140ms ease, transform 140ms ease, visibility 0s"
         : "opacity 140ms ease, transform 140ms ease, visibility 0s linear 140ms";
-        menuButton.setAttribute("aria-expanded", open ? "true" : "false");
-        if (menuGlyph) {
-          menuGlyph.style.transform = open
-            ? "rotate(90deg) scaleX(0.8)"
-            : "rotate(0deg) scaleX(1)";
-        }
-      if (open) {
-        paintZoomPanel();
+          menuButton.setAttribute("aria-expanded", open ? "true" : "false");
+          if (menuGlyph) {
+            menuGlyph.style.transform = open
+              ? "rotate(90deg) scaleX(0.8)"
+              : "rotate(0deg) scaleX(1)";
+          }
+          /* Bring the ticked rung into view on open.
+           *
+           * With sixteen rows and the panel scrolling on a short window, the current
+           * rung is often below the fold — 130% on an 800px window sits past the
+           * visible rows — so opening the menu would show a list with the answer
+           * scrolled off the end of it.
+           *
+           * `nearest` rather than `center`: it moves only when the row is actually
+           * out of view, so the panel does not jump every time it opens, and it
+           * cannot scroll the *page* behind it, because the panel is the nearest
+           * scrollable ancestor of a row inside it. */
+          if (open) {
+            var checked = zoomPanel.querySelector(".dss-panel-item[data-checked='true']");
+            if (checked && typeof checked.scrollIntoView === "function") {
+              checked.scrollIntoView({ block: "nearest" });
+            }
+          }
       }
-    }
 
     function panelIsOpen() {
       return zoomPanel.style.visibility === "visible";
@@ -817,60 +902,92 @@
     bar.appendChild(menuButton);
     bar.appendChild(zoomPanel);
 
-    /* The menu glyph: three real bars in a column.
+    /* The menu glyph: three bars in a column.
      *
-     * Written with `box-shadow` first, which cannot work. A shadow is cast from
-     * the element's **border box**, not from its border edge, so with a zero
-     * height it happened to draw two more 1.5px lines; give it the 11px height
-     * that `align-items:center` needs in order to centre the glyph properly, and
-     * the same two shadows become an 11px-tall filled block. That block is what
-     * the screenshot showed.
+     * **Built from SVG paths, not from stacked `<span>`s**, and that is a
+     * rendering fix rather than a preference. The bars used to be `span`s with
+     * `height:1.5px` and `border-radius:0.75px` — fractional CSS pixels. The
+     * window buttons have always been SVG (`glyph()` above) and they never showed
+     * the symptom below; the menu button, the only bar built from boxes, always did:
      *
-     * Three children cost three elements and behave: the flex column centres them
-     * for real, the gap is an actual gap, and the whole group rotates as one.
+     * - pressing a zoom hotkey made the bars visibly **thicker**, and picking a rung
+     *   from the menu made them normal again;
+     * - the rung was the same either way.
+     *
+     * The cause is rasterisation phase. A 1.5px bar spans 1.5 physical pixels at
+     * 100%, and every non-integral scale puts that span across two device rows,
+     * which the compositor antialiases — the bar is then painted at up to ~2px of
+     * coverage and reads as fatter. Which way it rounds depends on the fractional
+     * part of the scale, so it is zoom-dependent: Chromium's `Ctrl`+`=` moves in
+     * *zoom levels* (a logarithmic ladder) while our menu calls `set_zoom` with an
+     * exact factor, the two land on different phases, and the menu click lands on a
+     * phase that looks right. Nothing is re-rendered on the hotkey path, so nothing
+     * corrects it until the next `set_zoom`.
+     *
+     * Stroked SVG lines at integer viewBox coordinates rasterise by their own
+     * geometry rather than by a box of fractional height, which is why the window
+     * buttons are unaffected. Same shape, same `currentColor`, same rotate-on-open.
+     *
+     * `stroke-width` is 1.5 to match the old apparent thickness, and the viewBox is
+     * 14 wide to match the old box so the button's hit area and the gap between the
+     * button and the window cluster do not move.
      */
     function hamburger() {
-      var box = document.createElement("span");
-      box.setAttribute("aria-hidden", "true");
-      box.style.cssText = [
-        "display:flex",
-        "flex-direction:column",
-        "align-items:stretch",
-        "justify-content:center",
-        "gap:" + px(2.5),
-        "width:" + px(14),
-        /* Rotates when the menu is open. Cheap, and it makes the button read as
-           a disclosure rather than as a label. */
+      var ns = "http://www.w3.org/2000/svg";
+      var svg = document.createElementNS(ns, "svg");
+      svg.setAttribute("viewBox", "0 0 14 10");
+      svg.setAttribute("width", px(14));
+      svg.setAttribute("height", px(10));
+      svg.setAttribute("aria-hidden", "true");
+      /* `currentColor` rather than a fixed colour, so the glyph follows the bar's
+         measured foreground on light and dark pages alike. */
+      svg.style.cssText = [
+        "display:block",
+        /* Rotates when the menu is open. Cheap, and it makes the button read as a
+           disclosure rather than as a label. */
         "transform-origin:center",
         "transition:transform 160ms cubic-bezier(0.2, 0.9, 0.3, 1)"
       ].join(";");
-      for (var i = 0; i < 3; i++) {
-        var line = document.createElement("span");
-        line.style.cssText = [
-          "display:block",
-          "height:" + px(1.5),
-          "border-radius:" + px(0.75),
-          /* `currentColor` rather than a fixed colour, so the glyph follows the
-             bar's measured foreground on light and dark pages alike. */
-          "background:currentColor"
-        ].join(";");
-        box.appendChild(line);
-      }
-      return box;
-    }
 
-    /* --- status, centred in the window ---
+      var lines = svg_ns_append(svg, "g", {
+        stroke: "currentColor",
+        "stroke-width": "1.5",
+        "stroke-linecap": "round",
+        fill: "none"
+      });
+        /* y = 1.25 / 5 / 8.75 in a 10-unit box: three bars, equal 3.75-unit gaps,
+           centred, which is the 2.5px gap the flex column produced. Spelled as
+           three explicit lines rather than a loop over an array of arrays — the loop
+           read as if the numbers were indices, and there are exactly three bars. */
+        svg_ns_append(lines, "line", { x1: 0.75, y1: 1.25, x2: 13.25, y2: 1.25 });
+        svg_ns_append(lines, "line", { x1: 0.75, y1: 5, x2: 13.25, y2: 5 });
+        svg_ns_append(lines, "line", { x1: 0.75, y1: 8.75, x2: 13.25, y2: 8.75 });
+        return svg;
+      }
+
+    /* `setAttribute` on an SVG element, which has to go through the SVG namespace
+     * and is the only reason `hamburger()` needs a helper. */
+    function svg_ns_append(parent, tag, attrs) {
+      var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (var key in attrs) {
+        if (Object.prototype.hasOwnProperty.call(attrs, key)) {
+          el.setAttribute(key, attrs[key]);
+        }
+      }
+        parent.appendChild(el);
+        return el;
+      }
+
+      /* --- status, centred in the window ---
      *
      * Centred on the window rather than on the space left over, so it does not
-     * drift as the button cluster's width or the page zoom changes. The width is
+     * drift as the button cluster's width changes. The width is
      * capped so the text cannot reach the menu button on the left or the window
      * buttons on the right: 0..40 is dsh's, 48..80 is ours, and the right-hand
      * 96 is the window's.
      *
      * Two things, both obtained without inventing an API: which dsh we are
-     * attached to, and whether it is still answering. The zoom percentage is not
-     * here - it is in the menu, which derives it from the live page rather than
-     * from a copy kept in step by hand.
+     * attached to, and whether it is still answering.
      *
      * The dot is deliberately three-state. A failed probe only means "down" once
      * a probe has ever succeeded: a page whose own CSP blocked the request would
@@ -900,13 +1017,28 @@
     var reachable = false;
     var everReached = false;
 
-    function paintStatus() {
-      var tint = !everReached ? "inherit" : (reachable ? "#22c55e" : "#ef4444");
-      status.innerHTML =
-        '<span style="color:' + tint + '">' + (everReached ? "●" : "○") + "</span>" +
-        " dsh " + (location.host || "?") +
-        " · " + zoomPercent() + "%";
-    }
+      /* Reachability, which dsh, and the zoom.
+       *
+       * The zoom is `currentPercent` — the same value the menu's radio check is
+       * drawn from, which is the same value `main.rs` pushes onto the webview on
+       * every page load. One source, so the status line and the menu cannot
+       * contradict each other.
+       *
+       * It is deliberately *not* measured from `devicePixelRatio`. That derivation
+       * needs a display scale no Windows API on this machine will name — measured
+       * at three zooms, `dpr = 1.25 x zoom` while every DPI API reports 96 — so a
+       * measured figure would be a number the shell cannot substantiate.
+       *
+       * It goes stale after a `Ctrl`+`=` until the next navigation, exactly like the
+       * menu's tick, and for the same reason: Chromium changes the page without
+       * telling anyone, and the push that would resync it happens on page load. */
+      function paintStatus() {
+        var tint = !everReached ? "inherit" : (reachable ? "#22c55e" : "#ef4444");
+        status.innerHTML =
+          '<span style="color:' + tint + '">' + (everReached ? "●" : "○") + "</span>" +
+          " dsh " + (location.host || "?") +
+          " · " + currentPercent + "%";
+      }
 
     /* Same-origin probe: any answer at all proves dsh's HTTP server is up, and
        the 401 from its auth fence counts. */
@@ -935,7 +1067,7 @@
       /* CONTROL_TOP..CONTROL_TOP+CONTROL_H is exactly the box dsh gives its own
          sidebar toggle, which is what puts the three controls on one line. */
       "margin-top:" + px(CONTROL_TOP),
-      /* Off the frame, so the ✕ does not read as part of dsh's page. The zoom
+      /* Off the frame, so the ✕ does not read as part of dsh's page. The menu
          panel is placed by the same sum. */
       "margin-right:" + px(EDGE_INSET),
       "width:" + px(RESERVED_W),
@@ -962,7 +1094,7 @@
         "display:flex",
         "align-items:center",
         "justify-content:center",
-          /* Geometry, all inline so it tracks the zoom from one place. The
+          /* Geometry, all inline so it tracks the page zoom from one place. The
              background deliberately is not inline: see installStylesheet.
              The height is CONTROL_H, the same 28px box dsh gives its sidebar
              toggle — not the full bar, which `paint()` would overwrite anyway,
@@ -1008,16 +1140,16 @@
     document.documentElement.appendChild(bar);
 
     /* Every length in the bar comes from one place, and it is written once here
-       rather than at each `style.cssText`. Zoom no longer appears: the lengths
-       are plain CSS pixels and the browser scales them. */
+       rather than at each `style.cssText`. The lengths are plain CSS pixels and
+       the browser scales them. */
     function paint() {
       bar.style.height = px(BAR_H);
       menuButton.style.marginTop = px(CONTROL_TOP);
       menuButton.style.width = px(WIN_W);
       menuButton.style.height = px(CONTROL_H);
-      /* Re-applied with every other length so the radius tracks the zoom. An
-         odd-looking radius at 125% is the same class of bug as a bar that does
-         not match its constant — it is just smaller. */
+      /* Re-applied with every other length so the radius scales with the text
+         size. An odd-looking radius at a larger font size is the same class of
+         bug as a bar that does not match its constant — it is just smaller. */
       menuButton.style.borderRadius = px(CORNER_R);
       /* `right` rather than `left`, so the panel stays anchored to the window
          corner as the window is resized; the menu button is in normal flow and
@@ -1052,24 +1184,16 @@
     setInterval(probeTheme, 1500);
     probeTheme();
     paintStatus();
+    /* Repaint the status line on a slow clock.
+     *
+     * The second clock used to exist for the zoom readout: Chromium cannot be
+     * asked what the page zoom is and nothing fires when a `Ctrl`+`=` changes it,
+     * so the percentage had to be re-derived on a timer or it would sit at
+     * whatever it was when the page loaded. `paintStatus` is now reachability and
+     * host only, both of which `probeDsh` already refreshes every 4s, so this
+     * interval is gone with it. */
     probeDsh();
     setInterval(probeDsh, 4000);
-
-    /* The zoom readout, on its own faster poll.
-     *
-     * Zoom is Chromium's and Tauri cannot read it, so the only way to notice a
-     * `Ctrl`+`=` is to re-derive it from `devicePixelRatio` — and nothing fires
-     * when it changes. A second clock is the honest cost of that: without one the
-     * percentage in the caption would sit at whatever it was when the page loaded
-     * and lie until something else happened to repaint it.
-     *
-     * `paintStatus` rewrites a small string and is idempotent, so a 1s poll costs
-     * nothing worth guarding. It is not the 4s `probeDsh` because that one is
-     * there to measure dsh's HTTP server, not the viewport. */
-    setInterval(paintStatus, 1000);
-    /* Repaint on focus too: the user has just come back to the window, which is
-       exactly when a stale percentage is most annoying and most visible. */
-    window.addEventListener("focus", paintStatus);
 
     window.__DSH_SHELL_CHROME__ = {
       setMaximized: function (isMaximized) {
@@ -1113,20 +1237,16 @@
         report: {
           installed: true,
           still_present: !!node,
-          /* Plain CSS pixels now. The chrome scales with the page zoom like the
-             rest of the document, so these are directly comparable to the design
-             constants Rust owns - which is the check that used to need the zoom
-             multiplied back in by hand. */
+          /* Plain CSS pixels, so these are directly comparable to the design
+             constants Rust owns. */
           measured_bar_h: barBox ? barBox.height : 0,
           measured_win_w: winBox ? winBox.width : 0,
-          zoom: currentZoom(),
-          /* The raw inputs behind `zoom`, because a wrong percentage in the
-             caption is otherwise indistinguishable from a wrong one in the log:
-             dpr is the system's scaling multiplied by the page zoom, and only the
-             host knows the first half. Quoting both makes the division checkable
-             instead of merely asserted. */
+          /* `dpr` stays, for a reason that has nothing to do with reporting zoom:
+             it is the one reading that tells you a *display* scale is in play when
+             a measurement looks wrong. It is Chromium's `devicePixelRatio` — the
+             display's scaling times any page zoom — and neither of those belongs to
+             this file any more. */
           dpr: Number(window.devicePixelRatio) || 0,
-          os_scale: OS_SCALE,
           placeholder: document.documentElement.hasAttribute("data-dsh-shell-placeholder"),
           ready_state: document.readyState,
           origin: location.origin,
@@ -1190,11 +1310,19 @@
     }
   }
 
-  /* No zoom hotkeys here. Chromium's own Ctrl+= / Ctrl+- / Ctrl+0 are enabled in
-     Rust, and intercepting them would put us back in charge of a scale factor
-     that the page and the contract both treat as ordinary CSS. The menu derives
-     the current zoom from the live page instead, so it stays correct whichever
-     way the zoom was last changed. */
+  /* No zoom hotkeys are intercepted here. `Ctrl`+`±`/`0` are Chromium's own and are
+     enabled in Rust, on purpose: a hotkey and a click on a rung are then the same
+     operation, and nothing here has to reimplement a browser's zoom ladder to
+     agree with it.
+
+     One thing that is *not* guaranteed: a hotkey is session-local. The shell
+     re-applies `zoom_percent` from `settings.json` on every page load, so a
+     `Ctrl`+`=` holds until you navigate — dsh is a SPA, so its own client-side
+     routing never counts — and is gone after a reload. The configured rung is what
+     survives a restart. That is the deliberate trade for the menu's tick always
+     matching the page: WebView2 remembers a zoom *per origin*, so the placeholder
+     and the dsh page have separate memories and neither can be shown in a menu
+     that lives in the other one. */
 
   function run() {
     try {

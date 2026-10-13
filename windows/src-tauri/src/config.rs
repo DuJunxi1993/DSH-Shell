@@ -17,23 +17,119 @@ pub enum LaunchMode {
     Attach,
 }
 
-/// The zoom ladder the menu steps along.
+/// The page-zoom ladder: 50–200 in 10% steps, 16 rungs.
 ///
-/// Zoom itself is Chromium's: `Ctrl`+`±`/`0` are not intercepted, and WebView2
-/// restores the last zoom per origin on its own. These constants exist for the
-/// title-bar menu, which has to pick a target to ask for and has to land on the
-/// same rungs Chromium uses rather than inventing its own.
+/// Deliberately identical to `ZoomLadder` in the macOS shell, which is where the
+/// ladder actually lives conceptually — one ladder, two implementations that must
+/// agree. A ladder written down twice is a ladder that disagrees with itself the
+/// first time either copy is edited, and the symptom is a menu offering a 130%
+/// that nothing can produce.
 ///
-/// The ceiling is 200, matching `ZoomLadder` on the macOS shell. It was 100
-/// there and here, and nothing was defending it: measured against real dsh
-/// (`macos/tools/dsh-probe --zoom`), 200% costs nothing but a narrower CSS
-/// viewport, which crosses dsh's ≤900px and ≤700px breakpoints without a single
-/// page error or horizontal overflow. A cap that only ever denied a safe choice
-/// is a cap worth raising.
+/// **The ceiling is 200, not 100.** It was 100 on both sides, and nothing was
+/// defending it. Measured against real dsh with the macOS probe (`--zoom`): 200%
+/// costs nothing but a narrower CSS viewport, which crosses dsh's ≤900px and
+/// ≤700px breakpoints with no page errors and no horizontal overflow. So a dsh at
+/// 200% boots clean and reflows into its narrow layout, which is the honest trade
+/// — past ~150% you are choosing to read dsh as a small window, not making it
+/// bigger. Capping at 100% did not prevent that, it just denied a choice that
+/// turns out to be available and safe. 200 is the point where the ≤700px layout
+/// takes over and further zooming only makes it smaller.
 pub const ZOOM_MIN: u8 = 50;
 pub const ZOOM_MAX: u8 = 200;
 pub const ZOOM_STEP: u8 = 10;
 pub const ZOOM_DEFAULT: u8 = 100;
+
+/// Every rung, ascending.
+///
+/// Exists so the caption menu cannot drift from the ladder: it enumerates this
+/// rather than writing out its own percentages, which is how a menu ends up
+/// offering a zoom level `zoom_step` could never produce. The macOS shell has the
+/// identical helper in `ZoomLadder.rungs`, for the identical reason.
+///
+/// A `Vec` rather than an iterator because this crosses into JavaScript, which
+/// wants an array, and because a 16-element ladder is not worth being clever about.
+pub fn zoom_rungs() -> Vec<u8> {
+    (0..=(u16::from(ZOOM_MAX - ZOOM_MIN) / u16::from(ZOOM_STEP)))
+        .map(|i| ZOOM_MIN + i as u8 * ZOOM_STEP)
+        .collect()
+}
+
+/// Snap an arbitrary value onto the ladder.
+///
+/// Snapping rather than rejecting is deliberate: a hand-edited 57 should behave
+/// like 60, not like an error the user cannot see.
+pub fn normalize_zoom(value: u8) -> u8 {
+    if value < ZOOM_MIN {
+        return ZOOM_MIN;
+    }
+    if value > ZOOM_MAX {
+        return ZOOM_MAX;
+    }
+    let offset = value - ZOOM_MIN;
+    let steps = ZOOM_MAX - ZOOM_MIN;
+    let snapped = ZOOM_MIN + (offset + ZOOM_STEP / 2) / ZOOM_STEP * ZOOM_STEP;
+    snapped.min(steps + ZOOM_MIN)
+}
+
+/// The rung one step away from `current`, in `direction`.
+///
+/// `current` is a `f64` because the page measures its zoom as
+/// `devicePixelRatio / osScale`, which is rarely on the ladder: Chromium keeps
+/// whatever zoom it was last given, and `Ctrl`+`+` lands on rungs of its own.
+/// `normalize_zoom` would round to the *nearest* rung, which is the wrong
+/// question — the user asked for a direction.
+///
+/// The rule is floor for `-` and ceil for `+`, so from 137% shrink goes to 130%
+/// and enlarge goes to 140%, each exactly one rung. A value already on a rung has
+/// floor and ceil both equal to itself, so it needs one step added explicitly;
+/// that is what makes repeated presses walk the ladder instead of stalling on
+/// every other click.
+///
+/// This was computed in JavaScript until the ladder was moved here, and the JS
+/// version rounded first and *then* added the direction — which double-counted
+/// whenever the two disagreed, so from 125% an enlarge landed on 150% and skipped
+/// 130. Keeping the arithmetic in Rust is also what gives `ZOOM_MIN`/`ZOOM_MAX`/
+/// `ZOOM_STEP` a single owner instead of a second copy in the injected script
+/// that could drift.
+pub fn zoom_ladder_step(current: f64, direction: i32) -> u8 {
+    // NaN and infinities come out of a dpr that has not settled yet. Treat them
+    // as "unknown" and step from 100% rather than propagating into a cast, which
+    // in Rust saturates to 0 and would send the user to the floor.
+    let here = if current.is_finite() && current > 0.0 {
+        current.clamp(f64::from(ZOOM_MIN), f64::from(ZOOM_MAX))
+    } else {
+        100.0
+    };
+
+    let min = i32::from(ZOOM_MIN);
+    let max = i32::from(ZOOM_MAX);
+    let step = i32::from(ZOOM_STEP);
+    // Kept in integer percent so the floor/ceil is exact: on the f64 ladder,
+    // 130/10 lands on 12.999999999999998 in binary and floors to 12.
+    let here = here.round() as i32;
+    let offset = here - min;
+
+    let target = match direction.cmp(&0) {
+        std::cmp::Ordering::Less => {
+            let rung = offset.div_euclid(step);
+            if offset.rem_euclid(step) == 0 {
+                rung - 1
+            } else {
+                rung
+            }
+        }
+        // Ceil, and +1 for both cases: an exact rung ceils to itself and then
+        // moves on; anything else ceils to the rung above it, which is the same
+        // +1 from `div_euclid`. Written as one expression because the two
+        // branches are identical, and a `rem_euclid` check here would suggest a
+        // distinction that does not exist.
+        std::cmp::Ordering::Greater => offset.div_euclid(step) + 1,
+        // No direction: snap to the nearest rung and stay there.
+        std::cmp::Ordering::Equal => (offset + step / 2).div_euclid(step),
+    };
+
+    (min + target * step).clamp(min, max) as u8
+}
 
 /// How many times dsh may be restarted after crashing before the shell gives up.
 ///
@@ -45,9 +141,9 @@ pub const MAX_RESTARTS: u32 = 3;
 /// How long to wait before restart number `attempt` (0-based).
 ///
 /// Exponential, because the failures that repeat are usually the slow ones: a
-/// plugin Loader that needs ten seconds to settle will fail again immediately if
-/// asked again instantly. Capped, because the alternative is a wait that grows
-/// without bound and an app that has stopped trying while looking alive.
+/// plugin Loader that needs ten seconds will fail again immediately if asked
+/// again instantly. Capped, because the alternative is a wait that grows without
+/// bound and an app that has stopped trying while looking alive.
 pub fn restart_backoff(attempt: u32) -> Duration {
     match attempt {
         0 => Duration::from_secs(2),
@@ -62,43 +158,6 @@ pub fn restart_backoff(attempt: u32) -> Duration {
 /// *outage*: three crashes spread across a day would exhaust it, and a dsh that
 /// crashed at lunchtime and again at nine would not be retried the second time.
 pub const HEALTHY_AFTER: Duration = Duration::from_secs(60);
-
-/// Snap an arbitrary value onto the supported zoom ladder.
-///
-/// Anything below the floor or above the ceiling is clamped rather than
-/// rejected, because the value can arrive from a hand-edited settings file.
-pub fn normalize_zoom(value: u8) -> u8 {
-    if value < ZOOM_MIN {
-        return ZOOM_MIN;
-    }
-    if value > ZOOM_MAX {
-        return ZOOM_MAX;
-    }
-    // Snap to the nearest rung so a hand-written 57 behaves like 60.
-    let offset = value - ZOOM_MIN;
-    let steps = ZOOM_MAX - ZOOM_MIN;
-    let snapped = ZOOM_MIN + (offset + ZOOM_STEP / 2) / ZOOM_STEP * ZOOM_STEP;
-    snapped.min(steps + ZOOM_MIN)
-}
-
-/// The rung one `delta` away from `current`, clamped to the ladder.
-///
-/// `delta` is signed and comes from the page, so this cannot assume a keyboard's
-/// worth of movement. Everything outside the ladder clamps to the nearest end -
-/// including a delta that would take the sum below zero, which is why the sum is
-/// done in `i32`. An earlier version returned the *default* when the sum
-/// underflowed, so one oversized `Ctrl+-` from the page could jump the zoom to
-/// 100% instead of leaving it at the floor.
-pub fn next_zoom(current: u8, delta: i16) -> u8 {
-    let target = i32::from(normalize_zoom(current)) + i32::from(delta);
-    let clamped = target.clamp(i32::from(ZOOM_MIN), i32::from(ZOOM_MAX));
-    normalize_zoom(clamped as u8)
-}
-
-/// The scale factor to hand the webview: 50 → 0.5.
-pub fn zoom_scale(percent: u8) -> f64 {
-    f64::from(normalize_zoom(percent)) / 100.0
-}
 
 /// Top-level configuration. Persisted as JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,20 +183,29 @@ pub struct Config {
     pub spawn_timeout_seconds: u64,
     /// Whether to restart dsh on unexpected child exit.
     pub auto_restart_on_crash: bool,
-    /// A tombstone for the removed `zoom_percent`.
+    /// Page zoom, 50–200 in 10% steps. Mirrors `zoomPercent` in the macOS shell.
     ///
-    /// The page zoom is Chromium's now — its hotkeys are not intercepted and
-    /// WebView2 restores the last zoom per origin by itself — so there is nothing
-    /// left to persist and nothing left to read.
+    /// This is the **only** record of the intended zoom, and it is what the caption
+    /// menu's radio check is drawn from. Nothing tries to read the zoom back out of
+    /// the page: WebView2 has no getter, Tauri exposes only `set_zoom`, and the one
+    /// inference available — `devicePixelRatio` divided by the display's scale — was
+    /// measured wrong twice on this machine before it was deleted (see
+    /// `zoom_ladder_step`). The macOS shell makes the same choice for the same
+    /// reason, in `ZoomDecision`: the shell knows what it decided, and cannot know
+    /// what the webview or a pinch did.
     ///
-    /// The name has to stay. This struct uses `deny_unknown_fields`, so removing
-    /// the field outright would make every settings file written by an earlier
-    /// build fail to parse, and [`Config::load_or_default`] answers a parse
-    /// failure with defaults — which would quietly hand the user a different port
-    /// and launch mode than the one they chose. Deserialised and never used,
-    /// never written back.
-    #[serde(default, rename = "zoom_percent", skip_serializing)]
-    pub removed_zoom_percent: Option<u8>,
+    /// What happens when the two disagree is [`ZoomDecision`]'s question, mirrored
+    /// in `main.rs::push_configured_zoom`.
+    ///
+    /// `#[serde(default)]` so a settings file written before this field existed
+    /// still parses — the same guard as every other field here, and the reason this
+    /// is not a tombstone.
+    #[serde(default = "default_zoom_percent")]
+    pub zoom_percent: u8,
+}
+
+fn default_zoom_percent() -> u8 {
+    ZOOM_DEFAULT
 }
 
 impl Default for Config {
@@ -151,7 +219,7 @@ impl Default for Config {
             poll_interval_seconds: 0.5,
             spawn_timeout_seconds: 60,
             auto_restart_on_crash: true,
-            removed_zoom_percent: None,
+            zoom_percent: ZOOM_DEFAULT,
         }
     }
 }
@@ -263,17 +331,16 @@ mod tests {
         assert_eq!(cfg.preferred_port, 3080);
     }
 
-    /// A settings file written by a build that still had `zoom_percent` has to
-    /// keep parsing, and keep its port.
+    /// A settings file written before this field existed still parses, and keeps
+    /// its port.
     ///
-    /// This is the whole reason the field became a tombstone rather than
-    /// disappearing. `deny_unknown_fields` turns an unrecognised key into a
-    /// parse error, `load_or_default` answers a parse error with defaults, and the
-    /// user silently gets a different port and launch mode. Removing the name
-    /// would therefore have been a data-loss bug that only showed up as "my
-    /// settings reset", which is exactly the sort of regression that ships.
+    /// This struct uses `deny_unknown_fields`, so *removing* the name outright
+    /// would make such a file fail to parse, and `load_or_default` answers a
+    /// parse failure with defaults — which would quietly hand the user a different
+    /// port and launch mode. `#[serde(default)]` is what prevents that, and this
+    /// is the test that would notice it being removed along with the field.
     #[test]
-    fn a_settings_file_with_the_old_zoom_percent_still_loads() {
+    fn a_settings_file_without_zoom_percent_still_loads() {
         let json = serde_json::json!({
             "dsh_binary_path": "C:/tools/dsh.cmd",
             "launch_mode": "spawn",
@@ -282,49 +349,164 @@ mod tests {
             "trusted_hosts": ["127.0.0.1"],
             "poll_interval_seconds": 0.5,
             "spawn_timeout_seconds": 60,
-            "auto_restart_on_crash": true,
-            "zoom_percent": 150
+            "auto_restart_on_crash": true
         });
         let cfg: Config = serde_json::from_value(json).expect("an old settings file must parse");
         assert_eq!(cfg.preferred_port, 4455, "the port has to survive the parse");
-        assert_eq!(cfg.removed_zoom_percent, Some(150), "and the old key is read, not dropped");
-    }
-
-    /// And it must not be written back, or every save would resurrect a field
-    /// that no longer does anything.
-    #[test]
-    fn the_old_zoom_percent_is_not_written_back() {
-        let cfg = Config {
-            removed_zoom_percent: Some(150),
-            ..Config::default()
-        };
-        let text = serde_json::to_string(&cfg).expect("serialise");
-        assert!(
-            !text.contains("zoom_percent"),
-            "a removed setting must not reappear in the file: {text}"
+        assert_eq!(
+            cfg.zoom_percent, ZOOM_DEFAULT,
+            "and the missing zoom falls back to the default rung"
         );
     }
 
+    /// A stored zoom outside the ladder — hand-edited, or written by a build with
+    /// a wider one — is snapped rather than refused.
+    ///
+    /// The same reason the macOS shell snaps: 57 should behave like 60, not fail to
+    /// parse and take the user's port down with it.
     #[test]
-    fn zoom_clamps_to_the_ladder() {
-        // Written against the ladder's ends, not against literal percentages:
-        // the ceiling is deliberately raisable, and hardcoding it here made these
-        // assert the old ladder rather than the rule.
-        assert_eq!(normalize_zoom(0), ZOOM_MIN);
-        assert_eq!(normalize_zoom(ZOOM_MIN - 1), ZOOM_MIN);
-        assert_eq!(normalize_zoom(ZOOM_MIN), ZOOM_MIN);
-        assert_eq!(normalize_zoom(u8::MAX), ZOOM_MAX);
+    fn a_stored_zoom_off_the_ladder_is_snapped_on_load() {
+        for (stored, want) in [(57, 60), (9, 50), (255, 200), (100, 100)] {
+            let cfg = Config {
+                zoom_percent: stored,
+                ..Config::default()
+            };
+            assert_eq!(
+                normalize_zoom(cfg.zoom_percent),
+                want,
+                "a stored {stored}% must land on {want}%"
+            );
+        }
     }
 
+    /// The menu enumerates the ladder, so it cannot offer a rung `zoom_step` could
+    /// never produce — and cannot miss one either, which is the other direction of
+    /// the same drift.
     #[test]
-    fn the_ladder_spans_100_percent() {
-        // 100% was the original ceiling and is now a rung in the middle of it. A
-        // page value must survive normalization unchanged, or every window
-        // rendered at the wrong scale after a restart.
-        assert_eq!(normalize_zoom(100), 100);
-        // The ceiling leaving room above 100% is a property of the ladder, not of
-        // this test, so it is checked where it cannot be optimized away.
-        const _: () = assert!(ZOOM_MAX > 100, "the ceiling must leave room above 100%");
+    fn the_rungs_are_the_whole_ladder() {
+        let rungs = zoom_rungs();
+        assert_eq!(rungs.len(), 16, "50..200 by 10 is sixteen rungs");
+        assert_eq!(rungs.first(), Some(&ZOOM_MIN));
+        assert_eq!(rungs.last(), Some(&ZOOM_MAX));
+        // Every rung is reachable from the one below it by a single step, which is
+        // what makes `Ctrl`+`±` and the menu agree about what "next" means.
+        for pair in rungs.windows(2) {
+            assert_eq!(pair[1] - pair[0], ZOOM_STEP, "{pair:?} are not adjacent");
+        }
+        // And every rung above the floor is exactly what `zoom_step` produces from
+        // the rung below it — which is the property that makes `Ctrl`+`±` and a
+        // click on a menu item the same operation. The floor is excluded because
+        // stepping *up* from the floor leaves it; there is no rung below it to
+        // reach.
+        for pair in rungs.windows(2) {
+            let (below, above) = (pair[0], pair[1]);
+            assert_eq!(
+                zoom_ladder_step(f64::from(below), 1),
+                above,
+                "the ladder cannot step up from {below}% to {above}%"
+            );
+            assert_eq!(
+                zoom_ladder_step(f64::from(above), -1),
+                below,
+                "the ladder cannot step down from {above}% to {below}%"
+            );
+        }
+    }
+
+    /// The reported bug, exactly: from a display that reads 125% while the real
+    /// zoom is 100%, "放大" jumped to 150% and skipped the 130 rung.
+    ///
+    /// Reproduced verbatim so the arithmetic cannot regress into rounding-then-
+    /// adding, which is how it got here.
+    #[test]
+    fn ladder_step_takes_exactly_one_rung_from_between_rungs() {
+        assert_eq!(zoom_ladder_step(125.0, 1), 130);
+        assert_eq!(zoom_ladder_step(125.0, -1), 120);
+        assert_eq!(zoom_ladder_step(137.0, 1), 140);
+        assert_eq!(zoom_ladder_step(137.0, -1), 130);
+        // A value just past a rung still moves one, not two.
+        assert_eq!(zoom_ladder_step(131.0, 1), 140);
+        assert_eq!(zoom_ladder_step(131.0, -1), 130);
+    }
+
+    /// Repeated presses must walk the ladder and never stall on every other click.
+    #[test]
+    fn ladder_step_walks_from_a_rung() {
+        assert_eq!(zoom_ladder_step(100.0, 1), 110);
+        assert_eq!(zoom_ladder_step(100.0, -1), 90);
+        assert_eq!(zoom_ladder_step(120.0, 1), 130);
+        assert_eq!(zoom_ladder_step(120.0, -1), 110);
+
+        let mut at = 100.0_f64;
+        for _ in 0..5 {
+            let next = f64::from(zoom_ladder_step(at, 1));
+            assert_eq!(next, at + 10.0, "stepping up from {at} should be one rung");
+            at = next;
+        }
+        assert_eq!(at, 150.0);
+    }
+
+    /// `Ctrl`+`+` held down, and the end of the ladder: both must stop rather than
+    /// wrap or run off the end.
+    #[test]
+    fn ladder_step_clamps_at_both_ends() {
+        assert_eq!(zoom_ladder_step(50.0, -1), 50);
+        assert_eq!(zoom_ladder_step(50.0, 1), 60);
+        assert_eq!(zoom_ladder_step(200.0, 1), 200);
+        assert_eq!(zoom_ladder_step(200.0, -1), 190);
+        assert_eq!(zoom_ladder_step(10.0, 1), 60);
+        assert_eq!(zoom_ladder_step(10.0, -1), 50);
+        assert_eq!(zoom_ladder_step(900.0, 1), 200);
+        assert_eq!(zoom_ladder_step(900.0, -1), 190);
+    }
+
+    /// A dpr that has not settled reads as NaN or 0. `as i32` saturates those to
+    /// 0, which would silently send the user to the floor.
+    #[test]
+    fn ladder_step_survives_an_unmeasured_zoom() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+            assert_eq!(zoom_ladder_step(bad, 1), 110, "enlarge from {bad}");
+            assert_eq!(zoom_ladder_step(bad, -1), 90, "shrink from {bad}");
+        }
+    }
+
+    /// Every answer is a rung inside the ladder — the property that makes the
+    /// menu's radio check meaningful.
+    #[test]
+    fn ladder_step_lands_on_a_rung() {
+        for here in 50..=200 {
+            for direction in [-1, 1] {
+                let next = zoom_ladder_step(f64::from(here), direction);
+                assert!(
+                    (i32::from(ZOOM_MIN)..=i32::from(ZOOM_MAX)).contains(&i32::from(next)),
+                    "{next} from {here} is off the ladder"
+                );
+                assert_eq!(
+                    i32::from(next) % i32::from(ZOOM_STEP),
+                    0,
+                    "{next} from {here} is not a rung"
+                );
+            }
+        }
+    }
+
+    /// The floor/ceil is done in integer percent on purpose: on the f64 ladder
+    /// 130/10 is 12.999999999999998 and floors to 12, which would put "放大" from
+    /// 120% on 120% — a key that silently does nothing.
+    #[test]
+    fn the_rounding_is_exact_on_every_rung() {
+        for rung in zoom_rungs() {
+            assert_eq!(
+                zoom_ladder_step(f64::from(rung), 1),
+                (rung + ZOOM_STEP).min(ZOOM_MAX),
+                "enlarge from {rung}%"
+            );
+            assert_eq!(
+                zoom_ladder_step(f64::from(rung), -1),
+                rung.saturating_sub(ZOOM_STEP).max(ZOOM_MIN),
+                "shrink from {rung}%"
+            );
+        }
     }
 
     #[test]
@@ -381,92 +563,5 @@ mod tests {
             HEALTHY_AFTER > Duration::from_secs(30),
             "a process that survives this long was working, not failing"
         );
-    }
-
-    #[test]
-    fn zoom_snaps_to_the_nearest_step() {
-        // A hand-edited 57 should behave like 60, not like some untested value.
-        assert_eq!(normalize_zoom(54), 50);
-        assert_eq!(normalize_zoom(55), 60);
-        assert_eq!(normalize_zoom(57), 60);
-        assert_eq!(normalize_zoom(95), 100);
-    }
-
-    #[test]
-    fn zoom_ladder_is_evenly_divisible() {
-        // A ladder that does not divide evenly would make the top or bottom rung
-        // unreachable, which is a silently broken control.
-        assert_eq!((ZOOM_MAX - ZOOM_MIN) % ZOOM_STEP, 0);
-        assert_eq!(ZOOM_MIN % ZOOM_STEP, 0);
-        assert_eq!(ZOOM_MAX % ZOOM_STEP, 0);
-    }
-
-    #[test]
-    fn next_zoom_walks_the_ladder() {
-        // Rung-to-rung from a mid-ladder value, and against the ends for the
-        // clamps. A literal "90 + 10 is the top" silently stopped being true when
-        // the ceiling moved, which is exactly the class of assertion that should
-        // not survive a ladder change.
-        //
-        // The start is snapped to a rung first: an off-ladder midpoint would be
-        // normalized on the way in, and the arithmetic would compare against a
-        // value the caller never held.
-        let mid = normalize_zoom(((u32::from(ZOOM_MIN) + u32::from(ZOOM_MAX)) / 2) as u8);
-        assert_eq!(u32::from(mid) % u32::from(ZOOM_STEP), 0, "the midpoint must be a rung");
-        assert_eq!(i32::from(next_zoom(mid, ZOOM_STEP as i16)), i32::from(mid) + i32::from(ZOOM_STEP));
-        assert_eq!(
-            i32::from(next_zoom(mid, -(ZOOM_STEP as i16))),
-            i32::from(mid) - i32::from(ZOOM_STEP)
-        );
-        assert_eq!(next_zoom(mid, 0), mid);
-    }
-
-    #[test]
-    fn next_zoom_stops_at_the_ends() {
-        // Held at the floor or the ceiling, a key press must be a no-op rather
-        // than a jump to the other end.
-        assert_eq!(next_zoom(ZOOM_MIN, -10), ZOOM_MIN);
-        assert_eq!(next_zoom(ZOOM_MAX, 10), ZOOM_MAX);
-        assert_eq!(next_zoom(ZOOM_MIN, -1), ZOOM_MIN);
-    }
-
-    #[test]
-    fn next_zoom_survives_an_oversized_delta() {
-        // The page supplies this number, so it is not necessarily one step. A
-        // delta that would take the sum negative must clamp to the floor: it used
-        // to fall through to the default and jump the zoom to 100%.
-        assert_eq!(next_zoom(50, -1000), ZOOM_MIN);
-        assert_eq!(next_zoom(50, i16::MIN), ZOOM_MIN);
-        assert_eq!(next_zoom(100, 1000), ZOOM_MAX);
-        assert_eq!(next_zoom(100, i16::MAX), ZOOM_MAX);
-        assert_eq!(next_zoom(50, 0), ZOOM_MIN);
-    }
-
-    #[test]
-    fn next_zoom_starts_from_a_scrambled_current_value() {
-        // A current value that is not on the ladder - a hand-edited settings file,
-        // or a value that predates a ladder change - must not produce a rung that
-        // is off the ladder.
-        for current in [0u8, 37, 57, 99, 200, 255] {
-            for delta in [-30i16, -10, -1, 0, 1, 10, 30] {
-                let next = next_zoom(current, delta);
-                assert!(
-                    (ZOOM_MIN..=ZOOM_MAX).contains(&next),
-                    "next_zoom({current}, {delta}) = {next} is off the ladder"
-                );
-                assert_eq!(
-                    next % ZOOM_STEP,
-                    0,
-                    "next_zoom({current}, {delta}) = {next} is not a rung"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn zoom_scale_matches_percent() {
-        assert!((zoom_scale(50) - 0.5).abs() < f64::EPSILON);
-        assert!((zoom_scale(100) - 1.0).abs() < f64::EPSILON);
-        assert!((zoom_scale(70) - 0.7).abs() < f64::EPSILON);
     }
 }

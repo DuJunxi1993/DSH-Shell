@@ -217,21 +217,76 @@ macOS's `PortOccupant` kills nothing on suspicion. A candidate must satisfy all
 three:
 
 1. the port is the one our config asked for;
-2. the occupying process's parent is PID 1 — i.e. it was orphaned, not something
-   the operator is using;
+2. **nothing outside our own launch chain is supervising it** — a dsh the user ran
+   from a terminal has their terminal above it, and a dsh this shell started has
+   nothing above it once the shell is gone;
 3. its command line matches the configured `dsh_binary_path`.
 
 Rule 2 is what makes this safe. On a developer machine, ports get occupied by
-processes that are very much in use, and the operator is usually sitting in one
-of them. A dsh orphaned by a previous run and a dsh the operator launched from a
-terminal both hold a port and both are named `node`. The difference is the
-parent, and it is measurable.
+processes that are very much in use, and the operator is usually sitting in one of
+them. A dsh orphaned by a previous run and a dsh the operator launched from a
+terminal both hold a port and both are named `node`. The difference is what is
+above it, and it is measurable.
 
-The general rule behind it: **never act on a name.** This is already rule 1 in
-`windows/AGENTS.md` for a much worse reason — killing `node.exe` by name kills
-the harness the agent is running inside — but it applies to identification too.
-"Exit（关闭 dsh）" is only safe when the process has been positively attributed.
+**How rule 2 is measured is platform-specific, and getting that wrong makes the
+feature inert rather than unsafe.** macOS can ask "is my parent PID 1?": `dsh`
+there is a `#!/usr/bin/env node` script, so the kernel runs it as `node` with the
+shell as its direct parent, and the parent becomes 1 the moment the shell dies.
+`PortOccupant.judge` does exactly that one comparison.
 
+Windows cannot, because `dsh.cmd` is an npm batch shim: the shell spawns
+`cmd.exe`, and the `node.exe` holding the port is its *child*. That `cmd.exe`
+stays alive for as long as the dsh does, because it is waiting on it — so "is the
+parent alive" is **true for every real orphan**. Measured on the machine that
+found this:
+
+```text
+PID 1868  node.exe   parent=5340   alive   <- held 3080
+PID 5340  cmd.exe    parent=11688  dead    <- the dsh.cmd shim
+PID 11688            does not exist
+```
+
+So Windows walks the **whole** ancestor chain and asks *whose* ancestor is alive.
+A living `cmd.exe` whose command line contains the configured shim is ours to
+step over — it is alive only because our dsh is — and anything else alive means
+somebody is using it. The walk stops at the first positively-dead parent, which
+is the moment the launcher died.
+
+The general rule behind all of it: **never act on a name.** This is already
+rule 1 in `windows/AGENTS.md` for a much worse reason — killing `node.exe` by name
+kills the harness the agent is running inside — but it applies to identification
+too. "Exit（关闭 dsh）" is only safe when the process has been positively
+attributed.
+
+---
+
+### Two bugs stacked, and the second was invisible because of the first
+
+Fixing the ancestor walk did not make the feature work. Underneath it sat a
+second defect that never had a chance to show: Windows reports command-line
+separators **doubled**.
+
+```text
+"node" "C:\\Users\\x\\AppData\\Roaming\\npm\\\\node_modules\\\\@deepseek-ai\\\\dsh\\\\lib\\bin.js" web ...
+```
+
+The harness marker derived from `dsh_binary_path` is spelled with single ones, so
+a plain substring match never fired and every real dsh was refused as "not the dsh
+this shell is configured to" — the message for a *wrong program*, given to a
+process that was exactly right. `orphan.rs::normalize_path_for_match` collapses
+runs of separators and unifies `/` and `\` before comparing, which cannot make
+two different paths compare equal.
+
+Do not "simplify" it to a substring on the package name: that matches every dsh on
+the machine, which is the failure this module exists to prevent.
+
+The reason the second bug survived is the general lesson of this file: **a safety
+check refuses silently and looks exactly like a safety check working.** Nothing
+crashes, the log says "leaving the port alone", and the only symptom is a feature
+that never fires. The evidence in AGENTS.md rule 2 was written by hand, for
+exactly that reason. Neither defect is findable by asserting that the refusal
+path works — both were found by watching a real orphan survive, and by the port
+probe test that proves the probe can see a live server at all.
 ### Closing during startup is its own hole
 
 Independent of any crash, there is a window between "spawn returned a PID" and
@@ -263,9 +318,9 @@ early record.
 
 ## 5. Zoom: the decision must be about the host's intent
 
-macOS zoom stopped working after the first step. Every subsequent ⌘− was
-dropped, the page sat at 60% while `settings.json` already recorded 100, and a
-restart appeared to fix it.
+macOS zoom stopped working after the first step. Every subsequent +/- was dropped,
+the page sat at 60% while `settings.json` already recorded 100, and a restart
+appeared to fix it.
 
 The rule was:
 
@@ -278,38 +333,98 @@ if let applied = coordinator.appliedZoom,
 
 which reads as "skip if the page already holds the value we last applied". That
 condition describes **nothing having changed** — so it skipped exactly when a new
-preference arrived. The log showed the gap plainly: a settings write at
-16:37:59, and no `page zoom -> 100%` between it and the previous `60%`.
+preference arrived. The log showed the gap plainly: a settings write at 16:37:59,
+and no `page zoom -> 100%` between it and the previous `60%`.
 
 macOS now decides on the preference alone (`ZoomDecision` in
 `DSHShellCore/Services/ZoomDecision.swift`, with the rule stated as a pure
-function so it can be tested).
+function so it can be tested). **macOS was the side that had the bug**; Windows is
+the port.
 
-**Windows already does this.** `apply_zoom` compares `next` against
-`state.zoom_percent`, an `AtomicU8` holding the host's own intent:
+What Windows does, in `main.rs`:
 
 ```rust
-let current = state.zoom_percent.load(Ordering::Relaxed);
-if next != current {
-    window.set_zoom(config::zoom_scale(next))?;
-    state.zoom_percent.store(next, Ordering::Relaxed);
+// Every page load, unconditionally.
+let preference = config::normalize_zoom(Config::load_or_default().zoom_percent);
+apply_page_zoom(&window, state, preference)?;
 ```
 
-Nothing consults the webview. That is the whole rule, and it is why the macOS
-variant failed — its `appliedZoom` was standing in for a page value, and a page
-value cannot distinguish "the user did nothing" from "something else changed it".
+Nothing consults the webview at all. The page zoom is re-applied from
+`settings.json` on every navigation, and the menu's tick is drawn from the same
+value, so the tick and the page cannot disagree.
 
-The side effect is worth having too. Because the decision never reads the page,
-a pinch-to-zoom inside the webview is left alone, and the next menu step takes
-control back. Keying on the page instead forces a choice between clobbering the
-pinch and never applying a preference — a choice that does not need to exist.
+The unconditional push is a deliberate second decision, and it is the one that
+needed measuring. **WebView2 remembers a zoom per origin**, and the two origins
+are different documents: our boot placeholder is `tauri.localhost`, the dsh page is
+`127.0.0.1:3080`. A conditional push (the macOS rule, ported literally) pushed
+100% to the placeholder, recorded "already applied", and then skipped the dsh page
+— which still had its own 125% from an earlier session. The menu showed a tick at
+100% over a page rendered at 125%.
+
+The cost of pushing unconditionally: a `Ctrl`+`=` is **session-local**. It holds
+until you navigate — dsh's own client-side routing never reaches `on_page_load` —
+and is gone after a reload. That is worth stating because it is the one thing
+about this behaviour that is surprising, and the alternative is a menu that lies.
+
+The other side effect is worth having too. Because the decision never reads the
+page, a pinch-to-zoom inside the webview is left alone for the rest of the
+session, and the next menu click takes control back. Keying on the page instead
+forces a choice between clobbering the pinch and never applying a preference — a
+choice that does not need to exist.
+
+### Never derive the zoom from `devicePixelRatio`
+
+The reason the menu lists the ladder and ticks a rung instead of printing a
+percentage: deriving the current zoom from `devicePixelRatio / displayScale` needs
+a divisor that is not obtainable.
+
+Measured on the Windows machine, at three zoom levels:
+
+```text
+zoom  50%  -> dpr 0.63
+zoom 100%  -> dpr 1.25
+zoom 150%  -> dpr 1.88
+```
+
+`dpr = 1.25 x zoom`, exactly, at every level. So the 1.25 is a **display** factor
+and is independent of the page zoom — which is worth knowing because for two
+rounds of debugging it was assumed to be the opposite ("`dpr` above 1 means Chromium
+is at 125%, so the caption is lying"). It is the display. And that is also why
+clicking the shrink item appeared to *enlarge* the page: the real zoom fell while
+a percentage divided by 1.0 rose.
+
+**No Windows API reports that 1.25.** `GetDpiForSystem`, `GetDpiForWindow` on the
+real window, `GetDpiForMonitor`, `LOGPIXELSX` and the registry's
+`PerMonitorSettings\...\DpiValue=1` all say 96 — and they keep saying it from a
+process that has just set `PER_MONITOR_AWARE_V2`, which is what the shell itself
+does (successfully; nothing is logged on that path).
+
+So the derivation is not merely wrong, it is **underdetermined**: the divisor
+exists in fact and is unavailable in every API you can reach. Two further traps on
+the way there:
+
+- **`HKCU\Control Panel\Desktop\LogPixels` is the DPI-*awareness* setting, not
+  the scale.** Reading it as the scale is what turned the first wrong path into a
+  second wrong turn.
+- A "correction" that reported `GetDpiForWindow` returning 120 was wrong too; it
+  returns 96 like everything else. Two rounds of confident measurement, both
+  wrong, on a value that never had to be measured.
+
+The general rule: **a value the host cannot measure correctly should not be shown
+to the user, however well-commented the code computing it is.** Marking a rung you
+already know is a rung costs nothing and cannot be wrong.
 
 ### The ladder belongs in one place
 
-macOS raised its ceiling from 100% to 200% and had to change two files; Windows
-has `ZOOM_MIN` / `ZOOM_MAX` / `ZOOM_STEP` / `ZOOM_DEFAULT` in `config.rs` and
-injects the ladder into the page rather than restating it. `windows/AGENTS.md`
+macOS raised its ceiling from 100% to 200% and had to change two files; Windows has
+`ZOOM_MIN` / `ZOOM_MAX` / `ZOOM_STEP` / `ZOOM_DEFAULT` and `zoom_rungs()` in
+`config.rs` and injects the whole list into the page rather than restating it, so
+the menu cannot offer a rung the ladder arithmetic cannot produce. `windows/AGENTS.md`
 fact 7 already records why a second literal copy drifts. Same reason, same fix.
+
+The ceiling is 200 and not 100 for a measured reason: past ~150% you are choosing
+to read dsh as a small window, not making it bigger. Capping at 100% did not
+prevent that, it only denied a choice that turns out to be available and safe.
 
 ---
 

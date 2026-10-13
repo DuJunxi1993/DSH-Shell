@@ -179,7 +179,7 @@ Windows 侧对应 `RunEvent::ExitRequested` → `prevent_exit()` → 在异步�
 
 | | 实现 | 测试 |
 |---|---|---|
-| Windows | `#[serde(default = "...")]` | `a_settings_file_without_zoom_still_loads` |
+| Windows | `#[serde(default = "...")]` | `a_settings_file_without_zoom_still_loads` / `a_stored_zoom_survives_a_round_trip` |
 | macOS | `init(from:)` 中全部 `decodeIfPresent` + 默认值 | `testAFileMissingEveryNewFieldStillLoads` |
 
 附带要求：
@@ -188,6 +188,7 @@ Windows 侧对应 `RunEvent::ExitRequested` → `prevent_exit()` → 在异步�
 - 未知字段**应**被忽略（让新版本写的文件能被旧版本打开）。
 - 解码失败**必须**打日志。静默兜底让"配置坏了"与"首次启动"无法区分。
 - 默认值不得写死某个开发者的家目录。macOS 侧曾把 `/Users/djx/.npm-global/bin/dsh` 作为默认值，现在改为运行时探测，找不到时回退到裸 `dsh`（它在 spawn 时对着重建后的 PATH 解析）。
+  - `zoom_percent` 必须**双向**��缺省时回落 100%，且被写出时原样保存 —— 它是真实的缩放偏好，不是占位符。一旦它被降级为 `skip_serializing` 的墓碑，用户在菜单里选的档位就会在下一次保存时静默丢失（这正是它一度变成的样子，见 `windows/CHANGELOG.md`）。`a_stored_zoom_survives_a_round_trip` 守的就是这一半。
 
 ---
 

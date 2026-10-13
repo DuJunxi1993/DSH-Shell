@@ -29,11 +29,12 @@ Verified on Windows 11 with dsh `0.2.0-rc.2` and WebView2, 2026-10-02.
 | File drag-and-drop onto the page | `disable_drag_drop_handler()`; needs your eyes on a real drop |
 | Frameless window with an injected title bar | injected, geometry asserted against the live DOM |
 | The caption is dsh's, not ours | verified: `contract=contractActive`, `top_clearance=Some(36)` |
-| Page zoom 50–200%, Chromium's own hotkeys, restored per origin | verified: `Ctrl`+`±` scales the chrome and the page together |
+| Page zoom 50–200%, 16 rungs, Chromium's own hotkeys, remembered across restarts | verified: menu lists the ladder and marks the current rung |
 | Anti-nest guard (refuses to run inside a harness session) | verified |
 | Port-ownership guard (points at `attach` instead of dying) | verified |
-| An orphaned dsh from an earlier run is reclaimed | rule tests + real process-table tests; needs a live orphan to watch end to end |
-| `cargo test` → 96 hermetic tests against `stub-dsh` | green |
+| An orphaned dsh from an earlier run is reclaimed | verified end to end against a real orphan holding 3080 |
+| A refused launch shows the port's evidence and can be retried | verified against a live port conflict; the two buttons need a real click |
+| `cargo test` → 115 hermetic tests against `stub-dsh` | green |
 | `cargo clippy --all-targets -- -D warnings` | clean |
 | `cargo build --release` | clean |
 | `.msi` + `.nsis` bundles | built |
@@ -93,10 +94,12 @@ it; the defaults below apply when it is missing.
 | `spawn_timeout_seconds` | How long to wait for dsh's URL line. dsh's Loader can take that long on a cold profile, so this is generous. |
 | `auto_restart_on_crash` | Restart dsh if it dies on its own. Bounded: three attempts, backing off 2s → 4s → 8s, and the budget resets only after dsh has been up a full minute. After that it stops and tells you, rather than respawning forever. |
 
-There is no `zoom_percent`. The page zoom belongs to WebView2 now — `Ctrl` + `±`/`0`
-are Chromium's own, and it restores the last zoom per origin by itself. A file
-written by an older build still loads: the key is accepted and ignored, and it is
-not written back.
+There is no `zoom_percent` on the dsh side and no second copy anywhere. The page
+zoom is the webview's own — `Ctrl` + `±`/`0` are Chromium's and are not
+intercepted — and `zoom_percent` here records the rung the caption menu last set,
+so the menu's check mark and the page agree across restarts. A settings file
+written before the field existed still loads: the missing value falls back to
+100%.
 
 ## How the endpoint is found
 
@@ -221,18 +224,37 @@ window buttons, and a status line. It draws no background and is
 `pointer-events: none` apart from those controls, so the page reaches every pixel
 they are not sitting on.
 
-- **Drag** the caption to move the window — dsh's own drag strip, not ours.
-- **☰** opens the zoom menu: 放大 / current percentage / 缩小 / 复位 100%. It sits
-  at 48px from the left edge because dsh's toggle owns 12..40, which is also
-  where dsh puts its own collapsed new-session button.
-- **− / +** and the percentage step the page zoom, 50–200% in 10% steps.
-- **`Ctrl` + `−` / `=` / `0`** are Chromium's own and do the same thing. Zoom is
-  not persisted in `settings.json`; WebView2 restores the last zoom per origin.
-- The caption scales with the page zoom, because `--dsh-windows-titlebar-height`
-  is a CSS length and dsh's reserved band scales with it. Keeping our bar and
-  dsh's band in step is why nothing divides the zoom out any more.
-- Hover highlights every button; the close button's is a light red, and hover
-  backgrounds are rounded to match the window.
+  - **Drag** the caption to move the window — dsh's own drag strip, not ours.
+  - **☰** opens the zoom menu: the whole 50%–200% ladder in 10% steps, with the
+    current rung ticked, then a reset to 100% behind a rule. It sits at 48px from
+    the left edge because dsh's toggle owns 12..40, which is also where dsh puts
+    its own collapsed new-session button.
+    - The ladder is listed rather than stepped, because sixteen rungs have gaps that
+      matter: 50% for a dense transcript, 200% for text across a room. It is
+      enumerated from the same Rust list the ladder arithmetic uses, so the menu
+      cannot offer a zoom nothing can produce.
+    - On a short window the panel scrolls rather than running off the bottom, and
+      it scrolls the ticked rung into view when it opens. The scrollbar is styled
+      here instead of inherited, so it does not pick up dsh's page styling.
+  - **`Ctrl` + `−` / `=` / `0`** work and are Chromium's own; they are deliberately
+    not intercepted, so a hotkey and a click on a rung are the same operation.
+    `Ctrl`+`0` resets to 100%, matching the reset item.
+  - A zoom set from the menu is remembered in `settings.json`, so the menu's tick
+    and the page agree after a restart. A zoom set with `Ctrl`+`±` is not pushed
+    over on the next launch: the shell knows what it decided and does not second-
+    guess the webview.
+  - The caption scales with the page zoom, because
+    `--dsh-windows-titlebar-height` is a CSS length and dsh's reserved band scales
+    with it. Keeping our bar and dsh's band in step is why nothing divides
+    anything out.
+  - A **status line** sits centred in the caption: a reachability dot, which dsh it
+    is talking to, and the current zoom — `● dsh 127.0.0.1:3080 · 130%`. The
+    percentage is the configured `zoom_percent`, the same value the menu's check
+    mark shows, so the two cannot disagree. It goes stale after a `Ctrl`+`=` until
+    the next navigation, which is the same limitation the menu has and for the same
+    reason.
+  - Hover highlights every button; the close button's is a light red, and hover
+    backgrounds are rounded to match the window.
 - The chrome reports its measured geometry back to the shell, which compares it
   against the constants in `chrome.rs` and logs a warning on any mismatch.
 
@@ -253,11 +275,11 @@ Two things make this work at all, and both are non-obvious:
   load; our own boot page gets it from the initialization script. The script is
   idempotent, so running it in both places is free — and necessary, because a
   frameless window with no title bar during startup has no close button.
-- The title bar's buttons and the zoom command reach Rust over IPC, and the ACL
-  is enforced against the webview's *current URL*. `capabilities/chrome.json`
-  therefore grants exactly four window commands plus our two commands, and only
-  for `http://127.0.0.1:*` and `http://localhost:*`. No fs, shell, clipboard or
-  path access. If the chrome ever fails to install — a future dsh release could
+  - The title bar's buttons reach Rust over IPC, and the ACL
+    is enforced against the webview's *current URL*. `capabilities/chrome.json`
+    therefore grants exactly four window commands plus our own commands, and only
+    for `http://127.0.0.1:*` and `http://localhost:*`. No fs, shell, clipboard or
+    path access. If the chrome ever fails to install — a future dsh release could
   break the injection — the log says so, because a frameless window with no close
   button is a trap.
 
@@ -274,8 +296,9 @@ cargo run
    the window. It is a real UI, not a 401 page.
 3. Drag the caption: the window moves. Drag the window border: it resizes.
 4. Drag a file from Explorer onto the page: it lands in the chat composer.
-5. Click ☰ → 放大, or press `Ctrl`+`=`: the page and the caption scale together.
-   Restart: WebView2 brings the zoom back on its own.
+  5. Click ☰ and pick a rung: the page and the caption scale together, and the
+     ticked row follows. `Ctrl`+`+` / `−` / `0` do the same without opening the
+     menu. Restart: the rung you picked is still there.
 6. Close the window with the ✕. Within ~1s dsh is gone and the port is free:
    ```powershell
    Get-NetTCPConnection -State Listen -LocalPort 3080

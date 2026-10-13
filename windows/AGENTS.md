@@ -165,27 +165,104 @@ obvious and the Tauri docs do not put them together.
    handler for undecorated windows, so dragging the border still resizes. The
    chrome does not need to leave room for it — the hit test is at the window
    level, above the webview — so there is no reserved strip and nothing in the
-   bar that is there only to be dragged.
-6. **Zoom is Chromium's, and the chrome scales with the page.** `Ctrl` + `±`/`0`
-   are enabled (`zoom_hotkeys_enabled(true)`, written explicitly because the
-   default is a `serde(default)` bool and therefore false). Every length in
-   `platform_adapt.js` is a plain CSS pixel, so nothing divides by the zoom.
+     bar that is there only to be dragged.
+6. **Zoom is the webview's, and the menu lists the ladder rather than measuring
+   it.** `zoom_hotkeys_enabled(true)` — written out, because the default is a
+   `#[serde(default)]` bool and therefore false, so omitting it silently kills
+   `Ctrl`+`±`/`0`. The hotkeys are **not** intercepted: letting Chromium handle
+   them is what keeps `Ctrl`+`=` and a click on a rung the same operation, and it
+   is what the macOS shell does (`WKWebView` cannot suppress its own, and its
+   comment says a percentage that drifts from the real zoom is worse than no
+   percentage at all).
 
-   This used to be the opposite: lengths were divided by the zoom so the chrome
-   kept a fixed physical size, and that division was the single most bug-prone
-   line in the file — applied twice once, which made "the menu bar grows when I
-   zoom out". The division is gone because it was never needed. `--dsh-windows-
-   titlebar-height` is a CSS length, so dsh's reserved caption band scales with
-   the zoom along with everything else; scaling in step is what keeps our bar and
-   dsh's band agreeing. Dividing the chrome out while dsh scaled in would have
-   been the thing separating them.
+   `set_page_zoom` takes an **absolute** percentage, and that is the whole design:
+   WebView2 reports its current zoom to nobody, so a command that stepped from a
+   remembered value would drift the first time the user pressed `Ctrl`+`=`. The
+   page measures what it can — `devicePixelRatio` over the display scale — and asks
+   for the rung it wants; Rust clamps it onto the ladder. `set_page_zoom` is the
+   only zoom command; there is no `zoom_step`, because the menu offers rungs
+   directly rather than a direction.
 
-   Tauri has **no getter for the page zoom** — `set_zoom` is the only API. So the
-   title-bar menu, which has to step the zoom, derives it inside the page from
-   `window.devicePixelRatio` divided by the system scale factor injected from
-   `window.scale_factor()`. That is why `set_page_zoom` takes an **absolute**
-   percentage: a delta command would need a "current" value the shell does not
-   have, and a remembered one goes stale the first time the user presses `Ctrl+=`.
+   **The menu enumerates `config::zoom_rungs()` and marks the current one.** It
+   does not display a derived percentage, and that is the whole point. The
+   derivation would be `devicePixelRatio / display scale`, and measured at three
+   zoom levels on this machine:
+
+   ```
+   zoom  50%  -> dpr 0.63
+   zoom 100%  -> dpr 1.25
+   zoom 150%  -> dpr 1.88
+   ```
+
+   `dpr = 1.25 x zoom`, exactly. So the 1.25 is a **display** factor, independent
+   of the page zoom — the opposite of what was assumed for two rounds of
+   debugging. And no Windows API reports it: `GetDpiForSystem`, `GetDpiForWindow`
+   on the real window, `GetDpiForMonitor`, `LOGPIXELSX` and the registry's
+   `PerMonitorSettings\...\DpiValue=1` all say 96, and they say 96 from a process
+   that has just set `PER_MONITOR_AWARE_V2`.
+
+   So the derivation is underdetermined rather than merely wrong — the divisor
+   exists and nothing reachable will name it. That is also why clicking 缩小
+   appeared to *enlarge* the page: the real zoom fell while a percentage divided by
+   1.0 rose. Two traps on the way there: `HKCU\Control Panel\Desktop\LogPixels` is
+   the DPI-*awareness* setting, not the scale, and a "correction" claiming
+   `GetDpiForWindow` returns 120 was wrong too — it returns 96 like everything else.
+
+   `settings.json`'s `zoom_percent` is the only record of the zoom, and the menu's
+   radio check is drawn from it. `chrome::tests` asserts that the script never
+   forms a quotient out of `devicePixelRatio` and that it carries no ladder of its
+   own.
+
+   **The push is unconditional, on every page load**, which is the second half of
+   the decision and the half that needed measuring. WebView2 remembers a zoom
+   *per origin*, and there are two: the placeholder is `tauri.localhost`, dsh is
+   `127.0.0.1:3080`. The macOS `ZoomDecision` rule — push only when our own
+   preference moved — pushed 100% to the placeholder, recorded "already applied",
+   and skipped the dsh page, which still carried its own 125%. The menu ticked
+   100% over a page rendered at 125%. The cost: a `Ctrl`+`=` is session-local
+   (dsh is a SPA, so its client-side routing never reaches `on_page_load`).
+
+   **A 16-rung list, not 放大/缩小.** The ladder is 50–200 by 10 and the rungs worth
+   reaching are not adjacent: 50% for a dense transcript, 200% for text across a
+   room. Stepping there one press at a time is why the ladder used to stop at 100 —
+   the far rungs were not worth walking to. Enumerated from Rust so the menu cannot
+   offer a rung `zoom_ladder_step` cannot produce, and cannot miss one either.
+
+   ### The failed detour: dsh's own `fontSize`
+
+   This went in and came out, and the reason is worth keeping.
+
+   dsh has a real, persisted text-size preference — `dsh-client-ui-theme`,
+   `Schema.number().step(1).min(10).max(22).default(14)`, applied as
+   `--dsh-content-font-size` and consumed by twelve of its packages. Using it
+   instead of the webview's zoom looked obviously right: one truth, dsh's own
+   document, changeable from dsh's settings page.
+
+   It is the wrong mechanism. `fontSize` changes the *font*; it does not change
+   how much of dsh fits on screen. Line heights grow, the content column narrows,
+   cards reflow — and the amount of information in the window is unchanged, just
+   spread over more pixels. That is a font preference. The thing users mean by
+   放大 is the one this shell already had, and the one the macOS shell has.
+
+   The implementation was removed in full. What survives is the method note,
+   because the failure was in the reading and it is easy to repeat:
+
+   - **dsh's Typert descriptors are the wire contract, and they are generated.**
+     `typert.host.js` in `dsh-api-settings-controller` carries every real
+     signature: `namespace: 'settings'`, `method: 'mutate'`, and
+     `parameters: [{name: 'ns', wire: 'ns'}, {name: 'ops'}, {name: 'expectedRevision'}]`.
+     `ctx.remote.settings.describe()` is a *caller* of that, not its definition.
+     The wire call was inferred from the caller and got three things wrong: the
+     endpoint is `settings/mutate` with a slash (`endpointOf` is
+     `` `${namespace}/${method}` ``), the payload is wrapped (`{args: {...}}`), and
+     the parameter names are `ns`/`ops`/`expectedRevision`. It answered HTTP 404,
+     which is what a wrong URL looks like and what a right-looking abstraction does
+     not.
+   - **A second attempt at the same mistake**: `EnumDisplaySettings` was read as
+     the display scale, and `LogPixels=119` as the scale. Both were wrong for
+     reasons that took a full measurement round each. When a number is disputed,
+     measure it from the layer that defines it.
+
 7. **The injected script's own fallbacks are a second copy of every constant.**
    `platform_adapt.js` reads `window.__DSH_SHELL__`, but each value also has a
    literal fallback for the case where the script runs without it. Those literals
@@ -400,9 +477,65 @@ Two reasons this is worth having, learned the hard way:
 
 Check the log before touching the CSS:
 
-```powershell
-Select-String -Path "$env:APPDATA\deepseek\dsh-shell\data\logs\dsh-shell.log.*" -Pattern "chrome"
+  ```powershell
+  Select-String -Path "$env:APPDATA\deepseek\dsh-shell\data\logs\dsh-shell.log.*" -Pattern "chrome"
+  ```
+
+## The reclaim rule asked the wrong question, twice
+
+Two defects sat on top of each other, and fixing either alone would have looked
+like success. Together they made the retry button do nothing at all.
+
+**1. "Is the parent alive?" is the wrong question on Windows.** `dsh.cmd` is an
+npm batch shim, so this shell spawns `cmd.exe` and the `node.exe` that holds the
+port is its *child*. That `cmd.exe` stays alive for as long as the dsh does — it
+is waiting on it — so "the parent is alive" is true for every real orphan.
+Measured:
+
+```text
+PID 1868  node.exe   parent=5340   alive   ← held 3080
+PID 5340  cmd.exe    parent=11688  dead    ← the dsh.cmd shim
+PID 11688            does not exist
 ```
+
+One step of *only* sees a living parent and refuses. The rule now walks the
+ancestor chain and asks **whose** ancestor is alive: a living `cmd.exe` whose
+command line contains the configured shim is ours to step over, and anything else
+alive means somebody is using it. The walk stops at the first positively-dead
+parent, which is the moment the launcher died.
+
+`ProcessInfo::has_living_ancestor` is what the rule decides on;
+`parent_alive` is still carried, for the log line.
+
+**2. The harness marker never matched a real command line.** Windows reports
+separators doubled:
+
+```text
+"node" "C:\Users\x\AppData\Roaming\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" web ...
+```
+
+while the marker derived from `dsh_binary_path` is spelled with single ones, so a
+plain `contains` never fired and the rule refused every real dsh with the message
+for *a wrong program*. `normalize_path_for_match` collapses runs of separators and
+unifies `/` and `\` before comparing, which cannot make two different paths
+compare equal. Do not "simplify" it to a substring on the package name: that
+matches every dsh on the machine, which is the failure this module exists to
+prevent.
+
+The second was invisible until the first was fixed, because the parent check
+returned early and never reached the marker comparison. When a safety check
+refuses, it refuses *silently and correctly-looking* — so verify the positive
+path against the real process table, not only that the negative path refuses.
+
+Fails safe at every uncertain step, because wrongly saying "broken" kills
+something in use: unreadable parent, unreadable liveness, unreadable command
+line, a repeated PID, or reaching `ANCESTOR_WALK_LIMIT` all refuse. Only a fully
+walked chain with every step positively observed dead is reclaimable.
+
+The reclaim also has to stay refused for a terminal-launched dsh, which has a
+live shell above our shim. `orphan::tests` asserts both directions, and the
+`orphan_behind_a_live_shim` fixture exists specifically so the Windows shape
+cannot be quietly simplified away.
 
 
 

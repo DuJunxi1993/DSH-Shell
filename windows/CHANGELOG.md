@@ -1,9 +1,30 @@
-## [Unreleased]
+## [0.2.0] - 2026-10-13
 
 ### Added
 
-- A **menu button** in the caption, opening a zoom panel: enlarge / current
-  percentage / shrink / reset 100%. It sits at 48px from the left edge because
+- The **start-up failure page** now shows the evidence and offers a way out.
+  Previously it set two text nodes and stopped, so a deliberate refusal to end
+  somebody else's process was indistinguishable from a hang. It now lists what
+  holds our port — PID, command line, and why it is or is not ours — and offers
+  **Retry** plus **Close leftovers and retry**. The cleanup button is only shown
+  when the reclaim rule agreed there was something of ours to close, and it
+  re-runs the reclaim on demand: it exists for the launch where the automatic one
+  declined, so it must not be a no-op because an earlier one succeeded.
+  Deliberately scoped to *our* port. Listing every `node.exe` on the machine would
+  be mostly irrelevant processes with alarming names, and the one that matters
+  would be buried.
+  - The **caption menu lists the whole page-zoom ladder** — 50%–200% in 10% steps,
+    the current rung ticked, then a reset to 100% behind a rule. A list of rungs
+    rather than 放大/缩小 because the ladder has sixteen steps and the ones worth
+    reaching are not adjacent: 50% for a dense transcript, 200% for text across a
+    room. Enumerated from `config::zoom_rungs()`, the same list the ladder
+    arithmetic uses, so the menu cannot offer a percentage nothing can produce.
+  - **Zoom survives a restart.** `zoom_percent` is a real setting again, mirrored
+    from `zoomPercent` in the macOS shell, and the menu writes it. It had been
+    demoted to a read-and-ignore tombstone, which meant a zoom picked from the
+    menu was silently forgotten on the next save.
+  - A **menu button** in the caption, opening that panel. It sits at 48px from the
+    left edge because
   the desktop contract pins dsh's own sidebar toggle to `left: 12px`, and 48 is
   the first column past it — the same column dsh puts its collapsed new-session
   button in.
@@ -17,13 +38,9 @@
 - A dsh orphaned by an **earlier** run is now reclaimed — at start-up when it
   holds the port we need, and at exit when it is *still* holding our port after
   our own tree kill. Because it means killing a process this shell never spawned,
-  a candidate must satisfy three independent facts: it owns our port, it has no
-  living parent, and its command line names the harness derived from our own
-  `dsh_binary_path`.
-- The caption's status line carries the **current zoom percentage**, re-derived
-  from `devicePixelRatio` on a one-second poll. Zoom is Chromium's, so nothing
-  fires when it changes and a stored value would go stale the first time the user
-  pressed `Ctrl`+`=`.
+  a candidate must satisfy three independent facts: it owns our port, nothing
+  outside our own launch chain is still alive above it, and its command line names
+  the harness derived from our own `dsh_binary_path`.
 - The menu button and the window buttons carry hover highlights, a press
   animation, a focus ring, and a 160ms rotation when the panel opens.
 
@@ -65,6 +82,20 @@
 
 ### Fixed
 
+- **The menu button's bars changed thickness with the zoom.** They are now three
+  stroked SVG lines; they were three `<span>`s at `height:1.5px` with
+  `border-radius:0.75px`. A fractional CSS height spans more than one physical
+  pixel row at any non-integral scale, the compositor antialiases across the
+  boundary, and the bar is painted up to a pixel fatter — which way it rounds
+  depends on the fractional part of the scale. A zoom hotkey moves in Chromium's
+  *zoom levels* (a logarithmic ladder) while the menu calls `set_zoom` with an
+  exact factor, so the two land on different phases at the same nominal zoom and
+  looked different: the hotkey path made the bars visibly thicker and a menu click
+  corrected them. The window buttons have always been SVG and never showed it.
+- The caption's status line shows the zoom again — `● dsh 127.0.0.1:3080 · 130%`.
+  The figure is `zoom_percent`, the same value the menu's check mark and the push
+  onto the webview use, so the three cannot disagree; it is not measured from
+  `devicePixelRatio`, which needs a display scale no API here will name.
 - **Three bugs in the menu button, all of them visible only by looking at it.**
   It rendered as a black rectangle, because the glyph was one `border-top` plus
   two `box-shadow`s, and a shadow is cast from the element's *border box* — give
@@ -85,6 +116,75 @@
   applies to its own sidebar toggle.
 - The caption's controls are inset 10px from the window's right edge, so ✕ no
   longer reads as part of the page.
+- **The orphan reclaim asked the wrong question, and then a second one.**
+  "Is the parent alive?" is always true for a real orphan on Windows, because
+  `dsh.cmd` is a batch shim: the `node.exe` holding the port is a child of a
+  `cmd.exe` that stays alive waiting on it. Measured, `node 1868` → `cmd 5340`
+  (alive) → `11688` (dead). One step of only saw a living parent and refused, so
+  the retry button cleared nothing and the port stayed busy. The rule now walks
+  the ancestor chain and asks *whose* ancestor is alive: a living `cmd.exe` whose
+  command line contains the configured shim is ours to step over, anything else
+  alive means somebody is using it, and the first positively-dead parent is the
+  break. Underneath that sat a second defect, invisible because the first returned
+  early: Windows reports command-line separators doubled
+  (`npm\\node_modules\\...`), so the harness marker built from `dsh_binary_path`
+  never matched and every real dsh was refused as "not the dsh this shell is
+  configured to". Both are fixed; a terminal-launched dsh is still refused.
+  This is the third round of "the reclaim never worked", and the reason is always
+  the same — a safety check refuses silently and correctly-looking, so only the
+  positive path against the real process table shows the truth.
+  - **The caption no longer shows a zoom percentage, and why that matters.** The
+    readout was `devicePixelRatio` divided by the display's scale, and that
+    divisor is not obtainable on the machine it was measured on. At three zoom
+    levels:
+
+    ```text
+    zoom  50%  -> dpr 0.63
+    zoom 100%  -> dpr 1.25
+    zoom 150%  -> dpr 1.88
+    ```
+
+    `dpr = 1.25 x zoom` exactly, so the 1.25 is a *display* factor independent of
+    the page zoom — which is the opposite of what two rounds of debugging assumed
+    ("`dpr` above 1 means Chromium is at 125%, so the caption is lying"). Meanwhile
+    `GetDpiForSystem`, `GetDpiForWindow` on the real window, `GetDpiForMonitor`,
+    `LOGPIXELSX` and the registry's `DpiValue=1` all report 96, and report 96 from
+    a process that has just set `PER_MONITOR_AWARE_V2`. The derivation is
+    underdetermined rather than merely wrong: the divisor exists and nothing
+    reachable will name it. Two traps on the way: `HKCU\Control Panel\Desktop\
+    LogPixels` is the DPI-*awareness* setting rather than the scale, and a
+    "correction" claiming `GetDpiForWindow` returns 120 was wrong too — it returns
+    96, as does everything else.
+
+    So the menu now marks the rung `settings.json` says and shows no number at
+    all: there is nothing to be wrong. All of `osScale`, `GetDpiForWindow`, the
+    per-page `__DSH_SHELL_OS_SCALE__` injection and the `ScaleFactorChanged`
+    handler are gone with it; `declare_dpi_awareness` stays, because a
+    DPI-unaware *window* is laid out at 96 DPI and stretched, which puts the
+    controls in the wrong place. This is also the real reason clicking 缩小
+    appeared to enlarge the page: the zoom really did fall, while a percentage
+    divided by 1.0 rose.
+  - **A zoom chosen in the menu is now applied on every page load, unconditionally.**
+    WebView2 remembers a zoom *per origin*, and there are two: the placeholder is
+    `tauri.localhost`, dsh is `127.0.0.1:3080`. The macOS `ZoomDecision` rule — push
+    only when our own preference moved — pushed 100% to the placeholder, recorded
+    "already applied", and then skipped the dsh page, which still carried its own
+    125% from an earlier session. The menu ticked 100% over a page rendered at
+    125%. The cost is that `Ctrl`+`=` is session-local: it holds until you
+    navigate (dsh's client-side routing never reaches `on_page_load`) and is gone
+    after a reload. The configured rung is what survives a restart, which is the
+    only meaning "keep the zoom I had last time" can have when two origins can
+    each remember one.
+  - **The zoom ladder could skip a step**: from 125%, "放大" landed on 150%. The
+    arithmetic rounded to the nearest rung and *then* added the direction, so
+    whenever the two disagreed it moved twice. The step function now uses floor for
+    shrink and ceil for enlarge, in Rust where it is unit-tested against every
+    rung — including the exact f64 trap that motivated moving it, since 130/10 is
+    12.999999999999998 and would floor to 12.
+  - `Ctrl`+`±`/`0` are Chromium's own and are deliberately not intercepted, so a
+    hotkey and a click on a rung are the same operation; `zoom_hotkeys_enabled`
+    is written out explicitly because its default is a `serde(default)` bool and
+    therefore false.
 - `boot.json` still granted `allow-zoom-step`/`allow-zoom-reset` after those
   commands were replaced by `set_page_zoom`, which stopped the build. The remote
   origin's capability file had been updated; the local one had not.
@@ -93,12 +193,7 @@
   `dsh.cmd`, which never matches — and it required `parent_pid == 1`, while
   Windows records the *dead* parent's PID instead of reparenting to 1. Both meant
   no real dsh was ever reclaimed, and the refusal was logged at info, so it
-  looked like a working feature. Identity is now matched on the command line, and
-  "orphaned" means "no living parent".
-- The zoom ladder is consistent again at its new 200% ceiling. The script's
-  fallback still said 100 while `config.rs` said 200, and two tests had the old
-  ceiling written in as literals — which is the assertion shape the zoom tests
-  exist to avoid, since they stated the old ladder rather than the rule.
+  looked like a working feature. Identity is now matched on the command line.
 - The port probe is proven able to see a live server, not merely its own socket.
   The macOS shell shipped a probe that could not fail and thirteen green tests
   asserting a property that could not hold; Windows passed here for the wrong
