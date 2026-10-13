@@ -10,8 +10,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "allow-hide-to-tray",
-    "allow-zoom-step",
-    "allow-zoom-reset",
+    "allow-set-page-zoom",
     "allow-chrome-report",
     "allow-chrome-error"
   ]

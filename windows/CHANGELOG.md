@@ -20,6 +20,13 @@
   a candidate must satisfy three independent facts: it owns our port, it has no
   living parent, and its command line names the harness derived from our own
   `dsh_binary_path`.
+- The caption's status line carries the **current zoom percentage**, re-derived
+  from `devicePixelRatio` on a one-second poll. Zoom is Chromium's, so nothing
+  fires when it changes and a stored value would go stale the first time the user
+  pressed `Ctrl`+`=`.
+- The menu button and the window buttons carry hover highlights, a press
+  animation, a focus ring, and a 160ms rotation when the panel opens.
+
 
 ### Changed
 
@@ -58,7 +65,30 @@
 
 ### Fixed
 
-- **Two bugs that made the orphan reclaim inert.** It compared the port owner's
+- **Three bugs in the menu button, all of them visible only by looking at it.**
+  It rendered as a black rectangle, because the glyph was one `border-top` plus
+  two `box-shadow`s, and a shadow is cast from the element's *border box* — give
+  the element the height centring needs and the two "lines" become a filled block.
+  It had no hover highlight, because its inline `background:transparent` outranks
+  the stylesheet's `:hover` rule. And it could not be closed, because the
+  dismiss-alongside handler compared `event.target === menuButton` while a click
+  lands on the glyph *inside* it: the handler closed the panel and the button's
+  own handler immediately reopened it.
+- The same inline-background mistake was also on the zoom panel's rows, found by
+  the new test rather than by a screenshot.
+- **The window buttons no longer maximise the window when double-clicked.** The
+  contract paints dsh's drag strip across the whole caption and our controls sit
+  on top of it; Chromium collects drag regions by bounds, so a control without its
+  own `app-region` does not mask the strip underneath. Two quick clicks on the
+  button read as a double-click on a drag region. Fixed with
+  `-webkit-app-region: no-drag` on every control we own — the same remedy dsh
+  applies to its own sidebar toggle.
+- The caption's controls are inset 10px from the window's right edge, so ✕ no
+  longer reads as part of the page.
+- `boot.json` still granted `allow-zoom-step`/`allow-zoom-reset` after those
+  commands were replaced by `set_page_zoom`, which stopped the build. The remote
+  origin's capability file had been updated; the local one had not.
+- **Two bugs in the orphan reclaim made it inert.** It compared the port owner's
   executable with the configured `dsh_binary_path` — `node.exe` against
   `dsh.cmd`, which never matches — and it required `parent_pid == 1`, while
   Windows records the *dead* parent's PID instead of reparenting to 1. Both meant

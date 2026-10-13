@@ -59,6 +59,10 @@
   var CORNER_R = num(CFG.cornerR, 5);
   var CONTROL_H = num(CFG.controlH, 28);
   var CONTROL_TOP = num(CFG.controlTop, 4);
+  var EDGE_INSET = num(CFG.edgeInset, 10);
+  /* Injected by `chrome::script` from `window.scale_factor()`. Read it here
+     rather than in the Rust side: it is the denominator that turns
+     `devicePixelRatio` back into a page zoom. */
   var OS_SCALE = num(CFG.osScale, 1);
   var RESERVED_W = 3 * WIN_W;
 
@@ -568,7 +572,22 @@
       "width:" + px(WIN_W),
       "height:" + px(CONTROL_H),
       "pointer-events:auto",
-      "background:transparent",
+      /* `-webkit-app-region: no-drag` is what keeps this a button.
+       *
+       * The contract makes dsh paint the caption's drag strip across the *whole*
+       * band, and our controls sit on top of it. Chromium collects drag regions
+       * by bounds, so a control with no app-region of its own does not mask the
+       * strip underneath it: two quick clicks on the menu button read as a
+       * double-click on a drag region, and the window maximised itself.
+       *
+       * This is the same remedy dsh applies to its own sidebar toggle, for the
+       * same reason — and the rest of the caption stays draggable, which is the
+       * point of it. */
+      "-webkit-app-region:no-drag",
+      /* The same radius the window buttons use. Without it the hover highlight
+         is a square-cornered rectangle beside three rounded ones, which reads as
+         a mistake even though it is only 5px. */
+      "border-radius:" + px(CORNER_R),
       "display:flex",
       "align-items:center",
       "justify-content:center"
@@ -578,10 +597,10 @@
     zoomPanel.className = "dss-panel";
     zoomPanel.style.cssText = [
       "position:absolute",
-      /* Aligned to the menu button's right edge, i.e. `RESERVED_W` from the
-         window's right — the width of the window buttons, which is the only
-         thing between the panel and the corner. */
-      "right:" + px(RESERVED_W),
+      /* Aligned to the menu button's right edge, which is the window buttons'
+         width *plus* the inset between them and the frame. Using the cluster
+         width alone put the panel 10px further right than its own button. */
+      "right:" + px(RESERVED_W + EDGE_INSET),
       "top:" + px(BAR_H),
       "min-width:" + px(150),
       "padding:" + px(5),
@@ -648,9 +667,11 @@
         "width:100%",
         "min-height:" + px(30),
         "box-sizing:border-box",
-        "text-align:left",
-        "background:transparent",
-        "border:0",
+          "text-align:left",
+          /* No inline background: `.dss-panel-item:hover:not([disabled])` lives in
+             the stylesheet, and an inline background outranks it. Same mistake as
+             the menu button, caught by the test rather than by a screenshot. */
+          "border:0",
         "border-radius:" + px(4),
         "padding:0 " + px(10),
         "font:inherit",
@@ -748,11 +769,12 @@
       zoomPanel.style.transition = open
         ? "opacity 140ms ease, transform 140ms ease, visibility 0s"
         : "opacity 140ms ease, transform 140ms ease, visibility 0s linear 140ms";
-      menuButton.setAttribute("aria-expanded", open ? "true" : "false");
-      var bars = menuButton.firstChild;
-      if (bars && bars.style) {
-        bars.style.transform = open ? "rotate(90deg) scaleX(0.85)" : "rotate(0deg) scaleX(1)";
-      }
+        menuButton.setAttribute("aria-expanded", open ? "true" : "false");
+        if (menuGlyph) {
+          menuGlyph.style.transform = open
+            ? "rotate(90deg) scaleX(0.8)"
+            : "rotate(0deg) scaleX(1)";
+        }
       if (open) {
         paintZoomPanel();
       }
@@ -762,51 +784,78 @@
       return zoomPanel.style.visibility === "visible";
     }
 
-    menuButton.appendChild(hamburger());
+    /* Held by name rather than reached for as `menuButton.firstChild`: the
+       rotate-on-open needs it, and "the first child happens to be the glyph" is
+       the kind of coupling that breaks the first time anything is prepended. */
+    var menuGlyph = hamburger();
+    menuButton.appendChild(menuGlyph);
     menuButton.addEventListener("click", function (event) {
       event.preventDefault();
       event.stopPropagation();
       setPanelOpen(!panelIsOpen());
     });
-    /* A caption control that stays open after the user clicks the page is a menu
-       that has to be dismissed by hand. Any click elsewhere closes it. */
-    document.addEventListener("mousedown", function (event) {
-      if (!panelIsOpen()) {
-        return;
-      }
-      if (event.target === menuButton || zoomPanel.contains(event.target)) {
-        return;
-      }
-      setPanelOpen(false);
-    }, true);
+      /* A caption control that stays open after the user clicks the page is a menu
+         that has to be dismissed by hand. Any click elsewhere closes it.
+       *
+       * `contains`, not `===`, and that one word is the whole difference between a
+       * toggle that works and one that cannot be shut. A click on the button does
+       * not target the button: it targets the glyph *inside* it, so an identity
+       * test misses, this listener closes the panel, and then the button's own
+       * handler runs `setPanelOpen(!panelIsOpen())` against a panel that has just
+       * been closed — and reopens it. Capture phase, so it runs before the button
+       * sees anything, which is what made the round trip happen at all. */
+      document.addEventListener("mousedown", function (event) {
+        if (!panelIsOpen()) {
+          return;
+        }
+        if (menuButton.contains(event.target) || zoomPanel.contains(event.target)) {
+          return;
+        }
+        setPanelOpen(false);
+      }, true);
     window.addEventListener("blur", function () { setPanelOpen(false); });
     bar.appendChild(menuButton);
     bar.appendChild(zoomPanel);
 
-    /* Three lines, two of glyph: the bars are drawn with borders rather than an
-       inline SVG so they inherit `currentColor` and nothing else.
+    /* The menu glyph: three real bars in a column.
      *
-     * The explicit height is not cosmetic. Without it the element's box is the
-       border plus nothing, so `align-items:center` centres a 1.5px sliver and the
-       two shadow lines sit 4px and 8px *below* it — the glyph then reads as
-       sitting several pixels lower than the window buttons, which is exactly what
-     * the screenshot showed. Giving the box the full height of the glyph makes
-     * centring mean what it says.
+     * Written with `box-shadow` first, which cannot work. A shadow is cast from
+     * the element's **border box**, not from its border edge, so with a zero
+     * height it happened to draw two more 1.5px lines; give it the 11px height
+     * that `align-items:center` needs in order to centre the glyph properly, and
+     * the same two shadows become an 11px-tall filled block. That block is what
+     * the screenshot showed.
+     *
+     * Three children cost three elements and behave: the flex column centres them
+     * for real, the gap is an actual gap, and the whole group rotates as one.
      */
     function hamburger() {
       var box = document.createElement("span");
       box.setAttribute("aria-hidden", "true");
       box.style.cssText = [
-        "display:block",
+        "display:flex",
+        "flex-direction:column",
+        "align-items:stretch",
+        "justify-content:center",
+        "gap:" + px(2.5),
         "width:" + px(14),
-        "height:" + px(11),
-        "border-top:" + px(1.5) + " solid currentColor",
-        "box-shadow:0 " + px(4) + " 0 currentColor, 0 " + px(8) + " 0 currentColor",
-        /* Rotates a little when the menu is open. Cheap, and it makes the button
-           read as a disclosure rather than as a label. */
+        /* Rotates when the menu is open. Cheap, and it makes the button read as
+           a disclosure rather than as a label. */
         "transform-origin:center",
         "transition:transform 160ms cubic-bezier(0.2, 0.9, 0.3, 1)"
       ].join(";");
+      for (var i = 0; i < 3; i++) {
+        var line = document.createElement("span");
+        line.style.cssText = [
+          "display:block",
+          "height:" + px(1.5),
+          "border-radius:" + px(0.75),
+          /* `currentColor` rather than a fixed colour, so the glyph follows the
+             bar's measured foreground on light and dark pages alike. */
+          "background:currentColor"
+        ].join(";");
+        box.appendChild(line);
+      }
       return box;
     }
 
@@ -855,7 +904,8 @@
       var tint = !everReached ? "inherit" : (reachable ? "#22c55e" : "#ef4444");
       status.innerHTML =
         '<span style="color:' + tint + '">' + (everReached ? "●" : "○") + "</span>" +
-        " dsh " + (location.host || "?");
+        " dsh " + (location.host || "?") +
+        " · " + zoomPercent() + "%";
     }
 
     /* Same-origin probe: any answer at all proves dsh's HTTP server is up, and
@@ -885,15 +935,18 @@
       /* CONTROL_TOP..CONTROL_TOP+CONTROL_H is exactly the box dsh gives its own
          sidebar toggle, which is what puts the three controls on one line. */
       "margin-top:" + px(CONTROL_TOP),
+      /* Off the frame, so the ✕ does not read as part of dsh's page. The zoom
+         panel is placed by the same sum. */
+      "margin-right:" + px(EDGE_INSET),
       "width:" + px(RESERVED_W),
       "height:" + px(CONTROL_H),
-      /* No background at all. The bar is chrome over the page, and a fill here
-         reads as a foreign panel: it did not match the loaded page or the
-         content column. Legibility comes from the glyph colour instead, which
-         follows the page's own `--dsw-alias-label-primary` and so works on the
-         light dsh theme and the dark boot page alike. */
-      "background:transparent"
-    ].join(";");
+        /* No background at all. The bar is chrome over the page, and a fill here
+           reads as a foreign panel: it did not match the loaded page or the
+           content column. Legibility comes from the glyph colour instead, which
+           follows the page's own `--dsw-alias-label-primary` and so works on the
+           light dsh theme and the dark boot page alike. A container never hovers,
+           so there is nothing here to outrank. */
+      ].join(";");
 
     function control(title, child) {
       var button = document.createElement("button");
@@ -909,11 +962,18 @@
         "display:flex",
         "align-items:center",
         "justify-content:center",
-        /* Geometry, all inline so it tracks the zoom from one place. The
-           background deliberately is not inline: see installStylesheet. */
-        "width:" + px(WIN_W),
-        "height:" + px(BAR_H),
-        "border-radius:" + px(CORNER_R)
+          /* Geometry, all inline so it tracks the zoom from one place. The
+             background deliberately is not inline: see installStylesheet.
+             The height is CONTROL_H, the same 28px box dsh gives its sidebar
+             toggle — not the full bar, which `paint()` would overwrite anyway,
+             leaving the initial paint at the wrong size.
+             `no-drag` for the same reason as the menu button: the caption's drag
+             strip runs underneath, and without this a double-click on ✕ or ▣
+             maximises the window instead of activating the button. */
+          "width:" + px(WIN_W),
+          "height:" + px(CONTROL_H),
+          "border-radius:" + px(CORNER_R),
+          "-webkit-app-region:no-drag"
       ].join(";");
       button.appendChild(child);
       return button;
@@ -955,13 +1015,19 @@
       menuButton.style.marginTop = px(CONTROL_TOP);
       menuButton.style.width = px(WIN_W);
       menuButton.style.height = px(CONTROL_H);
+      /* Re-applied with every other length so the radius tracks the zoom. An
+         odd-looking radius at 125% is the same class of bug as a bar that does
+         not match its constant — it is just smaller. */
+      menuButton.style.borderRadius = px(CORNER_R);
       /* `right` rather than `left`, so the panel stays anchored to the window
          corner as the window is resized; the menu button is in normal flow and
-         moves with it for free. */
-      zoomPanel.style.right = px(RESERVED_W);
+         moves with it for free. The cluster's width plus the frame inset is what
+         puts the panel's right edge on the menu button's right edge. */
+      zoomPanel.style.right = px(RESERVED_W + EDGE_INSET);
       zoomPanel.style.top = px(BAR_H);
       winCluster.style.width = px(RESERVED_W);
       winCluster.style.marginTop = px(CONTROL_TOP);
+      winCluster.style.marginRight = px(EDGE_INSET);
       winCluster.style.height = px(CONTROL_H);
       var buttons = [minimize, maximize, close];
       for (var i = 0; i < buttons.length; i++) {
@@ -988,6 +1054,22 @@
     paintStatus();
     probeDsh();
     setInterval(probeDsh, 4000);
+
+    /* The zoom readout, on its own faster poll.
+     *
+     * Zoom is Chromium's and Tauri cannot read it, so the only way to notice a
+     * `Ctrl`+`=` is to re-derive it from `devicePixelRatio` — and nothing fires
+     * when it changes. A second clock is the honest cost of that: without one the
+     * percentage in the caption would sit at whatever it was when the page loaded
+     * and lie until something else happened to repaint it.
+     *
+     * `paintStatus` rewrites a small string and is idempotent, so a 1s poll costs
+     * nothing worth guarding. It is not the 4s `probeDsh` because that one is
+     * there to measure dsh's HTTP server, not the viewport. */
+    setInterval(paintStatus, 1000);
+    /* Repaint on focus too: the user has just come back to the window, which is
+       exactly when a stale percentage is most annoying and most visible. */
+    window.addEventListener("focus", paintStatus);
 
     window.__DSH_SHELL_CHROME__ = {
       setMaximized: function (isMaximized) {
@@ -1038,6 +1120,13 @@
           measured_bar_h: barBox ? barBox.height : 0,
           measured_win_w: winBox ? winBox.width : 0,
           zoom: currentZoom(),
+          /* The raw inputs behind `zoom`, because a wrong percentage in the
+             caption is otherwise indistinguishable from a wrong one in the log:
+             dpr is the system's scaling multiplied by the page zoom, and only the
+             host knows the first half. Quoting both makes the division checkable
+             instead of merely asserted. */
+          dpr: Number(window.devicePixelRatio) || 0,
+          os_scale: OS_SCALE,
           placeholder: document.documentElement.hasAttribute("data-dsh-shell-placeholder"),
           ready_state: document.readyState,
           origin: location.origin,

@@ -93,6 +93,10 @@ fn raise_window(app: &AppHandle) {
 
 fn main() {
     init_tracing();
+    // Before anything creates a window or a webview: after that point the call
+    // fails and the process stays DPI-unaware, which is what made every scale
+    // query in this file report 1.0 on a 125% display.
+    declare_dpi_awareness();
 
     let state = Arc::new(AppState {
         dsh: tokio::sync::Mutex::new(None),
@@ -221,8 +225,72 @@ fn nonzero_pid(state: &Arc<AppState>) -> Option<u32> {
     }
 }
 
-/// The chrome script, with its geometry and the display's scale factor baked in.
+/// The display's scaling as a multiple of 96 DPI.
 ///
+/// This is the denominator that turns the page's `devicePixelRatio` back into a
+/// zoom: Chromium reports `dpr = system scale × page zoom`, and Tauri can read
+/// neither factor, so the one it can read has to be baked in and handed over.
+///
+/// `GetDpiForSystem` is used rather than `primary_monitor().scale_factor()`
+/// because the latter answers in the process's DPI awareness context, and a debug
+/// run had none — so it reported 1.0 while the display was genuinely 120 DPI.
+/// `declare_dpi_awareness` fixes that, and this API does not depend on it at all.
+///
+/// Falls back to 1.0 rather than 0: a wrong-but-usable scale makes the caption's
+/// zoom readout off by a constant factor, whereas 0 would divide to nothing and
+/// take the whole chrome down with it.
+#[cfg(windows)]
+fn system_dpi_scale() -> f64 {
+    use windows::Win32::UI::HiDpi::GetDpiForSystem;
+    let dpi = unsafe { GetDpiForSystem() };
+    if dpi == 0 {
+        1.0
+    } else {
+        f64::from(dpi) / 96.0
+    }
+}
+
+#[cfg(not(windows))]
+fn system_dpi_scale() -> f64 {
+    1.0
+}
+
+/// Opt into per-monitor DPI awareness, before any window exists.
+///
+/// This is not a nicety. A DPI-*unaware* process is told the display is 96 DPI no
+/// matter what it really is, and this process was one: `primary_monitor()`,
+/// `window.scale_factor()` and `GetDpiForSystem()` all reported a scale of 1.0 on
+/// a display whose real DPI was 119, while WebView2 — which does its own
+/// awareness — rendered the page at `devicePixelRatio` 1.25.
+///
+/// That single wrong number made the caption's zoom readout lie by a constant
+/// factor: it divided 1.25 by 1.0 and reported "125%" for a page that was at
+/// 100%. Nothing crashed and nothing looked broken, which is why it survived
+/// being written twice.
+///
+/// Must run before Tauri creates anything; afterwards the call fails with
+/// `ERROR_ACCESS_DENIED`, which is harmless — the manifest already set awareness
+/// for packaged builds — so the error is logged rather than treated as failure.
+#[cfg(windows)]
+#[cfg(windows)]
+fn declare_dpi_awareness() {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    if let Err(err) =
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
+    {
+        tracing::debug!(
+            target: "dsh_shell",
+            "per-monitor DPI awareness not set here ({err}); a manifest probably set it"
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn declare_dpi_awareness() {}
+
+/// The chrome script, with its geometry and the display's scale factor baked in.///
 /// `initialization_script` is re-run on every navigation, so this covers both
 /// the local boot placeholder and the remote dsh origin.
 fn chrome_script(os_scale: f64) -> String {
@@ -334,7 +402,7 @@ fn chrome_report(report: ChromeReport) {
         tracing::info!(
             target: "dsh_shell",
             "chrome ok: origin={} bar={}px reserved={}px zoom={} placeholder={} \
-             contract={} top_clearance={:?} notifications={}",
+             contract={} top_clearance={:?} notifications={} dpr={} os_scale={}",
             report.origin,
             round1(report.measured_bar_h),
             round1(report.measured_win_w),
@@ -342,7 +410,9 @@ fn chrome_report(report: ChromeReport) {
             report.placeholder,
             report.contract,
             report.contract_top_clearance,
-            report.notifications
+            report.notifications,
+            round2(report.dpr),
+            round2(report.os_scale)
         );
     } else {
         tracing::warn!(
@@ -365,6 +435,13 @@ fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+/// Two decimals, for the scale factors. `dpr` and `os_scale` are thirds and
+/// quarters more often than they are halves, and rounding them to one decimal
+/// would print `1.6 / 1.2` for a division that is meant to come out exact.
+fn round2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
 #[derive(serde::Deserialize)]
 struct ChromeReport {
     installed: bool,
@@ -378,6 +455,11 @@ struct ChromeReport {
     /// against [`chrome::window_cluster_width`].
     measured_win_w: f64,
     zoom: f64,
+    /// The page's `devicePixelRatio` as reported, and the system scale factor
+    /// `zoom` was derived by dividing out. Both are logged so the caption's zoom
+    /// percentage can be checked rather than taken on trust.
+    dpr: f64,
+    os_scale: f64,
     placeholder: bool,
     ready_state: String,
     origin: String,
@@ -518,20 +600,20 @@ fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
         .manage(state)
         .setup(move |app| {
             build_tray(app)?;
-            // Read from the monitor, not from the window: `initialization_script`
-            // has to be handed the finished string at builder time, so the window
-            // does not exist yet, and `window.scale_factor()` at this point is
-            // always None - which silently baked 1.0 in and made the menu read a
-            // 125% display as a 125% zoom. The number is what the chrome divides
-            // `devicePixelRatio` by to recover the zoom, so getting it wrong is
-            // not cosmetic.
-            let os_scale = app
-                .primary_monitor()
-                .ok()
-                .flatten()
-                .map(|monitor| monitor.scale_factor())
-                .filter(|scale| *scale > 0.0)
-                .unwrap_or(1.0);
+            // The window's *system* DPI, not Tauri's idea of the monitor's scale
+            // factor. `primary_monitor().scale_factor()` and even
+            // `window.scale_factor()` both reported 1.0 on a 125% display while
+            // WebView2 was rendering at 1.25 — the process is not per-monitor DPI
+            // aware, so Windows virtualises every scale query it makes. That is
+            // not cosmetic: this number is the denominator that turns
+            // `devicePixelRatio` back into a page zoom, and getting it wrong made
+            // the caption claim 125% when the zoom was 100%.
+            //
+            // `GetDpiForSystem` is documented as unaffected by the calling
+            // process's awareness, which is exactly the property needed here.
+            let os_scale = system_dpi_scale();
+            tracing::info!(target: "dsh_shell", "display scale factor = {os_scale}");
+
             let chrome = chrome_script(os_scale);
             let page_load_chrome = chrome.clone();
             let window = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))

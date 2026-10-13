@@ -81,6 +81,21 @@ pub const CONTROL_H: f64 = 28.0;
 /// two ever disagree, the sidebar toggle sits on a different line from the window
 /// buttons — which is exactly what a screenshot showed.
 pub const CONTROL_TOP: f64 = (BAR_H - CONTROL_H) / 2.0;
+/// Gap between the window buttons and the window's right edge.
+///
+/// Windows puts a maximized window's controls hard against the corner, and
+/// against dsh's own surface that reads as the ✕ being part of the page rather
+/// than part of the caption. A small inset fixes it.
+///
+/// It is also the offset the zoom panel is placed by, since the panel hangs from
+/// the menu button's right edge: it must clear the window buttons *and* this
+/// inset, or it slides under the ✕.
+pub const EDGE_INSET: f64 = 10.0;
+/// Width from the window's right edge to the menu button's left edge: the window
+/// buttons plus the inset between them and the frame.
+pub fn chrome_right_edge() -> f64 {
+    reserved_width() + EDGE_INSET
+}
 /// The height of dsh's sidebar toggle, from the same rule.
 #[cfg(test)]
 const DSH_TOGGLE_H: f64 = 28.0;
@@ -114,7 +129,8 @@ pub fn window_cluster_width() -> f64 {
 pub fn script(os_scale: f64) -> String {
     format!(
         "window.__DSH_SHELL__ = {{ osScale: {os_scale}, barH: {BAR_H}, winW: {WIN_W}, \
-         cornerR: {CORNER_R}, controlH: {CONTROL_H}, controlTop: {CONTROL_TOP} }};\n{}",
+         cornerR: {CORNER_R}, controlH: {CONTROL_H}, controlTop: {CONTROL_TOP}, \
+         edgeInset: {EDGE_INSET} }};\n{}",
         include_str!("../../platform_adapt.js")
     )
 }
@@ -131,6 +147,13 @@ const _: () = {
     // no band for dsh to reserve and its toggle lands on the window's edge.
     assert!(CONTROL_H <= BAR_H);
     assert!(CONTROL_TOP > 0.0, "the controls would sit flush against the window");
+    // An inset that swallowed a button, or a negative one, would both be wrong in
+    // the same way: the caption would no longer line up with the window's edge.
+    assert!(EDGE_INSET >= 0.0 && EDGE_INSET < WIN_W, "the inset is not a gap between controls");
+    assert!(
+        CONTROL_H <= BAR_H - CONTROL_TOP,
+        "the control box must sit inside the band dsh reserves"
+    );
 };
 
 #[cfg(test)]
@@ -155,6 +178,7 @@ mod tests {
             ("cornerR", js_number(CORNER_R)),
             ("controlH", js_number(CONTROL_H)),
             ("controlTop", js_number(CONTROL_TOP)),
+            ("edgeInset", js_number(EDGE_INSET)),
         ] {
             assert!(
                 js.contains(&format!("{name}: {value}")),
@@ -177,6 +201,7 @@ mod tests {
             ("cornerR", js_number(CORNER_R)),
             ("controlH", js_number(CONTROL_H)),
             ("controlTop", js_number(CONTROL_TOP)),
+            ("edgeInset", js_number(EDGE_INSET)),
         ] {
             assert!(
                 js.contains(&format!("num(CFG.{name}, {value})")),
@@ -276,6 +301,173 @@ mod tests {
                 top + height
             );
         }
+    }
+
+    /// A caption control must not carry an inline `background`.
+    ///
+    /// An inline background outranks every stylesheet rule, `:hover` included, so
+    /// the menu button had no hover highlight while the window buttons beside it
+    /// did — the stylesheet rule was correct, it was simply being overridden. This
+    /// is the second time this file has been bitten by it, which is why
+    /// `installStylesheet` says so in a comment and `control()` omits it.
+    #[test]
+    fn no_caption_control_carries_an_inline_background() {
+        let js = script(1.0);
+        assert!(
+            !js.contains("\"background:transparent\""),
+            "an inline background defeats the :hover rules in the stylesheet: {js}"
+        );
+    }
+
+    /// The menu glyph must be drawn from real elements.
+    ///
+    /// It used to be one `border-top` plus two `box-shadow`s, which draws two more
+    /// 1.5px lines only while the element's border box *is* 1.5px tall. Giving it
+    /// the 11px height that centring needs turned the same two shadows into an
+    /// 11px filled block — a black rectangle in place of the hamburger.
+    #[test]
+    fn the_menu_glyph_is_not_drawn_with_box_shadow() {
+        let js = script(1.0);
+        // Scoped to the technique, not to `box-shadow` at all: the zoom panel
+        // legitimately has a drop shadow. What cannot work is casting an extra
+        // copy of a *border* with an offset, because a shadow follows the border
+        // box — so the moment the element is given a height so it can be centred,
+        // those "lines" become a filled block. That is the black rectangle.
+        assert!(
+            !js.contains("0 currentColor"),
+            "the glyph must not be drawn by casting offset copies of its border: {js}"
+        );
+        // And it must be three real bars, which is what behaves.
+        assert!(
+            js.contains("flex-direction:column") && js.contains("for (var i = 0; i < 3; i++)"),
+            "the glyph should be three child elements in a column: {js}"
+        );
+    }
+
+    /// Clicking the menu button must not also count as clicking "outside".
+    ///
+    /// The dismiss handler runs in the capture phase, before the button's own
+    /// handler. With `event.target === menuButton` it never matched, because a
+    /// click lands on the glyph *inside* the button: the panel closed and then
+    /// immediately reopened, and the menu could not be shut.
+    #[test]
+    fn the_dismiss_handler_tests_containment_not_identity() {
+        let js = script(1.0);
+        assert!(
+            js.contains("menuButton.contains(event.target)"),
+            "the dismiss handler must use contains(): {js}"
+        );
+        assert!(
+            !js.contains("event.target === menuButton"),
+            "an identity test misses clicks that land on the button's children: {js}"
+        );
+    }
+
+    /// Every key Rust injects must actually be read, and every key the script
+    /// reads must actually be injected.
+    ///
+    /// This exists because of a bug it would have caught: an edit dropped
+    /// `var OS_SCALE = num(CFG.osScale, 1)` from the script while Rust kept
+    /// injecting `osScale`. Every other test passed — they check that each
+    /// constant is *injected*, which was still true — and the chrome died at
+    /// runtime with `ReferenceError: OS_SCALE is not defined`, so the window had
+    /// no title bar at all and nothing failed until somebody looked at the log.
+    #[test]
+    fn the_injected_config_and_the_script_agree_on_their_keys() {
+        let js = script(1.0);
+
+        let injected: Vec<String> = js
+            .split("window.__DSH_SHELL__ = {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .map(|block| {
+                block
+                    .split(',')
+                    .filter_map(|pair| pair.split(':').next())
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty() && !name.contains('{'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(!injected.is_empty(), "could not read the injected config: {js}");
+
+        let read: Vec<String> = {
+            let mut names: Vec<String> = Vec::new();
+            let mut rest = js.as_str();
+            while let Some(at) = rest.find("CFG.") {
+                rest = &rest[at + 4..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    names.push(name);
+                }
+            }
+            names
+        };
+
+        for key in &injected {
+            assert!(
+                read.contains(key),
+                "Rust injects `{key}` but the script never reads it — a silent dead value, \
+                 and if its `var` was lost the whole chrome throws at runtime"
+            );
+        }
+        for key in &read {
+            assert!(
+                injected.contains(key),
+                "the script reads `CFG.{key}`, which Rust does not inject, so it silently \
+                 falls back to the literal"
+            );
+        }
+    }
+
+    /// Every control we own must opt out of dsh's drag strip.
+    ///
+    /// The contract paints `.frame::before` with `-webkit-app-region: drag`
+    /// across the entire caption, and our controls sit on top of it. Chromium
+    /// collects drag regions by bounds, so a control that does not declare its own
+    /// app-region does not mask the strip beneath it — two quick clicks on the
+    /// menu button were read as a double-click on a drag region, and the window
+    /// maximised itself instead of the menu opening and closing.
+    ///
+    /// dsh applies `no-drag` to its own sidebar toggle for the same reason. The
+    /// rest of the caption must stay draggable, so this is asserted on the
+    /// controls and not on the bar.
+    #[test]
+    fn our_controls_opt_out_of_the_captions_drag_region() {
+        let js = script(1.0);
+        let no_drag = js.matches("-webkit-app-region:no-drag").count();
+        // Two source sites, not four: `control()` builds all three window buttons,
+        // so one declaration covers minimize/maximize/close at runtime. Counting
+        // source occurrences is the only thing available here, and it is what
+        // this is really guarding — that `control()` did not lose its own.
+        assert!(
+            no_drag >= 2,
+            "the menu button and `control()` must both declare no-drag, found {no_drag}: {js}"
+        );
+        assert!(
+            !js.contains("-webkit-app-region:drag"),
+            "the caption itself must stay draggable — only our controls opt out: {js}"
+        );
+    }
+
+    /// The menu button's hover highlight has to be shaped like its neighbours'.
+    ///
+    /// Its background comes from the stylesheet's `:hover` rule, which carries no
+    /// radius — each control sets its own inline, because the radius is geometry
+    /// and has to track the zoom from one place. The menu button was the one
+    /// control that never got one, so its highlight was a square rectangle sitting
+    /// beside three rounded ones.
+    #[test]
+    fn every_caption_control_shares_one_corner_radius() {
+        let js = script(1.0);
+        let rounded = js.matches("\"border-radius:\" + px(CORNER_R)").count();
+        assert!(
+            rounded >= 2,
+            "the menu button and the shared `control()` must both use CORNER_R, found {rounded}"
+        );
     }
 
     /// The contract layer is not optional. Without it the chrome silently falls
