@@ -266,26 +266,39 @@ final class DshDesktopBridge: NSObject {
 
     /// Begin a native window drag from a `[data-window-drag]` row.
     ///
-    /// The reported coordinates are only used to decide *which* row was pressed;
-    /// the drag itself tracks the real cursor from the Window Server. They are
-    /// logged rather than discarded because a drag that starts in the wrong place
-    /// is otherwise impossible to diagnose.
+    /// The reported coordinates are only used to describe *which* row was pressed;
+    /// the drag takes its position from the real cursor. Both are logged, because
+    /// a drag that starts in the wrong place is otherwise impossible to diagnose.
     private func beginWindowDrag(screenX: Double, screenY: Double) {
         guard let window = webView?.window else { return }
 
-        // AppKit's origin is bottom-left; the DOM reports top-left screen
-        // coordinates. The reported position is not what drives the drag —
-        // `NSEvent.mouseLocation` is the real cursor, which is what the Window
-        // Server wants. Synthesising a whole drag ourselves (mouseDown,
-        // mouseMoved…, mouseUp) would be both more code and a worse result: the
-        // window would follow our synthetic positions rather than the user's
-        // pointer, and it would not participate in Space switching or Mission
-        // Control the way a real drag does.
-        let point = NSEvent.mouseLocation
+        // Two coordinate systems meet here, and getting one wrong moved the window
+        // rather than the mouse.
+        //
+        // `NSEvent.mouseLocation` is in **screen** coordinates, as `NSEvent.h`
+        // says ("global mouse coordinates"). `mouseEvent(with:location:)` wants
+        // the location in the **window's** coordinate system — it becomes the
+        // event's `locationInWindow`, which is exactly what the Window Server uses
+        // to work out how far the cursor sits from the window's origin.
+        //
+        // Passing a screen point there made the offset equal the cursor's own
+        // screen position, so the drag began at `origin = cursor - cursor = (0,0)`.
+        // AppKit's origin is bottom-left, so every press on a drag row snapped the
+        // window to the bottom-left corner of the primary screen — instantly, and
+        // before the user moved at all. Dragging still worked afterwards, because
+        // the offset is constant from then on: that is why the window could be
+        // pulled back, and why this looked like a flicker rather than a bad origin.
+        let screenPoint = NSEvent.mouseLocation
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+
+        Log.debug("beginWindowDrag: dsh reported (\(Int(screenX)), \(Int(screenY))) "
+                  + "screen; using cursor (\(Int(screenPoint.x)), \(Int(screenPoint.y))) "
+                  + "→ window (\(Int(windowPoint.x)), \(Int(windowPoint.y))) "
+                  + "origin \(Int(window.frame.origin.x)), \(Int(window.frame.origin.y))")
 
         guard let down = NSEvent.mouseEvent(
             with: .leftMouseDown,
-            location: point,
+            location: windowPoint,
             modifierFlags: [],
             timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber,
