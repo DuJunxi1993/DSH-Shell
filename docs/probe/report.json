@@ -1,5 +1,5 @@
 {
-  "dshPid" : 33892,
+  "dshPid" : 99348,
   "dshVersion" : "0.2.0-rc.2",
   "modes" : {
     "baseline" : {
@@ -62,6 +62,31 @@
         }
       ],
       "contentBelowStrip" : null,
+      "desktopSurface" : {
+        "boot" : "undefined",
+        "bootReady" : false,
+        "bootReadySettled" : false,
+        "desktop" : "undefined",
+        "desktopKeys" : [
+
+        ],
+        "hasMessageHandler" : false,
+        "keyboardKeys" : [
+
+        ],
+        "platform" : null,
+        "probeMessages" : [
+
+        ],
+        "shell" : "undefined",
+        "shortcutsKeys" : [
+
+        ],
+        "transport" : false,
+        "transportKeys" : [
+
+        ]
+      },
       "dragRegionCount" : 3,
       "dragRegionSample" : {
         "h" : 60,
@@ -164,7 +189,20 @@
         "--dsh-windows-titlebar-height" : ""
       },
       "vh" : 800,
-      "vw" : 1280
+      "vw" : 1280,
+      "zoom" : {
+        "columnsCollapsed" : 0,
+        "cssWidth" : 1280,
+        "horizontalOverflow" : false,
+        "layoutWidth" : 1280,
+        "matches" : {
+          "(max-width: 480px)" : false,
+          "(max-width: 700px)" : false,
+          "(max-width: 900px)" : false
+        },
+        "pageZoom" : 1,
+        "sidebarVisible" : false
+      }
     },
     "darwin" : {
       "appRegion" : {
@@ -172,7 +210,7 @@
         "supports" : false,
         "webkitSupported" : false
       },
-      "bootCardText" : "HARNESS Failed to load plugins @deepseek-ai\/dsh-client-shortcuts web boot: 24 entries did not activate @deepseek-ai\/dsh-client-ui-sidebar-right: pending (waiting for services: layout, shortcuts) @deepseek-ai\/dsh-client-ui-open-in-app: pending (waiting for services: shortcuts, layout) @deepseek-ai\/dsh-client-shortcuts: failed @deepseek-ai\/dsh-client-ui-shortcuts: pending (waiting for service: short",
+      "bootCardText" : "HARNESS Failed to load plugins @deepseek-ai\/dsh-client-shortcuts web boot: 24 entries did not activate @deepseek-ai\/dsh-client-ui-workspace: pending (waiting for services: layout, shortcuts) @deepseek-ai\/dsh-client-ui-conversation: pending (waiting for service: uiWorkspace) @deepseek-ai\/dsh-client-ui-open-in-app: pending (waiting for services: shortcuts, layout) @deepseek-ai\/dsh-client-shortcuts: ",
       "bootScreenPresent" : true,
       "bootWaitAttempts" : 88,
       "bootWaitTimedOut" : true,
@@ -258,6 +296,31 @@
           "y" : 64
         }
       ],
+      "desktopSurface" : {
+        "boot" : "undefined",
+        "bootReady" : false,
+        "bootReadySettled" : false,
+        "desktop" : "undefined",
+        "desktopKeys" : [
+
+        ],
+        "hasMessageHandler" : false,
+        "keyboardKeys" : [
+
+        ],
+        "platform" : "darwin",
+        "probeMessages" : [
+
+        ],
+        "shell" : "undefined",
+        "shortcutsKeys" : [
+
+        ],
+        "transport" : false,
+        "transportKeys" : [
+
+        ]
+      },
       "dragRegionCount" : 0,
       "frameReservingTop" : null,
       "fullscreen" : {
@@ -353,9 +416,22 @@
         "--dsh-windows-titlebar-height" : ""
       },
       "vh" : 800,
-      "vw" : 1280
+      "vw" : 1280,
+      "zoom" : {
+        "columnsCollapsed" : 0,
+        "cssWidth" : 1275,
+        "horizontalOverflow" : false,
+        "layoutWidth" : 1275,
+        "matches" : {
+          "(max-width: 480px)" : false,
+          "(max-width: 700px)" : false,
+          "(max-width: 900px)" : false
+        },
+        "pageZoom" : 1,
+        "sidebarVisible" : false
+      }
     },
-    "darwinProxy" : {
+    "darwinAppBridge" : {
       "appRegion" : {
         "computed" : null,
         "supports" : false,
@@ -366,73 +442,7 @@
       "bootWaitAttempts" : 1,
       "bootWaitTimedOut" : false,
       "bridgeLog" : [
-        "get dshDesktopBoot.ready",
-        "call dshDesktopBoot.ready()",
-        "get dshDesktop.keyboard",
-        "get dshDesktop.shortcuts",
-        "get dshDesktop.keyboard.subscribe",
-        "call dshDesktop.keyboard.subscribe\/1",
-        "get dshDesktop.shortcuts.subscribe",
-        "call dshDesktop.shortcuts.subscribe\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.protocolVersion",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1",
-        "get dshDesktop.shortcuts.get",
-        "call dshDesktop.shortcuts.get\/1"
+
       ],
       "columns" : [
         {
@@ -524,6 +534,369 @@
           "y" : 64
         }
       ],
+      "desktopSurface" : {
+        "boot" : "object",
+        "bootReady" : true,
+        "bootReadySettled" : false,
+        "desktop" : "object",
+        "desktopKeys" : [
+          "protocolVersion",
+          "keyboard",
+          "shortcuts",
+          "deviceInfo"
+        ],
+        "hasMessageHandler" : true,
+        "keyboardKeys" : [
+          "subscribe",
+          "closeWindow"
+        ],
+        "platform" : "darwin",
+        "probeMessages" : [
+          "notificationShimInstalled {\"nativePresent\":true,\"nativePermission\":\"default\",\"reportedPermission\":\"default\"}",
+          "bridgeInstalled {\"hasHost\":true,\"appRegion\":false}",
+          "ready:called",
+          "ready:resolved",
+          "keyboardSubscribed {}",
+          "shortcutsGet {\"id\":\"1\",\"definitions\":[]}",
+          "shortcutsGet {\"id\":\"2\",\"definitions\":[{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]}]}",
+          "shortcutsGet {\"id\":\"3\",\"definitions\":[{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]}]}",
+          "shortcutsGet {\"id\":\"4\",\"definitions\":[{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]},{\"id\":\"fixed.dismiss\",\"defaults\":{},\"fixed\":[{\"code\":\"Escape\",\"modifiers\":[]}]}]}",
+          "shortcutsGet {\"id\":\"5\",\"definitions\":[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]},{\"id\":\"fixed.dismiss\",\"defaults\":{},\"fixed\":[{\"code\":\"Escape\",\"modifiers\":[]}]}]}",
+          "shortcutsGet {\"id\":\"6\",\"definitions\":[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]},{\"id\":\"fixed.dismiss\",\"defaults\":{},\"fixed\":[{\"code\":\"Escape\",\"modifiers\":[]}]}]}",
+          "shortcutsGet {\"id\":\"7\",\"definitions\":[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]},{\"id\":\"fixed.dismiss\",\"defaults\":{},\"fixed\":[{\"code\":\"Escape\",\"modifiers\":[]}]}]}"
+        ],
+        "shell" : "object",
+        "shortcutsKeys" : [
+          "get",
+          "edit",
+          "subscribe",
+          "recording",
+          "dispose"
+        ],
+        "transport" : true,
+        "transportKeys" : [
+          "ownsHost",
+          "streamBaseUrl"
+        ]
+      },
+      "dragRegionCount" : 4,
+      "dragRegionSample" : {
+        "h" : 52,
+        "text" : "",
+        "w" : 280,
+        "x" : 0,
+        "y" : 0
+      },
+      "frameReservingTop" : null,
+      "fullscreen" : {
+        "chromeTop" : "0px",
+        "leading" : "",
+        "overlay" : "20px",
+        "paddingTop" : "0px",
+        "top" : "48px"
+      },
+      "htmlAttrs" : {
+        "data-ds-theme-source" : "system",
+        "data-platform" : "darwin",
+        "lang" : "zh-CN",
+        "style" : "color-scheme: light;"
+      },
+      "leadingSeat" : null,
+      "mode" : null,
+      "pageErrors" : [
+
+      ],
+      "readyState" : "complete",
+      "topStrip" : [
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 5
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 30
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 60
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 90
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 120
+        },
+        {
+          "h" : 52,
+          "tag" : "div",
+          "text" : "",
+          "w" : 280,
+          "x" : 200
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 640
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 1160
+        },
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "x" : 1270
+        }
+      ],
+      "vars" : {
+        "--dsh-frame-chrome-top" : "",
+        "--dsh-frame-leading-clearance" : "",
+        "--dsh-frame-overlay-top" : "calc(48px + 20px)",
+        "--dsh-frame-top-clearance" : "48px",
+        "--dsh-windows-content-radius" : "",
+        "--dsh-windows-sidebar-width" : "",
+        "--dsh-windows-titlebar-height" : ""
+      },
+      "vh" : 800,
+      "vw" : 1280,
+      "zoom" : {
+        "columnsCollapsed" : 0,
+        "cssWidth" : 1280,
+        "horizontalOverflow" : false,
+        "layoutWidth" : 1280,
+        "matches" : {
+          "(max-width: 480px)" : false,
+          "(max-width: 700px)" : false,
+          "(max-width: 900px)" : false
+        },
+        "pageZoom" : 1,
+        "sidebarVisible" : false
+      }
+    },
+    "darwinProxy" : {
+      "appRegion" : {
+        "computed" : null,
+        "supports" : false,
+        "webkitSupported" : false
+      },
+      "bootCardText" : null,
+      "bootScreenPresent" : false,
+      "bootWaitAttempts" : 1,
+      "bootWaitTimedOut" : false,
+      "bridgeLog" : [
+        "get dshDesktopBoot.ready",
+        "call dshDesktopBoot.ready()",
+        "get dshDesktop.keyboard",
+        "get dshDesktop.shortcuts",
+        "get dshDesktop.keyboard.subscribe",
+        "call dshDesktop.keyboard.subscribe\/1",
+        "get dshDesktop.shortcuts.subscribe",
+        "call dshDesktop.shortcuts.subscribe\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.protocolVersion",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktop.shortcuts.get",
+        "call dshDesktop.shortcuts.get\/1",
+        "get dshDesktopBoot.ready",
+        "get dshDesktop.keyboard",
+        "get dshDesktop.keyboard",
+        "get dshDesktop.shortcuts",
+        "get dshDesktop.shortcuts"
+      ],
+      "columns" : [
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 0,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 280,
+          "width" : 280
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 276,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "absolute",
+          "readsTopClearance" : null,
+          "right" : 284,
+          "width" : 8
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 280,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "static",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        },
+        {
+          "borderTopLeftRadius" : "0px",
+          "cls" : 1,
+          "left" : 281,
+          "paddingRight" : "0px",
+          "paddingTop" : "0px",
+          "position" : "relative",
+          "readsTopClearance" : null,
+          "right" : 1280,
+          "width" : 1000
+        }
+      ],
+      "contentBelowStrip" : [
+        {
+          "h" : 40,
+          "tag" : "header",
+          "text" : "",
+          "w" : 1000,
+          "y" : 4
+        },
+        {
+          "h" : 30,
+          "tag" : "div",
+          "text" : "",
+          "w" : 952,
+          "y" : 16
+        },
+        {
+          "h" : 30,
+          "tag" : "div",
+          "text" : "",
+          "w" : 952,
+          "y" : 32
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 40
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 48
+        },
+        {
+          "h" : 760,
+          "tag" : "div",
+          "text" : "探索未至之境\n预览版\n默认工作区\n标准模式\n描述",
+          "w" : 998,
+          "y" : 64
+        }
+      ],
+      "desktopSurface" : {
+        "boot" : "function",
+        "bootReady" : true,
+        "bootReadySettled" : false,
+        "desktop" : "function",
+        "desktopKeys" : [
+
+        ],
+        "hasMessageHandler" : false,
+        "keyboardKeys" : [
+
+        ],
+        "platform" : "darwin",
+        "probeMessages" : [
+
+        ],
+        "shell" : "undefined",
+        "shortcutsKeys" : [
+
+        ],
+        "transport" : true,
+        "transportKeys" : [
+          "ownsHost",
+          "streamBaseUrl"
+        ]
+      },
       "dragRegionCount" : 4,
       "dragRegionSample" : {
         "h" : 52,
@@ -627,7 +1000,20 @@
         "--dsh-windows-titlebar-height" : ""
       },
       "vh" : 800,
-      "vw" : 1280
+      "vw" : 1280,
+      "zoom" : {
+        "columnsCollapsed" : 0,
+        "cssWidth" : 1280,
+        "horizontalOverflow" : false,
+        "layoutWidth" : 1280,
+        "matches" : {
+          "(max-width: 480px)" : false,
+          "(max-width: 700px)" : false,
+          "(max-width: 900px)" : false
+        },
+        "pageZoom" : 1,
+        "sidebarVisible" : false
+      }
     },
     "darwinReal" : {
       "appRegion" : {
@@ -645,33 +1031,61 @@
         "shortcuts.subscribe registered",
         "shortcuts.get definitions=0",
         "shortcuts.get definitions=1",
+        "shortcuts.get SAMPLE=[{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]}]",
         "shortcuts.get definitions=2",
+        "shortcuts.get SAMPLE=[{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]}]",
         "shortcuts.get definitions=3",
+        "shortcuts.get SAMPLE=[{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]},{\"id\":\"fixed.dismiss\",\"defaults\":{},\"fixed\":[{\"code\":\"Escape\",\"modifiers\":[]}]}]",
         "shortcuts.get definitions=4",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]},{\"id\":\"fixed.dismiss\",\"defaults\":{},\"fixed\":[{\"code\":\"Escape\",\"modifiers\":[]}]}]",
         "shortcuts.get definitions=5",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]},{\"id\":\"fixed.select\",\"defaults\":{},\"fixed\":[{\"code\":\"Enter\",\"modifiers\":[]}]}]",
         "shortcuts.get definitions=6",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"fixed.move\",\"defaults\":{},\"fixed\":[{\"code\":\"ArrowUp\",\"modifiers\":[]},{\"code\":\"ArrowDown\",\"modifiers\":[]}]}]",
         "shortcuts.get definitions=7",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=8",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=9",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=10",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=11",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=12",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=13",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=14",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=15",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=16",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=17",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=18",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=19",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=20",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=21",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=22",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=23",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=24",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=25",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=26",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=27",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcuts.get definitions=28",
+        "shortcuts.get SAMPLE=[{\"id\":\"shortcuts.open\",\"defaults\":{\"desktop:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:windows\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]},\"web:linux\":{\"code\":\"Slash\",\"modifiers\":[\"primary\"]}}},{\"id\":\"sidebar.left.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]}}},{\"id\":\"workspace.openLocal\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyO\",\"modifiers\":[\"primary\",\"shift\"]}}},{\"id\":\"sidebar.right.toggle\",\"defaults\":{\"desktop:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"desktop:linux\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"alt\"]},\"web:macos\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]},\"web:windows\":{\"code\":\"KeyB\",\"modifiers\":[\"primary\",\"shift\"]}}}]",
         "shortcut dispatched code=KeyN"
       ],
       "columns" : [
@@ -764,6 +1178,40 @@
           "y" : 64
         }
       ],
+      "desktopSurface" : {
+        "boot" : "object",
+        "bootReady" : true,
+        "bootReadySettled" : false,
+        "desktop" : "object",
+        "desktopKeys" : [
+          "protocolVersion",
+          "keyboard",
+          "shortcuts",
+          "deviceInfo"
+        ],
+        "hasMessageHandler" : false,
+        "keyboardKeys" : [
+          "subscribe",
+          "closeWindow"
+        ],
+        "platform" : "darwin",
+        "probeMessages" : [
+
+        ],
+        "shell" : "undefined",
+        "shortcutsKeys" : [
+          "get",
+          "edit",
+          "subscribe",
+          "recording",
+          "dispose"
+        ],
+        "transport" : true,
+        "transportKeys" : [
+          "ownsHost",
+          "streamBaseUrl"
+        ]
+      },
       "dragRegionCount" : 4,
       "dragRegionSample" : {
         "h" : 52,
@@ -868,7 +1316,20 @@
         "--dsh-windows-titlebar-height" : ""
       },
       "vh" : 800,
-      "vw" : 1280
+      "vw" : 1280,
+      "zoom" : {
+        "columnsCollapsed" : 0,
+        "cssWidth" : 1280,
+        "horizontalOverflow" : false,
+        "layoutWidth" : 1280,
+        "matches" : {
+          "(max-width: 480px)" : false,
+          "(max-width: 700px)" : false,
+          "(max-width: 900px)" : false
+        },
+        "pageZoom" : 1,
+        "sidebarVisible" : false
+      }
     },
     "windows" : {
       "appRegion" : {
@@ -973,6 +1434,31 @@
           "y" : 64
         }
       ],
+      "desktopSurface" : {
+        "boot" : "undefined",
+        "bootReady" : false,
+        "bootReadySettled" : false,
+        "desktop" : "undefined",
+        "desktopKeys" : [
+
+        ],
+        "hasMessageHandler" : false,
+        "keyboardKeys" : [
+
+        ],
+        "platform" : null,
+        "probeMessages" : [
+
+        ],
+        "shell" : "undefined",
+        "shortcutsKeys" : [
+
+        ],
+        "transport" : false,
+        "transportKeys" : [
+
+        ]
+      },
       "dragRegionCount" : 3,
       "dragRegionSample" : {
         "h" : 40,
@@ -1082,12 +1568,25 @@
         "--dsh-windows-titlebar-height" : "32px"
       },
       "vh" : 800,
-      "vw" : 1280
+      "vw" : 1280,
+      "zoom" : {
+        "columnsCollapsed" : 0,
+        "cssWidth" : 1280,
+        "horizontalOverflow" : false,
+        "layoutWidth" : 1280,
+        "matches" : {
+          "(max-width: 480px)" : false,
+          "(max-width: 700px)" : false,
+          "(max-width: 900px)" : false
+        },
+        "pageZoom" : 1,
+        "sidebarVisible" : false
+      }
     }
   },
   "pidStillAliveAfterShutdown" : false,
   "port" : 3080,
   "portFreedAfterShutdown" : true,
-  "url" : "http:\/\/127.0.0.1:3080\/?token=qHtnDrH5y8ByhHPuJFPXasQQv-Z1hld4iWq7s6Zat8Q",
+  "url" : "http:\/\/127.0.0.1:3080\/?token=FQtjmz6MfSslz75YsmH8NOx8rY60bN-6IPs1T16ty1I",
   "urlAcceptedBecause" : "dsh web: line, loopback, port 3080, token present"
 }
