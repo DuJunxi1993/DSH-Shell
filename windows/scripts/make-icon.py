@@ -17,12 +17,39 @@ from the *favicon*, which is why it sat about two percent off dsh's UI mark — 
 `docs/cross-platform-lessons.md` §1. macOS draws `FISH_LOGO_PATH` in its menu bar,
 so using it here is also what makes the two shells carry the same whale.
 
-The mask is recoloured and plated rather than shipped as-is, so the dsh-shell task
-bar icon is distinguishable at a glance from the dsh *web* icon in a browser.
+The mark is plated on a gradient rather than shipped as dsh's own icon, so the
+dsh-shell icon is distinguishable at a glance from the dsh *web* icon in a
+browser.
+
+## The design, and what each part is doing
+
+`scripts/icon-sample.py` renders candidates at other sizes and colours without
+touching the repo; it imports `build()` from here, so there is one copy of the
+geometry.
+
+* **Plate** — the gradient sampled from `logo_background.png` rather than chosen
+  by eye. That image is 836x850, transparent rounded corners, opaque from y=101 on
+  the left edge: radius/width = 101/836 = **12.1%**, and the plate spans the full
+  canvas (opaque bbox 1..834, so no inset). Fitted as a linear gradient along the
+  **diagonal** — a vertical gradient would put two visibly different colours either
+  side of the whale, because in the source image the colour changes along x as well
+  (mid-height: `#5470EB` at the left, `#7030EF` at the right). Interior residuals
+  are under 9/255, i.e. 8-bit rounding.
+* **Mark size** — a fraction of the **plate**, not of the canvas, and applied to
+  the mask's *ink* rather than to its square. Both matter: the mask is a square
+  with the viewBox letterboxed inside it, so the whale only fills the middle ~73%,
+  and sizing the square made the mark `0.62 x 0.73 = 45%` of the canvas against a
+  plate spanning 89%. The eye compares the mark to the plate, so `build()` crops to
+  the ink first and then scales to `WHALE_FRACTION` of the plate width.
+* **Mark colour** — near-white. The plate is a saturated blue-to-purple gradient,
+  and the brand blue this replaced was both the same hue as the plate and at almost
+  the same value, so it had no contrast against it. Near-white is the one colour
+  guaranteed to read against a gradient of this kind.
+
+The old dark plate and its "glass sheen" are gone; they were a different design,
+not a parameter of this one.
 
 Requires Pillow.
-
-    python scripts/make-icon.py
 """
 
 from __future__ import annotations
@@ -37,67 +64,90 @@ WHALE = ROOT / "src-tauri" / "icons" / "dsh-whale.png"
 OUT = ROOT / "src-tauri" / "icons" / "dsh-shell.png"
 
 CANVAS = 1024
-PLATE_INSET = 56
-PLATE_RADIUS = 224
 
-# dsh's own launcher accent, so the shell reads as part of the same product.
-BRAND = (77, 107, 254)
-BRAND_LIGHT = (150, 170, 255)
-PLATE_TOP = (26, 29, 38)
-PLATE_BOTTOM = (11, 13, 17)
+# The plate, measured from `logo_background.png`.
+PLATE_INSET = 0
+PLATE_RADIUS_FRACTION = 0.121
+GRADIENT_FROM = (61, 154, 245)   # #3D9AF5, top-left
+GRADIENT_TO = (134, 11, 236)     # #860BEC, bottom-right
+
+# The mark, as a fraction of the plate's width. Chosen from `icon-sample.py`'s
+# 0.72 / 0.80 / 0.88 candidates at taskbar size: 0.88 pushes the tail into the
+# top-right corner and turns to mush at 32px, 0.72 is closest to the share dsh's
+# own favicon gives the whale.
+WHALE_FRACTION = 0.72
+
+WHALE_TOP = (255, 255, 255)
+WHALE_BOTTOM = (233, 240, 255)
+
+# Softens the mask's edge a little; LANCZOS already antialiased the downscale,
+# and this is only to take the last hard pixel off it.
+WHALE_BLUR = 1.2
 
 
-def build() -> Image.Image:
+def build(
+    whale_fraction: float = WHALE_FRACTION,
+    radius_fraction: float = PLATE_RADIUS_FRACTION,
+    whale_top: tuple[int, int, int] = WHALE_TOP,
+    whale_bottom: tuple[int, int, int] = WHALE_BOTTOM,
+    blur: float = WHALE_BLUR,
+) -> Image.Image:
+    """The plated icon, at `CANVAS` square. Every knob has a default."""
+    plate_size = CANVAS - 2 * PLATE_INSET
+
     plate = Image.new("L", (CANVAS, CANVAS), 0)
     ImageDraw.Draw(plate).rounded_rectangle(
-        (PLATE_INSET, PLATE_INSET, CANVAS - PLATE_INSET, CANVAS - PLATE_INSET),
-        radius=PLATE_RADIUS,
+        (PLATE_INSET, PLATE_INSET, CANVAS - PLATE_INSET - 1, CANVAS - PLATE_INSET - 1),
+        radius=int(plate_size * radius_fraction),
         fill=255,
     )
 
-    # Vertical gradient through the plate only.
+    # Diagonal gradient, clipped to the plate.
     base = Image.new("RGBA", (CANVAS, CANVAS))
     pixels = base.load()
     span = CANVAS - 1
     for y in range(CANVAS):
-        t = y / span
-        row = tuple(
-            round(PLATE_TOP[i] + (PLATE_BOTTOM[i] - PLATE_TOP[i]) * t) for i in range(3)
-        )
+        ty = y / span
         for x in range(CANVAS):
-            pixels[x, y] = (*row, 255)
+            t = (x / span + ty) / 2.0
+            colour = tuple(
+                round(GRADIENT_FROM[i] + (GRADIENT_TO[i] - GRADIENT_FROM[i]) * t)
+                for i in range(3)
+            )
+            pixels[x, y] = (*colour, 255)
     base.putalpha(plate)
 
-    # Glass sheen across the top, clipped to the plate.
-    sheen = Image.new("L", (CANVAS, CANVAS), 0)
-    ImageDraw.Draw(sheen).rectangle((0, 0, CANVAS, CANVAS // 2), fill=26)
-    sheen = sheen.filter(ImageFilter.GaussianBlur(40))
-    sheen = Image.composite(sheen, Image.new("L", (CANVAS, CANVAS), 0), plate)
-    base.paste(Image.new("RGBA", (CANVAS, CANVAS), (255, 255, 255, 0)), (0, 0), sheen)
-    base.putalpha(plate)
-
-    # Whale, scaled off the plate by a comfortable margin, recoloured to brand
-    # blue. The source is an alpha-only mask, so it is never converted to RGBA
-    # - that would force every pixel opaque and turn the mark into a slab.
     whale = Image.open(WHALE)
     if whale.mode != "L":
         raise SystemExit(f"{WHALE.name} must be an 8-bit alpha mask, got {whale.mode}")
-    side = int(CANVAS * 0.62)
-    mask = whale.resize((side, side), Image.LANCZOS).filter(ImageFilter.GaussianBlur(2))
 
-    tinted = Image.new("RGBA", (side, side))
+    # Crop to the ink before sizing. The mask is a square with the viewBox
+    # letterboxed inside it, so scaling the square would leave the mark at ~73% of
+    # the size asked for — which is most of why it read as too small.
+    ink = whale.crop(whale.getbbox())
+    width = int(plate_size * whale_fraction)
+    height = max(1, round(width / (ink.width / ink.height)))
+    mask = ink.resize((width, height), Image.LANCZOS)
+    if blur:
+        mask = mask.filter(ImageFilter.GaussianBlur(blur))
+
+    # A slight vertical falloff, so the mark has some form instead of reading as
+    # a flat sticker on a flat gradient.
+    tinted = Image.new("RGBA", mask.size)
     tp = tinted.load()
-    for y in range(side):
-        t = y / (side - 1)
+    span_y = max(1, mask.size[1] - 1)
+    for y in range(mask.size[1]):
+        t = y / span_y
         colour = tuple(
-            round(BRAND_LIGHT[i] + (BRAND[i] - BRAND_LIGHT[i]) * t) for i in range(3)
+            round(whale_top[i] + (whale_bottom[i] - whale_top[i]) * t) for i in range(3)
         )
-        for x in range(side):
+        for x in range(mask.size[0]):
             tp[x, y] = (*colour, 255)
     tinted.putalpha(mask)
 
-    offset = (CANVAS - side) // 2
-    base.alpha_composite(tinted, (offset, offset + 8))
+    base.alpha_composite(
+        tinted, ((CANVAS - width) // 2, (CANVAS - mask.size[1]) // 2)
+    )
     return base
 
 

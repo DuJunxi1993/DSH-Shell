@@ -56,10 +56,12 @@ ROOT = Path(__file__).resolve().parent.parent
 GEOMETRY = ROOT / "scripts" / "dsh_whale_geometry.py"
 MASK = ROOT / "src-tauri" / "icons" / "dsh-whale.png"
 
-# The mask is square with the viewBox letterboxed inside it, because
-# `make-icon.py` scales the mask to a square and would otherwise squash the mark.
-# 1024 rather than the 256 this replaced: `make-icon.py` scales the whale up to
-# 634px, so a 256px source was being interpolated upward.
+# The mask is square with the viewBox letterboxed inside it, so the mark sits in
+# the middle ~73% of it. `make-icon.py` crops to the ink before sizing, which is
+# what keeps that padding from making the mark look small.
+#
+# 1024 rather than the 256 this replaced: `make-icon.py` scales the ink to 72% of a
+# 1024 plate, so a 256px source was being interpolated upward roughly 3x.
 MASK_SIZE = 1024
 
 # The two files that hold the two halves of the answer.
