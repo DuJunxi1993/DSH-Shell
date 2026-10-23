@@ -16,7 +16,9 @@
 //   4. a slow Loader, where the socket binds seconds before the URL is printed;
 //   5. an early exit, before the URL is ever announced.
 //
-// Modes: `ok` (default), `no-url-line`, `tokenless`, `die-early`.
+// Modes: `ok` (default), `no-url-line`, `tokenless`, `die-early`,
+// `crash-after-ready`. The last one announces a working endpoint and then dies,
+// which is the shape the crash-restart ladder exists for.
 
 import Foundation
 
@@ -47,6 +49,9 @@ let lifetimeMS = Int(knob("--lifetime-ms", "STUB_DSH_LIFETIME_MS", "120000")) ??
 /// Bytes of chatter printed before the URL line, to reproduce a dsh whose plugin
 /// loader is loud. Real dsh prints hundreds of lines while plugins activate.
 let chatterBytes = Int(knob("--chatter-bytes", "STUB_DSH_CHATTER_BYTES", "0")) ?? 0
+/// How long `crash-after-ready` keeps serving before it dies, so the shell has
+/// time to parse the URL line and reach `.ready` first.
+let crashDelayMS = Int(knob("--crash-delay-ms", "STUB_DSH_CRASH_DELAY_MS", "500")) ?? 500
 
 // MARK: - Output
 
@@ -183,6 +188,15 @@ default:
     out("dsh web: http://\(host):\(boundPort)/?token=\(token)\(lan)")
 }
 fflush(stdout)
+
+// A working endpoint that then dies. The delay matters: the shell has to parse
+// the URL line and reach `.ready` before the exit, or this degenerates into
+// `die-early` and stops testing the crash ladder.
+if mode == "crash-after-ready" {
+    Thread.sleep(forTimeInterval: Double(crashDelayMS) / 1000.0)
+    err("boom: crashing after announcing the endpoint")
+    exit(1)
+}
 
 // MARK: - Serve until told to stop
 

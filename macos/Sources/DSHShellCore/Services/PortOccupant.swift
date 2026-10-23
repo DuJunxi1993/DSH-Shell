@@ -27,8 +27,12 @@ import Foundation
 ///    shell's configured port.
 ///
 /// Fails any of them and it is reported as `notOrphan`, with the evidence, and the
-/// shell says nothing is killed and why. The user is shown the PID either way;
-/// deciding what to do with it is theirs.
+/// shell says nothing is killed and why. When all three hold, `DSHProcessManager`
+/// closes it before spawning — the same automatic reclaim Windows performs at
+/// startup (`orphan::reclaim_orphan`) — because retrying against a leftover can
+/// never succeed: the port it holds is not going to be released by waiting. The
+/// manual close in the retry screen remains as the fallback for a termination that
+/// fails.
 public struct PortOccupant: Identifiable, Equatable, Sendable {
     public let pid: Int32
     /// The full command line, as `ps` reports it. Shown to the user verbatim —

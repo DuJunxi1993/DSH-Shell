@@ -84,6 +84,7 @@ final class LifecycleTests: XCTestCase {
         unsetenv("STUB_DSH_MODE")
         unsetenv("STUB_DSH_URL_DELAY_MS")
         unsetenv("STUB_DSH_CHATTER_BYTES")
+        unsetenv("STUB_DSH_CRASH_DELAY_MS")
     }
 
     override func tearDown() {
@@ -300,6 +301,115 @@ final class LifecycleTests: XCTestCase {
         assertPortFree(settings.preferredPort)
     }
 
+    // MARK: - Crash restart ladder
+
+    /// Fast ladder for tests: the production 2/4/8s backoff is the thing under
+    /// test elsewhere; here it only makes the suite slow.
+    private func fastPolicy(
+        maxAttempts: Int = 2,
+        healthyUptime: TimeInterval = 60,
+        portReleaseTimeout: TimeInterval = 2
+    ) -> RestartPolicy {
+        RestartPolicy(maxAttempts: maxAttempts,
+                      healthyUptime: healthyUptime,
+                      portReleaseTimeout: portReleaseTimeout,
+                      backoff: { _ in 0.05 })
+    }
+
+    /// The failure that started this: dsh exits, its port is not free yet, and
+    /// the shell gives up on the first respawn instead of waiting. The ladder
+    /// must retry without the user touching anything, and failing a respawn is
+    /// not the end of the ladder.
+    func testACrashIsRestartedWithoutAskingTheUser() async throws {
+        var settings = stubSettings(mode: "crash-after-ready", spawnTimeoutSeconds: 10)
+        settings.autoRestartOnCrash = true
+        let manager = DSHProcessManager(settings: settings, policy: fastPolicy(maxAttempts: 2))
+        let events = await manager.events()
+
+        let log = EventLog()
+        let gaveUp = expectation(description: "the ladder reported its final failure")
+        Task {
+            for await event in events {
+                switch event {
+                case .autoRestartScheduled:
+                    log.scheduled += 1
+                case .connectionLost:
+                    gaveUp.fulfill()
+                    return
+                default:
+                    break
+                }
+            }
+        }
+
+        let url = try await manager.start()
+        XCTAssertEqual(url.port, settings.preferredPort,
+                       "the endpoint must still be reported before the crash")
+        await fulfillment(of: [gaveUp], timeout: 20)
+        XCTAssertGreaterThanOrEqual(log.scheduled, 2,
+                                    "the ladder must spend its whole budget before giving up")
+        await manager.stop()
+        assertPortFree(settings.preferredPort)
+    }
+
+    /// A child that ran past `healthyUptime` is a new failure, not the
+    /// continuation of a crash loop. Without the reset, the third crash of the
+    /// morning would never be retried — with it, a flapping dsh can be retried
+    /// indefinitely as long as it works between crashes.
+    func testAHealthyRunRestoresTheRestartBudget() async throws {
+        var settings = stubSettings(mode: "crash-after-ready", spawnTimeoutSeconds: 10)
+        settings.autoRestartOnCrash = true
+        // Shorter than the stub's 500ms crash delay, so every run is "healthy".
+        let manager = DSHProcessManager(
+            settings: settings,
+            policy: fastPolicy(maxAttempts: 2, healthyUptime: 0.1))
+        let events = await manager.events()
+
+        let log = EventLog()
+        let sawEnough = expectation(description: "budget survived more than maxAttempts restarts")
+        Task {
+            for await event in events {
+                switch event {
+                case .autoRestartAttempted:
+                    log.attempted += 1
+                    if log.attempted >= 3 { sawEnough.fulfill(); return }
+                case .connectionLost:
+                    log.lost = true
+                default:
+                    break
+                }
+            }
+        }
+
+        _ = try await manager.start()
+        await fulfillment(of: [sawEnough], timeout: 20)
+        XCTAssertFalse(log.lost, "a healthy run must return the budget instead of exhausting it")
+        await manager.stop()
+    }
+
+    /// The respawn must wait for the dead child's port instead of reading
+    /// "still bound" as "somebody else owns it".
+    func testRestartWaitsForThePortToComeFree() async throws {
+        let occupant = OccupyingSocket(port: 0)
+        let settings = stubSettings(port: occupant.port, mode: "ok")
+        let manager = DSHProcessManager(
+            settings: settings,
+            policy: fastPolicy(portReleaseTimeout: 0.6))
+        defer { occupant.close() }
+
+        let started = Date()
+        await manager.waitForPortRelease()
+        let waited = Date().timeIntervalSince(started)
+        XCTAssertGreaterThan(waited, 0.4, "it did not wait while the port was held")
+        XCTAssertLessThan(waited, 5, "the wait must stay bounded")
+
+        occupant.close()
+        let freed = Date()
+        await manager.waitForPortRelease()
+        XCTAssertLessThan(Date().timeIntervalSince(freed), 0.3,
+                          "it kept waiting after the port came free")
+    }
+
     // MARK: - Teardown
 
     func testAFailedStartDoesNotLeaveDshHoldingThePort() async throws {
@@ -386,6 +496,84 @@ final class LifecycleTests: XCTestCase {
                        "the port owner was signalled")
     }
 
+    func testReclaimsOnlyProvenOrphans() {
+        // A leftover from an earlier run: no parent, this binary, this port.
+        // This is the shape that used to cost three doomed respawns.
+        let orphan = PortOccupant(
+            pid: 93_416, commandLine: "node /x/bin/dsh web --port 3080",
+            parentPID: 1, verdict: .orphan)
+        // Still supervised — the terminal the operator started it in.
+        let supervised = PortOccupant(
+            pid: 101, commandLine: "node /x/bin/dsh web --port 3080",
+            parentPID: 4_242, verdict: .notOrphan(.supervised(parentPID: 4_242)))
+        // Parentless but not our binary: somebody else's dsh.
+        let stranger = PortOccupant(
+            pid: 202, commandLine: "node /y/dsh web --port 3080",
+            parentPID: 1, verdict: .notOrphan(.differentBinary("/x/bin/dsh")))
+        // An orphan that refuses to die must not be counted as reclaimed.
+        let stubborn = PortOccupant(
+            pid: 303, commandLine: "node /x/bin/dsh web --port 3080",
+            parentPID: 1, verdict: .orphan)
+
+        var signalled: [Int32] = []
+        var lines: [String] = []
+        let reclaimed = DSHProcessManager.reclaimOrphans(
+            from: [orphan, supervised, stranger, stubborn],
+            terminate: { pid in signalled.append(pid); return pid != 303 },
+            log: { lines.append($0) })
+
+        XCTAssertEqual(signalled, [93_416, 303],
+                       "only orphans may be signalled")
+        XCTAssertEqual(reclaimed, [93_416],
+                       "a termination that failed is not a reclaim")
+        XCTAssertEqual(lines.count, 4)
+        XCTAssertTrue(lines[1].contains("not touching"),
+                      "the skipped occupant needs a reason in the log: \(lines[1])")
+    }
+
+    /// The failure that motivated automatic reclaim, end to end: a `dsh web`
+    /// whose launcher exited (so `ppid == 1`) holds the port, and the shell must
+    /// close it and start rather than spending its restart budget on
+    /// `EADDRINUSE`.
+    ///
+    /// `/bin/sh` is only the test's way to manufacture an orphan — it exits
+    /// immediately after backgrounding the stub, so the stub is reparented to
+    /// `launchd`. The manager itself never invokes a shell.
+    func testStartsOverAnOrphanByReclaimingIt() async throws {
+        let port = Self.freePort()
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/bin/sh")
+        launcher.arguments = ["-c",
+            "'\(Self.stubURL.path)' --port \(port) --host 127.0.0.1 >/dev/null 2>&1 &"]
+        try launcher.run()
+        launcher.waitUntilExit()
+
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if !Preflight.isPortFree(host: "127.0.0.1", port: port) { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let orphanPID = try XCTUnwrap(
+            PortOccupant.occupants(ofPort: port, binaryPath: Self.stubURL.path)
+                .first(where: { $0.isOrphan })?.pid,
+            "the launcher did not leave an orphan holding port \(port)")
+        defer { PortOccupant.terminate(pid: orphanPID) }
+
+        let settings = stubSettings(port: port, mode: "ok")
+        let manager = DSHProcessManager(settings: settings)
+        defer { Task { await manager.stop() } }
+
+        let url = try await manager.start()
+        XCTAssertEqual(url.port, port,
+                       "the shell refused to start over its own leftover")
+        XCTAssertFalse(PortOccupant.occupants(ofPort: port, binaryPath: Self.stubURL.path)
+                        .contains { $0.pid == orphanPID },
+                       "the orphan is still alive alongside the new dsh")
+
+        await manager.stop()
+        assertPortFree(port)
+    }
+
     func testAttachForksNothingAndFailsCleanly() async throws {
         let port = Self.freePort()
         var settings = stubSettings(port: port, mode: "ok")
@@ -442,6 +630,32 @@ final class LifecycleTests: XCTestCase {
     }
 }
 
+/// Mutable tallies shared with the event-consuming `Task` in the restart tests.
+/// A class so the closure does not capture mutable locals (Swift 6 rejects
+/// sending those across task boundaries), and locked because the consuming task
+/// is not the test's actor.
+final class EventLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _scheduled = 0
+    private var _attempted = 0
+    private var _lost = false
+
+    var scheduled: Int {
+        get { lock.withLock { _scheduled } }
+        set { lock.withLock { _scheduled = newValue } }
+    }
+
+    var attempted: Int {
+        get { lock.withLock { _attempted } }
+        set { lock.withLock { _attempted = newValue } }
+    }
+
+    var lost: Bool {
+        get { lock.withLock { _lost } }
+        set { lock.withLock { _lost = newValue } }
+    }
+}
+
 /// A listening socket used to make a port genuinely occupied.
 final class OccupyingSocket {
     let fd: Int32
@@ -463,7 +677,7 @@ final class OccupyingSocket {
         _ = listen(fd, 1)
         var bound = sockaddr_in()
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        _ = withUnsafeMutablePointer(to: &bound) { pointer in
+        withUnsafeMutablePointer(to: &bound) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 _ = getsockname(fd, $0, &len)
             }

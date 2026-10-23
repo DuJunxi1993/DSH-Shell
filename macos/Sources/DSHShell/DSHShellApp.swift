@@ -94,8 +94,12 @@ struct DSHShellApp: App {
                 .keyboardShortcut("0", modifiers: .command)
             }
             CommandGroup(after: .windowList) {
-                Button("Open Preferences…") {
-                    appDelegate.coordinator.showPreferences()
+                // `SettingsLink`, not a Button calling a coordinator flag: the
+                // flag was never observed by any view, and the old
+                // `showPreferencesWindow:` selector does not exist on a
+                // `Settings` scene, so both entries into Preferences were dead.
+                SettingsLink {
+                    Text("Open Preferences…")
                 }
                 .keyboardShortcut(",", modifiers: [.command])
             }

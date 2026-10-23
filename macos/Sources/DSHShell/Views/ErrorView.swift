@@ -38,8 +38,14 @@ struct ErrorView: View {
                 }
                 Button("Retry", action: onRetry)
                     .keyboardShortcut(.defaultAction)
-                Button("Open Preferences…") {
-                    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+                // `SettingsLink` is the supported way to open a SwiftUI
+                // `Settings` scene. The previous code sent the legacy
+                // `showPreferencesWindow:` selector, which this app never
+                // implements — it has no preferences *window*, only a Settings
+                // scene — so the button was dead on every macOS that ships
+                // this API's replacement.
+                SettingsLink {
+                    Text("Open Preferences…")
                 }
             }
         }

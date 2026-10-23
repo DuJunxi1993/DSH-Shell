@@ -171,7 +171,7 @@ private final class Socket {
         _ = listen(fd, 1)
         var bound = sockaddr_in()
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        _ = withUnsafeMutablePointer(to: &bound) { pointer in
+        withUnsafeMutablePointer(to: &bound) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 _ = getsockname(fd, $0, &len)
             }

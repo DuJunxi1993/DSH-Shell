@@ -76,6 +76,11 @@ public enum DSHProcessEvent: Sendable {
     case autoRestartScheduled(after: TimeInterval)
     case autoRestartAttempted
     case autoRestartAborted(reason: String)
+    /// A leftover dsh from an earlier run was closed before spawning.
+    ///
+    /// Only ever emitted for a process `PortOccupant` could prove is this
+    /// shell's own leavings; see `reclaimOrphans(from:terminate:log:)`.
+    case orphanReclaimed(pid: Int32)
     /// The child died and the shell cannot bring it back on its own.
     ///
     /// Without this the window keeps showing the last good URL over a server
@@ -85,21 +90,55 @@ public enum DSHProcessEvent: Sendable {
     case connectionLost(reason: String)
 }
 
+/// Bounds and shape of the crash-restart ladder.
+///
+/// Injectable so tests can exercise the ladder without waiting out the
+/// production backoff. The defaults are the shipping values and mirror
+/// `windows/src-tauri/src/config.rs` (`MAX_RESTARTS` = 3, `HEALTHY_AFTER` =
+/// 60s, and the bounded port-release wait before a respawn).
+public struct RestartPolicy: Sendable {
+    /// How many times a crashed dsh is respawned before the shell gives up.
+    /// Bounded on purpose: an unbounded restart loop fights the contract that
+    /// closing the window ends the session.
+    public var maxAttempts: Int
+    /// A child that ran this long was working; its death is a new failure and
+    /// resets the budget. Windows calls this `HEALTHY_AFTER`.
+    public var healthyUptime: TimeInterval
+    /// How long the ladder waits for the crashed child's port to come free
+    /// before respawning anyway. Windows calls this `wait_for_port_release`.
+    public var portReleaseTimeout: TimeInterval
+    /// Delay before `attempt` (1-based) of the ladder. The default is a real
+    /// exponential ladder, 2/4/8s capped at 30s.
+    public var backoff: @Sendable (Int) -> TimeInterval
+
+    public init(
+        maxAttempts: Int = 3,
+        healthyUptime: TimeInterval = 60,
+        portReleaseTimeout: TimeInterval = 10,
+        backoff: @escaping @Sendable (Int) -> TimeInterval = { attempt in
+            min(30, pow(2.0, Double(attempt)))
+        }
+    ) {
+        self.maxAttempts = maxAttempts
+        self.healthyUptime = healthyUptime
+        self.portReleaseTimeout = portReleaseTimeout
+        self.backoff = backoff
+    }
+
+    public static let `default` = RestartPolicy()
+}
+
 /// Owns the `dsh web` child process. Never invokes a shell, so user input
 /// cannot become argv injection. Implemented as an actor so all state mutation
 /// happens under Swift's structured concurrency isolation rules.
 public actor DSHProcessManager {
-    /// How many times a crashed dsh is respawned before the shell gives up and
-    /// tells the user. Bounded on purpose: an unbounded restart loop fights the
-    /// contract that closing the window ends the session.
-    public static let maxRestartAttempts = 3
-    public static let maxRestartDelay: TimeInterval = 30
     /// How long a child gets to honour SIGTERM before SIGKILL. Long enough for
     /// dsh to close its listeners and release the port cleanly.
     public static let terminationGrace: TimeInterval = 5
 
     public let settings: ShellSettings
     private let resolver: EndpointResolver
+    private let policy: RestartPolicy
 
     private var process: Process?
     private var listeners: [UUID: AsyncStream<DSHProcessEvent>.Continuation] = [:]
@@ -107,14 +146,39 @@ public actor DSHProcessManager {
     private var lastLogLines: [String] = []
     private var restartAttempts: Int = 0
     private var inFlightAttach: Task<URL?, Error>?
+    /// The one ladder. A second crash while it is running must not start a
+    /// competing loop: two loops mean two spawns racing for one port, which
+    /// presents as an intermittent `EADDRINUSE` nobody can reproduce.
+    private var restartTask: Task<Void, Never>?
+    /// True from just before `Process.run()` until the URL line resolves (or
+    /// the attempt throws). The termination handler uses it to tell "the start
+    /// failed" from "a working session crashed".
+    private var startupInFlight = false
+    /// Set by the termination handler when the child dies during startup, so
+    /// the wait loop can fail fast instead of burning the whole timeout.
+    private var startupExitStatus: Int32?
+    /// When the current child was spawned; the reference point for
+    /// `RestartPolicy.healthyUptime`. Nil when no child is running.
+    private var spawnedAt: Date?
+    /// Exit status of the last child, for the give-up message.
+    private var lastExitStatus: Int32?
+    /// Bumped on every accepted child exit. The ladder captures it before a
+    /// respawn so it can tell "this attempt is running" from "it announced
+    /// itself and immediately died", which must not end the ladder.
+    private var exitGeneration = 0
     /// Cached PID of the currently spawned child, written synchronously right
     /// after `Process.run()` succeeds so a teardown path that cannot `await`
     /// the actor (e.g. `applicationWillTerminate`) can still signal the child.
     nonisolated(unsafe) private var lastSpawnedPID: Int32?
 
-    public init(settings: ShellSettings, resolver: EndpointResolver = EndpointResolver()) {
+    public init(
+        settings: ShellSettings,
+        resolver: EndpointResolver = EndpointResolver(),
+        policy: RestartPolicy = .default
+    ) {
         self.settings = settings
         self.resolver = resolver
+        self.policy = policy
     }
 
     /// Returns a live stream of events. The stream terminates when `stop()` is called.
@@ -251,12 +315,22 @@ public actor DSHProcessManager {
     private func startSpawn() async throws -> URL {
         if process != nil { throw DSHProcessError.alreadyRunning }
 
+        // Before the guards, and before every spawn: a dsh orphaned by an
+        // earlier run holds the port this launch needs, and preflight would
+        // only be able to report that. Closing it first is the difference
+        // between a start that recovers on its own and one that needs a
+        // button; only a process proven to be this shell's own is touched.
+        await reclaimOrphanedOnPort()
+
         // Both guards run before `spawn` and nowhere else. `attach` forks
         // nothing, so it cannot collide and is exempt.
         try Preflight.checkSpawn(settings: settings)
 
         state = .launching
         broadcast(.launching)
+        startupExitStatus = nil
+        startupInFlight = true
+        defer { startupInFlight = false }
 
         let argv = Self.buildArgv(settings: settings)
         let process = Process()
@@ -274,7 +348,8 @@ public actor DSHProcessManager {
 
         process.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
-            Task { await self?.handleChildExit(status: status) }
+            let pid = proc.processIdentifier
+            Task { await self?.handleChildExit(pid: pid, status: status) }
         }
 
         do {
@@ -292,6 +367,8 @@ public actor DSHProcessManager {
 
         self.process = process
         let pid = process.processIdentifier
+        spawnedAt = Date()
+        lastExitStatus = nil
         // Recorded the instant the PID exists, not when `start()` returns.
         // `start()` blocks for seconds waiting for the URL line, and a close
         // during that window finds neither this manager's teardown nor a stored
@@ -322,6 +399,24 @@ public actor DSHProcessManager {
             if Task.isCancelled {
                 await terminateSpawnedChild()
                 throw CancellationError()
+            }
+            // A child that died before announcing itself is a failed start,
+            // not a slow one. Failing here keeps the ladder responsive instead
+            // of letting each attempt sit out the full spawn timeout.
+            //
+            // `.ready` wins the race when it happened at all: the endpoint was
+            // printed, so this is a successful start whose session then
+            // crashed, and the termination handler has already scheduled the
+            // steady-state ladder.
+            if let exitStatus = startupExitStatus {
+                if case .ready = state {
+                    startupExitStatus = nil
+                } else {
+                    startupExitStatus = nil
+                    let lines = lastLogLines
+                    await terminateSpawnedChild()
+                    throw DSHProcessError.childExitedUnexpectedly(exitStatus, lastLogLines: lines)
+                }
             }
             switch state {
             case .ready(let url):
@@ -432,18 +527,26 @@ private final class WeakActor: @unchecked Sendable {
     /// Best-effort teardown of the just-spawned child when startup fails
     /// (timeout, cancellation, or a mid-start error). Prevents a dsh web that
     /// never reported its endpoint from lingering as an orphan.
+    ///
+    /// Also clears the record when the child is already gone: the startup path
+    /// can observe an exit before the reap has been reflected here, and a
+    /// manager that keeps a dead `Process` refuses the next spawn with
+    /// `alreadyRunning`.
     private func terminateSpawnedChild() async {
-        guard let process, process.isRunning else { return }
+        guard let process else { return }
         let pid = process.processIdentifier
-        lastSpawnedPID = nil
-        process.terminate()
-        let deadline = Date().addingTimeInterval(3)
-        while process.isRunning && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
         if process.isRunning {
-            kill(pid, SIGKILL)
+            process.terminate()
+            let deadline = Date().addingTimeInterval(3)
+            while process.isRunning && Date() < deadline {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            if process.isRunning {
+                kill(pid, SIGKILL)
+            }
         }
+        lastSpawnedPID = nil
+        spawnedAt = nil
         self.process = nil
     }
 
@@ -511,7 +614,6 @@ private final class WeakActor: @unchecked Sendable {
         // Only stdout is a URL source. stderr carries dsh's `bili` proxy URL,
         // which is not the UI.
         if let url = resolver.resolveURL(in: line, expectedPort: settings.preferredPort) {
-            noteEndpointResolved()
             state = .ready(url)
             broadcast(.endpointResolved(url))
         }
@@ -544,45 +646,54 @@ private final class WeakActor: @unchecked Sendable {
     /// The child died. This is the single place that decides whether the shell
     /// tries again or gives up, and every outcome is broadcast — including the
     /// ones that used to be silent.
-    private func handleChildExit(status: Int32) {
+    ///
+    /// Note what this does *not* do any more: it does not abort the ladder on
+    /// the first failed respawn. A crashed dsh holds its port for a moment
+    /// after exiting, and the old code read that moment as "somebody else owns
+    /// the port", gave up, and put the user in front of a manual Retry button.
+    /// The ladder now owns the retry: wait for the port, respawn, and only
+    /// report a failure once the budget is spent.
+    private func handleChildExit(pid: Int32, status: Int32) {
+        // An exit reported by a child a previous ladder attempt spawned must
+        // not touch the state of the current attempt.
+        guard process?.processIdentifier == pid else { return }
+
+        exitGeneration += 1
         lastSpawnedPID = nil
+        lastExitStatus = status
         appendLog("[exit] status=\(status)", isErr: true)
         broadcast(.childExited(status: status))
+
         if case .shuttingDown = state { return }
 
-        if settings.autoRestartOnCrash, restartAttempts < Self.maxRestartAttempts {
-            restartAttempts += 1
-            // A real exponential ladder. The previous code incremented a counter
-            // that was never reset and guarded on it being zero, so exactly one
-            // restart ever happened, always after 2s, and both the cap and the
-            // exponential shape were unreachable.
-            let delay = min(Self.maxRestartDelay, pow(2.0, Double(restartAttempts)))
-            broadcast(.autoRestartScheduled(after: delay))
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                guard let self else { return }
-                await self.attemptAutoRestart()
+        // Dying before the URL line is a failed *start*, not a crashed
+        // session: fail the attempt so the ladder can decide what to do. Once
+        // the endpoint has been announced, this is a working session that
+        // crashed — even if `startSpawn` has not returned yet.
+        if startupInFlight {
+            if case .ready = state {
+                // Fall through: steady-state handling below.
+            } else {
+                startupExitStatus = status
+                return
             }
-            return
         }
 
-        // Out of attempts. Say so, and say why — a window still showing the
-        // last conversation over a dead server is the failure this exists to
-        // prevent.
-        //
-        // dsh's own last words go with it. A dsh that dies on `EADDRINUSE`
-        // says exactly that, on stderr, and it is the entire difference
-        // between a user who knows what happened and one reading "dsh exited
-        // with status 1 and the shell did not restart it". Only the lines that
-        // carry an actual error are quoted: a plugin loader's progress output
-        // is hundreds of lines of noise that buries the one line that matters.
-        let reason = status == 0
-            ? "dsh exited normally while the window was still open."
-            : "dsh exited with status \(status)"
-            + " and the shell did not restart it (\(restartAttempts)/\(Self.maxRestartAttempts) attempts)."
-        let explanation = Self.failureExplanation(from: lastLogLines)
-        state = .failed(reason: explanation.isEmpty ? reason : reason + "\n\n" + explanation)
-        broadcast(.connectionLost(reason: explanation.isEmpty ? reason : reason + "\n\n" + explanation))
+        // A child that ran long enough was working; its death is a new
+        // failure and gets the full budget back. This replaces resetting on
+        // the URL line, which forgave a dsh that crashed a second after
+        // announcing itself — the shape a crash loop actually takes.
+        let uptime = spawnedAt.map { Date().timeIntervalSince($0) } ?? 0
+        spawnedAt = nil
+        if uptime >= policy.healthyUptime {
+            restartAttempts = 0
+        }
+
+        guard settings.autoRestartOnCrash else {
+            fail(reason: "\(Self.describe(status: status)); automatic restart is off.")
+            return
+        }
+        beginRestartLadder()
     }
 
     /// The part of dsh's output that says what went wrong.
@@ -606,24 +717,172 @@ private final class WeakActor: @unchecked Sendable {
         return "dsh's last output:\n" + tail.map { "    \($0)" }.joined(separator: "\n")
     }
 
-    /// A successful endpoint resets the ladder, so a dsh that crashes once an
-    /// hour is not treated as a crash loop.
-    private func noteEndpointResolved() {
-        restartAttempts = 0
+    private static func describe(status: Int32) -> String {
+        status == 0
+            ? "dsh exited normally while the window was still open"
+            : "dsh exited with status \(status)"
     }
 
-    private func attemptAutoRestart() async {
-        if case .shuttingDown = state { return }
-        broadcast(.autoRestartAttempted)
-        process = nil
-        do {
-            _ = try await startSpawn()
-        } catch {
-            let reason = "dsh could not be restarted: \(error.localizedDescription)"
-            state = .failed(reason: reason)
-            broadcast(.autoRestartAborted(reason: reason))
-            broadcast(.connectionLost(reason: reason))
+    /// Start the one ladder, unless it is already running.
+    private func beginRestartLadder() {
+        guard restartTask == nil else { return }
+        restartTask = Task { [weak self] in
+            await self?.runRestartLadder()
         }
+    }
+
+    /// The restart ladder: bounded, sequential, and single-owner.
+    ///
+    /// Each iteration consumes one unit of budget, waits for the backoff, waits
+    /// for the crashed child to release the port, and respawns. A failed
+    /// respawn is *not* the end of the ladder — it is the next iteration —
+    /// which is what makes the common case (the port is still draining)
+    /// recover without the user ever seeing it.
+    private func runRestartLadder() async {
+        defer { restartTask = nil }
+        while true {
+            if Task.isCancelled { return }
+            if case .shuttingDown = state { return }
+
+            guard restartAttempts < policy.maxAttempts else {
+                let what = lastExitStatus.map { Self.describe(status: $0) }
+                    ?? "dsh could not be started"
+                fail(reason: "\(what) and the shell gave up after "
+                     + "\(restartAttempts) restart attempt\(restartAttempts == 1 ? "" : "s").")
+                return
+            }
+
+            restartAttempts += 1
+            let delay = max(0, policy.backoff(restartAttempts))
+            broadcast(.autoRestartScheduled(after: delay))
+            Log.info("dsh crashed (\(lastExitStatus.map { "status \($0)" } ?? "start failed")); "
+                     + "restarting in \(delay)s (attempt \(restartAttempts)/\(policy.maxAttempts))")
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            if Task.isCancelled { return }
+            if case .shuttingDown = state { return }
+
+            broadcast(.autoRestartAttempted)
+            // The dead child's handle: `startSpawn` refuses a manager that
+            // still holds one.
+            process = nil
+            // Reclaim before waiting: an orphan atop the port is never going to
+            // release it, so waiting out `portReleaseTimeout` first would burn
+            // ten seconds of every attempt for nothing.
+            await reclaimOrphanedOnPort()
+            await waitForPortRelease()
+            let generation = exitGeneration
+            do {
+                _ = try await startSpawn()
+                // A respawn whose child announced its endpoint and then died
+                // before this line would otherwise end the ladder with a dead
+                // dsh and no restart. The exit already bumped the generation;
+                // spend the next attempt on it.
+                if exitGeneration != generation { continue }
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                Log.error("dsh restart attempt \(restartAttempts)/\(policy.maxAttempts) "
+                          + "failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Wait, bounded, for the crashed child's port to come free.
+    ///
+    /// The port has to be free *before* the respawn, not after: dsh's exit
+    /// path closes the listener asynchronously, and respawning into a socket
+    /// that is still draining fails preflight in exactly the way that used to
+    /// end the ladder. Windows' `wait_for_port_release` is the same rule.
+    func waitForPortRelease() async {
+        guard settings.preferredPort > 0,
+              Preflight.isLoopback(settings.listenHost)
+        else { return }
+
+        let deadline = Date().addingTimeInterval(policy.portReleaseTimeout)
+        while Date() < deadline {
+            if Task.isCancelled { return }
+            if Preflight.isPortFree(host: settings.listenHost, port: settings.preferredPort) {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        Log.info("port \(settings.preferredPort) is still held "
+                 + "\(Int(policy.portReleaseTimeout))s after the crash; "
+                 + "the respawn will fail in preflight")
+    }
+
+    /// Close leftovers that are provably this shell's own, before spawning.
+    ///
+    /// Windows' `orphan::reclaim_orphan(AtStartup)` has no macOS counterpart,
+    /// and its absence is what turned one orphaned `dsh web` into three doomed
+    /// respawns and an error page: the port never came free because the process
+    /// holding it was never supervised and nothing was going to close it.
+    /// Retrying cannot fix an orphan; only closing it can.
+    ///
+    /// The right to kill is not widened. `PortOccupant` requires all three
+    /// facts — this port, this configured dsh, and no parent — and anything less
+    /// is left alone with a line in the log saying why. A dsh started in a
+    /// terminal has that terminal as its parent; a child of ours that has just
+    /// died still has this app, so neither can be mistaken for a leftover.
+    @discardableResult
+    private func reclaimOrphanedOnPort() async -> [Int32] {
+        guard settings.preferredPort > 0,
+              Preflight.isLoopback(settings.listenHost)
+        else { return [] }
+
+        // `lsof` and `ps` are synchronous; keep them off the actor's executor
+        // so the drain tasks and the UI's state reads do not queue behind them.
+        let port = settings.preferredPort
+        let binaryPath = settings.dshBinaryPath
+        let occupants = await Task.detached(priority: .utility) {
+            PortOccupant.occupants(ofPort: port, binaryPath: binaryPath)
+        }.value
+
+        let reclaimed = Self.reclaimOrphans(from: occupants)
+        for pid in reclaimed { broadcast(.orphanReclaimed(pid: pid)) }
+        return reclaimed
+    }
+
+    /// The decision, separated from discovery and from the event bus.
+    ///
+    /// Pure apart from its two injected effects, so the rule that decides
+    /// whether the shell may terminate something stays testable without a live
+    /// process: only `.orphan` verdicts are signalled, and only a successful
+    /// termination counts as reclaimed.
+    static func reclaimOrphans(from occupants: [PortOccupant],
+                               terminate: (Int32) -> Bool = { PortOccupant.terminate(pid: $0) },
+                               log: (String) -> Void = { Log.info($0) }) -> [Int32] {
+        var reclaimed: [Int32] = []
+        for occupant in occupants {
+            switch occupant.verdict {
+            case .orphan:
+                if terminate(occupant.pid) {
+                    log("reclaimed an orphaned dsh (pid \(occupant.pid)) "
+                        + "holding the port: \(occupant.commandLine)")
+                    reclaimed.append(occupant.pid)
+                } else {
+                    log("could not close the orphaned dsh (pid \(occupant.pid)); "
+                        + "it may have exited on its own")
+                }
+            case .notOrphan(let reason):
+                log("not touching pid \(occupant.pid) on the port: \(reason.explanation)")
+            }
+        }
+        return reclaimed
+    }
+
+    /// Stop trying, and put a message on screen that carries the evidence.
+    ///
+    /// dsh's own last words go with it. A dsh that dies on `EADDRINUSE` says
+    /// exactly that, on stderr, and it is the whole difference between a user
+    /// who knows what happened and one reading "exited with status 1".
+    private func fail(reason: String) {
+        let explanation = Self.failureExplanation(from: lastLogLines)
+        let full = explanation.isEmpty ? reason : reason + "\n\n" + explanation
+        state = .failed(reason: full)
+        broadcast(.autoRestartAborted(reason: reason))
+        broadcast(.connectionLost(reason: full))
     }
 
     // MARK: - Attach
@@ -657,7 +916,6 @@ private final class WeakActor: @unchecked Sendable {
                     reason: "Nothing is listening on \(settings.listenHost):\(settings.preferredPort).")
                 throw DSHProcessError.noExistingEndpointFound
             }
-            noteEndpointResolved()
             state = .ready(url)
             broadcast(.endpointResolved(url))
             return url
@@ -671,6 +929,11 @@ private final class WeakActor: @unchecked Sendable {
 
     public func stop() async {
         state = .shuttingDown
+        // Cancel the ladder first: a retry that lands after the user asked
+        // for the app to quit must not resurrect dsh.
+        restartTask?.cancel()
+        restartTask = nil
+        startupExitStatus = nil
 
         // Signal the child first, and always — the previous version returned
         // early when there was no process, which skipped the reader-task
@@ -698,6 +961,7 @@ private final class WeakActor: @unchecked Sendable {
         // teardown path that reads `currentChildPID()` never sees a stale PID
         // it could signal twice — or misses the one it needed.
         lastSpawnedPID = nil
+        spawnedAt = nil
         process = nil
 
         // The drain loops end on their own: they are blocked in `read` on a

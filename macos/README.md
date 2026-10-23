@@ -158,7 +158,7 @@ Settings live at `~/Library/Application Support/dsh-swiftUI/settings.json`. Defa
 | `spawnTimeoutSeconds` | How long to wait for the `dsh web:` URL line on stdout before failing. Decides success or failure. |
 | `spawnStallReportSeconds` | How long dsh may be silent before the log explains what it is doing. **Not** a timeout — the one above still decides. Raise it if your dsh legitimately needs longer to load plugins. |
 | `zoomPercent` | Page zoom, 50–200 in steps of 10. See "Zoom" below. |
-| `autoRestartOnCrash` | Bounded exponential back-off restart on unexpected child exit: 3 attempts at 2s, 4s and 8s. The counter resets once an endpoint resolves, so a dsh that crashes once an hour is not treated as a crash loop. |
+| `autoRestartOnCrash` | Bounded exponential back-off restart on unexpected child exit: 3 attempts at 2s, 4s and 8s. Each respawn waits (bounded, 10s) for the dead child's port to come free, and a failed respawn consumes a budget unit instead of ending the ladder. The counter resets once the child has run for 60s, so a dsh that crashes once an hour is not treated as a crash loop. |
 
 ### Zoom
 
@@ -183,13 +183,15 @@ WebKit's own ⌘+ and ⌘-pinch still work and are not overridden: the shell onl
 
 Killing the app without letting it quit — ⌘⌥Esc, a `kill -9`, a crash — leaves its `dsh web` running, holding the port. dsh has no parent-death detection, so nothing cleans it up, and the next launch fails with `EADDRINUSE`.
 
-The error screen finds those and offers to close them. It closes **only what can be shown to be this app's own leftovers**, all three required:
+The shell reclaims those itself before spawning, the way the Windows build does at startup: a leftover is signalled (`SIGTERM`, `SIGKILL` after 5s) and the port comes free, so the launch succeeds. This happens before the respawn's bounded port wait — waiting out a port whose owner is never going to release it only burns restart attempts; that exact sequence once cost three `EADDRINUSE` respawns and an error page. Each reclaim is logged and shown in the console.
+
+It closes **only what can be shown to be this app's own leftovers**, all three required:
 
 1. it is listening on the port this app asked for;
 2. its parent is `1` — nothing is supervising it, which is what makes it a leftover rather than something a terminal or another app still owns;
 3. its command line runs *this app's configured* `dshBinaryPath`.
 
-Anything else is reported with a reason and left alone — including a `dsh web` you started yourself in a terminal on the same port, which has that terminal as its parent and is holding live work. The PID and the full command line are shown either way, because deciding what to do about a process is the user's call.
+Anything else is reported with a reason and left alone — including a `dsh web` you started yourself in a terminal on the same port, which has that terminal as its parent and is holding live work. The error screen still lists provable leftovers with a manual close as a fallback for a termination that fails, and shows the PID and full command line because deciding what to do about a process is the user's call.
 
 This is narrower than "kill whatever is on the port" on purpose. `docs/dsh-shell-contract.md` §9 prohibits killing by name, and for a reason recorded there: a previous agent ran `pkill -f dsh` and destroyed the harness hosting it.
 
@@ -314,7 +316,7 @@ Or read the last minute:
 log show --predicate 'subsystem == "ai.deepseek.dsh-shell"' --last 1m --info --debug
 ```
 
-If the configured port is already owned, the shell **refuses to start and names `attach`** as the alternative. It never kills a process it did not spawn: that would destroy a `dsh web` you started by hand, possibly one you were using, merely by opening the app. The only exception is a leftover of its own, and that one is shown to you first — see "Leftover processes".
+If the configured port is already owned, the shell **refuses to start and names `attach`** as the alternative. It never kills a process it did not spawn: that would destroy a `dsh web` you started by hand, possibly one you were using, merely by opening the app. The only exception is a leftover of its own, which it closes automatically after proving all three facts above — see "Leftover processes".
 
 ### The port probe was not seeing anything
 

@@ -26,7 +26,6 @@ final class AppCoordinator: ObservableObject {
     }
     @Published var settings: ShellSettings = .default
     @Published var consoleLines: [ConsoleLine] = []
-    @Published var isPresentingPreferences: Bool = false
     /// Leftovers from an earlier run that would block a launch, offered to the
     /// user on the error screen. Empty unless the failure was a port collision
     /// and something is genuinely provably ours — see `PortOccupant`.
@@ -227,10 +226,6 @@ final class AppCoordinator: ObservableObject {
     func saveSettings(_ new: ShellSettings) {
         self.settings = new
         store.save(new)
-    }
-
-    func showPreferences() {
-        isPresentingPreferences = true
     }
 
     // MARK: - Window and page
@@ -473,6 +468,11 @@ final class AppCoordinator: ObservableObject {
                    body: "将在 \(Int(after)) 秒后重启。")
         case .autoRestartAttempted:
             appendConsole(.shell, text: "[shell] auto-restart attempting")
+        case .orphanReclaimed(let pid):
+            // Already logged by the manager; this is the visible trace. The
+            // retry screen's manual list loses the entry it no longer needs.
+            appendConsole(.shell, text: "[shell] reclaimed leftover dsh (pid \(pid))")
+            leftoverProcesses.removeAll { $0.pid == pid }
         case .autoRestartAborted(let reason):
             appendConsole(.shell, text: "[shell] auto-restart aborted: \(reason)")
         case .connectionLost(let reason):
@@ -483,6 +483,11 @@ final class AppCoordinator: ObservableObject {
             state = .failed(reason: reason)
             appendConsole(.shell, text: "[shell] connection lost: \(reason)")
             notify(title: "DSH Shell：连接已断开", body: reason)
+            // The retry screen is the only place the user can act, so it needs
+            // the evidence the startup path already collects: which process
+            // holds the port, and whether it is provably ours. `lsof` is cheap
+            // next to a failure the user is already looking at.
+            refreshLeftoverProcesses()
         }
     }
 
