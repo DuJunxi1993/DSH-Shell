@@ -724,18 +724,18 @@ mod tests {
         }
     }
 
-    /// Every control we own must opt out of dsh's drag strip.
+    /// Every control we own must opt out of the caption's drag region.
     ///
-    /// The contract paints `.frame::before` with `-webkit-app-region: drag`
-    /// across the entire caption, and our controls sit on top of it. Chromium
-    /// collects drag regions by bounds, so a control that does not declare its own
-    /// app-region does not mask the strip beneath it — two quick clicks on the
-    /// menu button were read as a double-click on a drag region, and the window
-    /// maximised itself instead of the menu opening and closing.
+    /// On the dsh page the contract paints `.frame::before` with
+    /// `-webkit-app-region: drag` across the entire caption, and our controls sit
+    /// on top of it. Chromium collects drag regions by bounds, so a control that
+    /// does not declare its own app-region does not mask the strip beneath it —
+    /// two quick clicks on the menu button were read as a double-click on a drag
+    /// region, and the window maximised itself instead of the menu opening.
     ///
     /// dsh applies `no-drag` to its own sidebar toggle for the same reason. The
-    /// rest of the caption must stay draggable, so this is asserted on the
-    /// controls and not on the bar.
+    /// rest of the caption stays draggable, so this is asserted on the controls and
+    /// not on the bar.
     #[test]
     fn our_controls_opt_out_of_the_captions_drag_region() {
         let js = script(100);
@@ -748,9 +748,52 @@ mod tests {
             no_drag >= 2,
             "the menu button and `control()` must both declare no-drag, found {no_drag}: {js}"
         );
+    }
+
+    /// The shell paints a drag region **only** for its own boot page.
+    ///
+    /// On the dsh page the contract provides one, so a second would be one more
+    /// thing to keep in step. On the boot page there is no dsh and therefore no
+    /// strip, and the window could be resized but not moved until dsh arrived —
+    /// which is the bug this exists for.
+    ///
+    /// Two things about *how* it is painted are load-bearing and easy to undo:
+    ///
+    /// - It is a **sibling** of the bar, not a child. The bar is `pointer-events:
+    ///   none` so the page shows through it, and a drag region inside such a
+    ///   subtree is never hit-tested: the element was there, the style was right,
+    ///   and the window still did not move.
+    /// - It is guarded by `isOwnBootPage()`, so the dsh page never gets it.
+    #[test]
+    fn the_boot_page_gets_a_drag_region_of_its_own() {
+        let js = script(100);
+        let guard = js
+            .find("if (isOwnBootPage())")
+            .expect("the drag region must be guarded by the boot-page check");
+        let drag = js
+            .find("-webkit-app-region:drag")
+            .expect("the boot page needs a drag region or the window cannot be moved");
         assert!(
-            !js.contains("-webkit-app-region:drag"),
-            "the caption itself must stay draggable — only our controls opt out: {js}"
+            drag > guard,
+            "the drag declaration must sit inside the boot-page guard"
+        );
+        assert!(
+            drag - guard < 900,
+            "the drag declaration is too far from the guard to be inside it"
+        );
+        // The strip is attached to the document, not to the bar — the bar's
+        // `pointer-events: none` would swallow it.
+        assert!(
+            js.contains("appendChild(dragStrip)"),
+            "the drag strip must be appended to the document: {js}"
+        );
+        assert!(
+            js.contains("document.documentElement.appendChild(dragStrip)"),
+            "the drag strip is a sibling of the bar, not a child of it: {js}"
+        );
+        assert!(
+            !js.contains("bar.appendChild(dragStrip)"),
+            "a drag region inside the bar's pointer-events:none subtree is never hit-tested: {js}"
         );
     }
 

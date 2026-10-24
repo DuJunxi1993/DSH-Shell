@@ -16,10 +16,15 @@
 //!
 //! | Env var | Meaning | Default |
 //! |---|---|---|
-//! | `STUB_MODE`       | `ok` \| `no-url-line` \| `tokenless` \| `die-early` | `ok` |
+//! | `STUB_MODE`       | `ok` \| `no-url-line` \| `tokenless` \| `die-early` \| `crash-after-ready` | `ok` |
 //! | `STUB_URL_DELAY_MS` | delay before printing the URL line | 250 |
 //! | `STUB_TOKEN`      | the token to hand out | `stub-token` |
 //! | `STUB_LIFETIME_MS`| hard self-exit so a failed test cannot leak a process | 120000 |
+//!
+//! `crash-after-ready` is the one that exercises the restart ladder: it announces
+//! a working endpoint and then dies, which is the shape that used to be forgiven
+//! by a budget reset on the URL line. It is macOS's `crash-after-ready` too, and
+//! the contract names it for both.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -83,6 +88,20 @@ fn main() {
         "tokenless" => {
             let _ = writeln!(stdout, "dsh web: http://{authority}/");
             let _ = stdout.flush();
+        }
+        "crash-after-ready" => {
+            // Announce a working endpoint, then die.
+            //
+            // The shape the restart ladder exists for: the shell has everything it
+            // needs to consider the dsh working (a URL, a bound port) and the dsh
+            // is gone a moment later. A budget that resets on the URL line forgives
+            // this forever.
+            let _ = writeln!(stdout, "dsh web: http://{authority}/?token={token}");
+            let _ = stdout.flush();
+            drop(stdout);
+            std::thread::sleep(Duration::from_millis(500));
+            let _ = writeln!(std::io::stderr(), "web-app: fatal: the worker died");
+            std::process::exit(1);
         }
         _ => {
             std::thread::sleep(Duration::from_millis(url_delay));

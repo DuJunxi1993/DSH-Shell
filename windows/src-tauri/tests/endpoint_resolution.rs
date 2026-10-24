@@ -145,6 +145,37 @@ async fn surfaces_an_early_exit_with_dsh_output() {
     assert_port_free(port);
 }
 
+/// A dsh that announces a working endpoint and then dies is the shape the restart
+/// ladder exists for, and the shape a budget reset on the URL line used to
+/// forgive forever.
+///
+/// The stub announces its URL and exits 500ms later, so the shell sees a complete,
+/// successful start followed by a crash. It must be able to tell the difference
+/// between "came up and stayed" and "came up and left", and the stub is what makes
+/// that difference testable without a real harness.
+#[tokio::test]
+async fn a_dsh_that_crashes_after_announcing_its_url_is_not_treated_as_working() {
+    let _env = stub_env("crash-after-ready", "50");
+    let port = free_port();
+
+    // The spawn itself succeeds — the URL was announced, and the endpoint
+    // resolved. The crash comes afterwards, which is the point.
+    let dsh = DshProcess::spawn(config_for(port))
+        .await
+        .expect("the stub announces its endpoint before it dies");
+    assert!(dsh.url().contains(&format!("token={TOKEN}")), "{}", dsh.url());
+
+    // Then it dies, and the port is released — so a respawn has a chance.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_port_free(port);
+}
+
 #[tokio::test]
 async fn waits_for_a_slow_url_line_instead_of_racing_the_port() {
     // The real dsh binds its socket long before the Loader settles and the URL

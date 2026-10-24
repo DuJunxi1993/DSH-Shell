@@ -428,28 +428,36 @@ pub fn reclaim_orphan(config: &crate::config::Config, why: ReclaimReason) -> Opt
     }
 }
 
-/// Which end of the shell's life asked for a reclaim.
-///
-/// Carries the log wording and nothing else — see [`reclaim_orphan`] for why the
-/// two call sites deliberately share one decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReclaimReason {
+  /// Which end of the shell's life asked for a reclaim.
+  ///
+  /// Carries the log wording and nothing else — see [`reclaim_orphan`] for why the
+  /// two call sites deliberately share one decision.
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub enum ReclaimReason {
     /// Start-up, before the first spawn: a dsh an earlier run left behind is
     /// holding the port this launch needs.
     AtStartup,
+    /// Before a respawn, after a crash: the crashed dsh may have left a tree
+    /// behind that still holds the port.
+    ///
+    /// Distinct from [`ReclaimReason::AtStartup`] only so the log says which of
+    /// the two it was. The *decision* is the same, deliberately: two rules for
+    /// "may I kill this" would be two chances to be wrong.
+    BeforeRespawn,
     /// Shutdown, after our own child has been terminated: something is *still*
     /// holding our port, which means our tree kill missed something.
     AtExit,
-}
+  }
 
-impl ReclaimReason {
+  impl ReclaimReason {
     fn log_prefix(self) -> &'static str {
-        match self {
-            ReclaimReason::AtStartup => "startup",
-            ReclaimReason::AtExit => "exit",
-        }
+      match self {
+        ReclaimReason::AtStartup => "startup",
+        ReclaimReason::BeforeRespawn => "respawn",
+        ReclaimReason::AtExit => "exit",
+      }
     }
-}
+  }
 
 #[cfg(not(windows))]
 pub fn reclaim_orphan(_config: &crate::config::Config, _why: ReclaimReason) -> Option<ProcessInfo> {

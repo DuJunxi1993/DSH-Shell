@@ -66,8 +66,18 @@ required for anything:
 
 ```powershell
 cargo tauri build          # -> src-tauri/target/release/bundle/{msi,nsis}
-cargo tauri icon src/icon.svg
+
+# The icon, only when the whale or the plate changes:
+python scripts/extract-dsh-whale.py   # refresh the whale from the installed dsh
+python scripts/make-icon.py           # plate + whale -> icons/dsh-shell.png
+cargo tauri icon src-tauri/icons/dsh-shell.png
+python scripts/icon-sample.py         # optional: candidates into %TEMP%
 ```
+
+`extract-dsh-whale.py` and `make-icon.py` both commit their output, so the build
+never needs dsh installed. See `docs/cross-platform-lessons.md` §1 for why the
+whale comes from `FISH_LOGO_PATH` and not from dsh's favicon, and
+`windows/scripts/make-icon.py` for how the plate's corner was measured.
 
 There is no dev server. `tauri.conf.json` declares no `devUrl` on purpose —
 the window is created in `setup()` with a runtime URL, so `tauri dev` would only
@@ -166,6 +176,31 @@ obvious and the Tauri docs do not put them together.
    chrome does not need to leave room for it — the hit test is at the window
    level, above the webview — so there is no reserved strip and nothing in the
      bar that is there only to be dragged.
+
+   **But the caption has no drag region before dsh loads, and the boot page has
+   to supply its own.** On the dsh page the contract paints
+   `.frame::before { -webkit-app-region: drag }`; our own boot placeholder is not
+   dsh, so until dsh arrived the window could be resized but not moved. The shell
+   therefore paints the same band on the placeholder only, guarded by
+   `isOwnBootPage()`.
+
+   Two details are load-bearing, and both were got wrong first:
+
+   - **It must be a sibling of the bar, not a child.** The bar is
+     `pointer-events: none` so the page shows through it, and a drag region inside
+     a `pointer-events: none` subtree is *never hit-tested*. The element was
+     present, `-webkit-app-region: drag` was set, the report said so, and the
+     window still did not move. dsh's own strip is a `::before` on an ordinary
+     interactive element, which is the shape that works.
+   - **No region on the dsh page.** dsh paints its own; a second one overlapping
+     would be another thing to keep in step. `chrome_report`'s `drag=` field
+     reports `true` only for the boot page, and `chrome::tests` asserts that the
+     declaration lives inside the `isOwnBootPage()` guard.
+
+   `-webkit-app-region` still needs `no-drag` on every control we own (fact 12
+   below), because Chromium collects drag regions by bounds and does not let a
+   child mask one underneath it.
+
 6. **Zoom is the webview's, and the menu lists the ladder rather than measuring
    it.** `zoom_hotkeys_enabled(true)` — written out, because the default is a
    `#[serde(default)]` bool and therefore false, so omitting it silently kills
@@ -558,6 +593,46 @@ The reclaim also has to stay refused for a terminal-launched dsh, which has a
 live shell above our shim. `orphan::tests` asserts both directions, and the
 `orphan_behind_a_live_shim` fixture exists specifically so the Windows shape
 cannot be quietly simplified away.
+
+## The restart ladder has three rules, and each was wrong once
+
+`docs/dsh-shell-contract.md` §5.4 states them for both implementations. They live
+in `main.rs::ladder_next`, split out of `supervise_dsh` so they can be tested
+without spawning anything — the macOS shell made the same move.
+
+**1. A failed *respawn* is the next rung, not the end of the ladder.** It used to
+be fatal, and that is what turned one `EADDRINUSE` from a still-draining socket
+into an error page: the port had not finished draining, the respawn could not
+bind, and the ladder gave up on the first sign of trouble. A respawn that fails now
+consumes a budget unit and continues into the next back-off. The *first* spawn
+failing is still fatal — there is no ladder to climb yet, and the usual cause (the
+port belongs to something that is not ours) will not fix itself.
+
+**2. The budget is reset by uptime, not by the URL line.** A dsh that lived
+`HEALTHY_AFTER` (60s) is forgiven. One that announced its endpoint and died
+immediately is not, and that is the exact loop the ladder exists for. The reset
+happens **before** the budget check, so a dsh that lived a full minute and then
+crashed is not judged against a budget it already paid.
+
+**3. The reclaim runs before *every* spawn, not just at start-up.** Waiting cannot
+free an orphan — a leftover holding the port is supervised by nothing, so nothing
+is ever going to release it. Reclaiming only at start-up meant a respawn met the
+same leftover and failed the same way: three attempts, then an error page.
+
+Doing the reclaim more often does not widen the right to kill: the rule in
+`orphan::is_reclaimable_orphan` is unchanged, and it still refuses anything it
+cannot prove is ours. A dsh in a terminal has a live terminal above it; our own
+just-crashed child still has this app above it.
+
+Two things that are easy to get wrong while changing this:
+
+- **A dsh that never started has no uptime, and must not inherit the previous
+  attempt's.** Leaving the old value in place let a failed respawn be forgiven for
+  the long life of the dsh before it.
+- **When the budget runs out, the window has to say so.** `ShellError::GaveUp`
+  exists for that; the old code toasted and left the window on a dead page, which
+  is the "window that lies" failure mode this repository is trying to remove.
+
 
 
 

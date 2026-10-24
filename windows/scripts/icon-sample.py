@@ -46,6 +46,18 @@ VARIANTS = {
     "c-080": {"whale_fraction": 0.80},
 }
 
+# The corner shapes to compare. The reference the user supplied is a plain
+# rounded rectangle whose radius was measured at 20% of the width — fitting
+# candidates against the reference's own edge profile, at its own size, through
+# this file's rasterisation, a circular corner of 20% reproduces it exactly
+# (0.000px mean error over all thirty rows) while 12% and 22% do not, and a
+# macOS squircle fits worse still.
+CORNERS = {
+    "c-rad12": {"corner_fraction": 0.121, "corner_exponent": 2.0},
+    "b-rad16": {"corner_fraction": 0.16, "corner_exponent": 2.0},
+    "a-rad20": {"corner_fraction": 0.20, "corner_exponent": 2.0},
+}
+
 
 def main() -> int:
     if not WHALE.exists():
@@ -62,11 +74,22 @@ def main() -> int:
         image.resize((64, 64), Image.LANCZOS).save(OUT_DIR / f"{name}-64.png")
         made.append(OUT_DIR / f"{name}.png")
 
+    # The corner shapes, at the shipped mark size.
+    for name, kwargs in CORNERS.items():
+        image = build(**kwargs)
+        image.save(OUT_DIR / f"{name}.png")
+        image.resize((64, 64), Image.LANCZOS).save(OUT_DIR / f"{name}-64.png")
+
     # Side by side at full size, and again at taskbar size, because the two do not
     # pick the same winner.
     for label, images, size in (
         ("sheet", made, None),
         ("taskbar", [OUT_DIR / f"{n}-64.png" for n in VARIANTS], 4),
+        (
+            "corners",
+            [OUT_DIR / f"{n}-64.png" for n in CORNERS],
+            4,
+        ),
     ):
         if size is None:
             width, height = Image.open(images[0]).size

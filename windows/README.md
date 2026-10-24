@@ -92,7 +92,7 @@ it; the defaults below apply when it is missing.
 | `trusted_hosts` | Repeated as `--trusted-host <host>`; they feed dsh's `/api` browser-trust fence. |
 | `poll_interval_seconds` | How often the liveness probe asks the port. |
 | `spawn_timeout_seconds` | How long to wait for dsh's URL line. dsh's Loader can take that long on a cold profile, so this is generous. |
-| `auto_restart_on_crash` | Restart dsh if it dies on its own. Bounded: three attempts, backing off 2s → 4s → 8s, and the budget resets only after dsh has been up a full minute. After that it stops and tells you, rather than respawning forever. |
+| `auto_restart_on_crash` | Restart dsh if it dies on its own. Bounded: three attempts, backing off 2s → 4s → 8s, and the budget resets only after dsh has been up a full minute. A *respawn that fails to start* consumes an attempt and keeps going rather than ending the ladder, and leftovers are reclaimed before every spawn — waiting cannot free a process nobody is supervising. After the budget is spent the window says so, rather than respawning forever or sitting on a dead page. |
 
 There is no `zoom_percent` on the dsh side and no second copy anywhere. The page
 zoom is the webview's own — `Ctrl` + `±`/`0` are Chromium's and are not

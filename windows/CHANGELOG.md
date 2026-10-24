@@ -35,12 +35,13 @@
   budget resets only after dsh has stayed up a full minute, so a crash at lunchtime
   and again at nine are two failures rather than one long one. After the budget is
   spent the shell stops and says so, instead of respawning forever.
-- A dsh orphaned by an **earlier** run is now reclaimed — at start-up when it
-  holds the port we need, and at exit when it is *still* holding our port after
-  our own tree kill. Because it means killing a process this shell never spawned,
-  a candidate must satisfy three independent facts: it owns our port, nothing
-  outside our own launch chain is still alive above it, and its command line names
-  the harness derived from our own `dsh_binary_path`.
+  - A dsh orphaned by an **earlier** run is now reclaimed — at start-up when it
+    holds the port we need, **before every respawn** as well, and at exit when it
+    is *still* holding our port after our own tree kill. Because it means killing a
+    process this shell never spawned, a candidate must satisfy three independent
+    facts: it owns our port, nothing outside our own launch chain is still alive
+    above it, and its command line names the harness derived from our own
+    `dsh_binary_path`.
 - The menu button and the window buttons carry hover highlights, a press
   animation, a focus ring, and a 160ms rotation when the panel opens.
 
@@ -82,6 +83,40 @@
 
 ### Fixed
 
+- **The window can be moved while dsh is still loading.** On the dsh page the
+  contract paints the caption's drag strip, but the shell's own boot placeholder
+  is not dsh and had none — so the window could be resized but not dragged until
+  dsh arrived. The shell now paints that band itself, on the placeholder only.
+  It has to be a **sibling** of the bar rather than a child: the bar is
+  `pointer-events: none` so the page shows through it, and a drag region inside a
+  `pointer-events: none` subtree is never hit-tested — the element was there, the
+  style was right, and the window still did not move.
+- **The app icon's corner now matches the reference.** It was a 12.1% circular
+  radius; the reference the user supplied is 20%, which was measured rather than
+  guessed: rendering candidates at the reference's own 30px size through the same
+  rasteriser and comparing the edge profile row by row, 20% reproduces it
+  *exactly* (0.000px mean error over all thirty rows) while 12% is 0.333px off and
+  22% is 0.133px off. A macOS-style squircle was tried and rejected — at that size
+  it fits worse (0.400px), because its corner leaves the straight edge sooner and
+  what the reference has is a round corner that simply reaches further.
+- **A respawn that failed to start no longer ends the restart ladder.** It used to
+  be fatal, so one `EADDRINUSE` from a still-draining socket was enough to turn a
+  recoverable crash into an error page. A failed respawn now consumes a budget unit
+  and continues into the next back-off; the *first* spawn failing is still fatal,
+  because there is no ladder to climb yet and the usual cause will not fix itself.
+- **The restart budget is reset by uptime, and the reset happens before the
+  budget check.** A dsh that announced its endpoint and died immediately was
+  forgiven every time, which is the exact loop the ladder exists for; a dsh that
+  lived a full minute and then crashed is no longer judged against a budget it had
+  already paid.
+- **The orphan reclaim now runs before every spawn, not only at start-up.**
+  Waiting cannot free an orphan — a leftover holding the port is supervised by
+  nothing, so nothing is ever going to release it — so a respawn that skipped the
+  reclaim met the same leftover and failed the same way, three times over.
+- **Spending the restart budget now shows the failure page.** The window used to
+  toast and then sit on a dead page, which is the "window that lies" failure mode
+  this repository is trying to remove. `ShellError::GaveUp` carries the reason and
+  the attempt count.
 - **The app icon is built from dsh's own whale, and can be refreshed from it.**
   It was a hand-vendored `dsh-whale.png` with no script to regenerate it, taken
   from dsh's **favicon** — which is a different path from the mark dsh's own UI

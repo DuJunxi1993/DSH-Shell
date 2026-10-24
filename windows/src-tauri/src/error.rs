@@ -47,6 +47,14 @@ pub enum ShellError {
     #[error("no dsh answered on {0}")]
     NoAttachTarget(String),
 
+    /// The restart ladder ran out of budget.
+    ///
+    /// Carries the last reason, because "gave up" on its own is the least
+    /// actionable thing this app can show — and the window is the only place the
+    /// user will see it, since the app runs without a console.
+    #[error("dsh failed {attempts} time(s) in a row ({reason}); giving up.")]
+    GaveUp { attempts: u32, reason: String },
+
     /// The HTTP client used for liveness probing could not be constructed.
     #[error("failed to build the http probe client: {0}")]
     HttpClient(reqwest::Error),

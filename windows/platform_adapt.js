@@ -438,10 +438,53 @@
       "z-index:2147483647",
       /* Everything below is click-through except the controls we own. */
       "pointer-events:none",
-      "color:var(--dsw-alias-label-primary, #16181d)",
-      "-webkit-user-select:none",
-      "user-select:none"
-    ].join(";");
+        "color:var(--dsw-alias-label-primary, #16181d)",
+        "-webkit-user-select:none",
+        "user-select:none"
+      ].join(";");
+
+      /* A drag region for the caption, on **our own** boot page only.
+       *
+       * On the dsh page the contract paints the drag strip: dsh's
+       * `[data-windows-titlebar] .frame::before` is a full-width band with
+       * `-webkit-app-region: drag`. Our boot placeholder is not dsh, so it has no
+       * such strip, and the window could be resized but not moved — the band was
+       * simply not draggable until dsh arrived and took over.
+       *
+       * So the shell draws the same thing the contract would have drawn, for the
+       * page that precedes it. This is the one place the shell imitates dsh's
+       * chrome rather than only declaring the contract, and it is scoped to the
+       * placeholder precisely because on the dsh page dsh's own strip is there and
+       * two overlapping drag regions would be one more thing to keep in step.
+       *
+       * It is a **sibling** of the bar, not a child of it, and that is not
+       * cosmetic. The bar is `pointer-events: none` so the page shows through it,
+       * and a drag region inside a `pointer-events: none` subtree is not
+       * hit-tested: the element was there, the style was right, and the window
+       * still did not move. dsh's own strip is a `::before` on an ordinary
+       * interactive element, which is the shape that works.
+       *
+       * `z-index` matches the bar's, and the bar comes later in the DOM, so the
+       * bar and its controls still paint above the strip.
+       */
+      var dragStrip = null;
+      if (isOwnBootPage()) {
+        dragStrip = document.createElement("div");
+        dragStrip.className = "dss-drag";
+        dragStrip.style.cssText = [
+          "position:fixed",
+          "top:0",
+          "left:0",
+          "right:0",
+          "height:" + px(BAR_H),
+          "z-index:2147483646",
+          /* The bar is click-through; the strip cannot be, or there would be no
+             region to hit. */
+          "pointer-events:auto",
+          "-webkit-app-region:drag"
+        ].join(";");
+      }
+
 
     /* --- adaptive foreground colour ---
      *
@@ -597,13 +640,19 @@
     menuButton.setAttribute("aria-label", "菜单");
     menuButton.setAttribute("aria-haspopup", "true");
     menuButton.setAttribute("aria-expanded", "false");
-    menuButton.style.cssText = [
-      /* `margin-left:auto` rather than an absolute `left`: the bar is already a
-         flex row, so this pushes the menu button and the window cluster to the
-         right as one group and there is no x arithmetic to get wrong. */
-      "margin-left:auto",
-      "flex:0 0 auto",
-      "margin-top:" + px(CONTROL_TOP),
+      menuButton.style.cssText = [
+        /* `margin-left:auto` rather than an absolute `left`: the bar is already a
+           flex row, so this pushes the menu button and the window cluster to the
+           right as one group and there is no x arithmetic to get wrong. */
+        "margin-left:auto",
+        "flex:0 0 auto",
+        /* `position: relative` so the button paints *above* the drag strip on the
+           boot page. An absolutely positioned element paints above the static
+           ones, so a strip that covered the menu button would swallow its clicks;
+           making the button positioned too puts them in the same stacking order,
+           where DOM order decides — and the button comes after the strip. */
+        "position:relative",
+        "margin-top:" + px(CONTROL_TOP),
       "width:" + px(WIN_W),
       "height:" + px(CONTROL_H),
       "pointer-events:auto",
@@ -782,7 +831,17 @@
       paintStatus();
     }
 
-    /* One row in the panel.
+    /* Whether this document is the shell's own boot placeholder rather than dsh.
+   *
+   * The placeholder carries `data-dsh-shell-placeholder`, which is also what
+   * `contractState()` reads to decide that there is no contract to honour yet.
+   */
+  function isOwnBootPage() {
+    var html = document.documentElement;
+    return !!html && html.hasAttribute("data-dsh-shell-placeholder");
+  }
+
+  /* One row in the panel.
      *
      * `min-height` rather than padding alone, because a 12.5px label with 2px of
      * padding is a 20px row and sixteen of them read as one crowded block — the
@@ -1148,10 +1207,13 @@
       "pointer-events:auto",
       /* No `margin-left:auto`: the menu button ahead of it already claims the
          free space, and giving it to both would push a gap between them. */
-      "flex:0 0 auto",
-      /* CONTROL_TOP..CONTROL_TOP+CONTROL_H is exactly the box dsh gives its own
-         sidebar toggle, which is what puts the three controls on one line. */
-      "margin-top:" + px(CONTROL_TOP),
+        "flex:0 0 auto",
+        /* `position: relative` for the same reason as the menu button: it has to
+           paint above the boot page's drag strip rather than under it. */
+        "position:relative",
+        /* CONTROL_TOP..CONTROL_TOP+CONTROL_H is exactly the box dsh gives its own
+           sidebar toggle, which is what puts the three controls on one line. */
+        "margin-top:" + px(CONTROL_TOP),
       /* Off the frame, so the ✕ does not read as part of dsh's page. The menu
          panel is placed by the same sum. */
       "margin-right:" + px(EDGE_INSET),
@@ -1222,7 +1284,14 @@
     winCluster.appendChild(close);
     bar.appendChild(winCluster);
 
-    document.documentElement.appendChild(bar);
+      /* The strip goes in **before** the bar, so the bar and its controls paint
+         above it. It is a sibling rather than a child because the bar is
+         `pointer-events: none`, and a drag region inside such a subtree is not
+         hit-tested. */
+      if (dragStrip) {
+        document.documentElement.appendChild(dragStrip);
+      }
+      document.documentElement.appendChild(bar);
 
     /* Every length in the bar comes from one place, and it is written once here
        rather than at each `style.cssText`. The lengths are plain CSS pixels and
@@ -1338,9 +1407,21 @@
              a measurement looks wrong. It is Chromium's `devicePixelRatio` — the
              display's scaling times any page zoom — and neither of those belongs to
              this file any more. */
-          dpr: Number(window.devicePixelRatio) || 0,
-          placeholder: document.documentElement.hasAttribute("data-dsh-shell-placeholder"),
-          ready_state: document.readyState,
+            dpr: Number(window.devicePixelRatio) || 0,
+            placeholder: document.documentElement.hasAttribute("data-dsh-shell-placeholder"),
+            /* Whether the caption has a drag region.
+             *
+             * On the dsh page that is dsh's own strip, painted by the contract,
+             * and this reports `false` because the shell did not draw one — which is
+             * correct, and worth being able to tell apart from the boot page where
+             * the shell *did* draw one. A boot page with `false` here is a window
+             * that cannot be moved, which was the bug this reports on.
+             *
+             * Queried on the document rather than inside the bar: the strip is a
+             * *sibling* of the bar, not a child, because a drag region inside the
+             * bar's `pointer-events: none` subtree is never hit-tested. */
+            drag_region: !!document.querySelector(".dss-drag"),
+            ready_state: document.readyState,
           origin: location.origin,
           notifications: notificationState(),
           /* Whether dsh reserved the caption for us. "contractActive" means the

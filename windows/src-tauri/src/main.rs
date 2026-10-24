@@ -66,12 +66,15 @@ struct AppState {
     /// one. Without this, two loops each spawn a dsh, and the second one's failure
     /// to bind the port is what the user is looking at.
     lifecycle_running: Arc<AtomicBool>,
-    /// Whether the startup reclaim has already run for this launch.
+    /// Whether the user asked for a reclaim right now, via the failure page's
+    /// "close leftovers and retry" button.
     ///
-    /// A retry that asks for cleanup has to be able to ask again — that is the
-    /// entire point of the button — so this is set by the reclaim itself rather
-    /// than implied by the launch.
-    cleanup_done: Arc<AtomicBool>,
+    /// The reclaim itself now runs before *every* spawn, because a leftover
+    /// holding the port is never released by waiting — see `supervise_dsh`. This
+    /// flag is the extra, explicit round the button asks for: the automatic one
+    /// may have been skipped or may have run against a different state, and the
+    /// user is saying "do it again, now".
+    cleanup_forced: Arc<AtomicBool>,
     /// The zoom currently on the webview, as of our last push.
     ///
     /// **Read for the log only.** An earlier version used this to decide whether to
@@ -139,7 +142,7 @@ fn main() {
         shutting_down: AtomicBool::new(false),
         dsh_origin: parking_lot::RwLock::new(String::new()),
           lifecycle_running: Arc::new(AtomicBool::new(false)),
-          cleanup_done: Arc::new(AtomicBool::new(false)),
+          cleanup_forced: Arc::new(AtomicBool::new(false)),
           applied_zoom: parking_lot::Mutex::new(None),
       });
 
@@ -469,12 +472,13 @@ fn chrome_report(report: ChromeReport) {
     if wrong.is_empty() {
         tracing::info!(
             target: "dsh_shell",
-            "chrome ok: origin={} bar={}px reserved={}px placeholder={} \
+            "chrome ok: origin={} bar={}px reserved={}px placeholder={} drag={} \
              contract={} top_clearance={:?} notifications={} dpr={}",
             report.origin,
             round1(report.measured_bar_h),
             round1(report.measured_win_w),
             report.placeholder,
+            report.drag_region,
             report.contract,
             report.contract_top_clearance,
             report.notifications,
@@ -527,8 +531,17 @@ struct ChromeReport {
     /// because a `dpr` above 1 with no matching monitor DPI is a real state worth
     /// being able to see rather than re-derive. See `declare_dpi_awareness`.
     dpr: f64,
-    placeholder: bool,
-    ready_state: String,
+      placeholder: bool,
+      /// Whether the caption has a drag region.
+      ///
+      /// `true` on the shell's own boot page, where the shell draws the strip
+      /// dsh's contract would have drawn. `false` on the dsh page, where dsh's own
+      /// strip is painted instead — the two must not both be there.
+      ///
+      /// A boot page reporting `false` is a window that cannot be moved, which is
+      /// the bug this exists to make visible.
+      drag_region: bool,
+      ready_state: String,
     origin: String,
     /// The page's `Notification.permission`, or `"absent"` when it is not there
     /// at all.
@@ -814,96 +827,214 @@ fn build(state: Arc<AppState>) -> tauri::Result<tauri::App> {
 /// has to: a process that crashes after nine hours is a new failure, not a
 /// continuation of the one that was fixed at lunchtime, and without the reset the
 /// third crash of the morning would never be retried.
+/// What the restart ladder does after a failure.
+///
+/// Split out of `supervise_dsh` so it can be tested without spawning anything.
+/// The macOS shell made the same move — `DSHProcessManager` decides through
+/// `policy.maxAttempts` and `policy.healthyUptime` rather than inline — and the
+/// rules are worth having in one place, because each of them was got wrong at
+/// least once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LadderStep {
+    /// The budget is spent. Stop and tell the user.
+    GiveUp,
+    /// Wait this long, then spawn again. `attempt` is the attempt number that
+    /// has just been consumed.
+    Retry { wait: Duration, attempt: u32 },
+}
+
+/// The ladder's decision after a failure.
+///
+/// `attempt` is how many attempts have already been consumed, and `uptime` is how
+/// long the dsh that just failed had been up — zero for a failure to *start*,
+/// which is a different failure and does not get the benefit of the doubt.
+///
+/// Two rules, and both are the contract's (`docs/dsh-shell-contract.md` §5.4):
+///
+/// - **A failed respawn is not the end of the ladder.** It consumes a unit and
+///   continues into the next back-off. It used to end the ladder, which is what
+///   turned one `EADDRINUSE` from a still-draining socket into an error page.
+/// - **The budget is reset by uptime, not by the URL line.** A dsh that lived
+///   `HEALTHY_AFTER` is forgiven; one that announced its endpoint and died
+///   immediately is not, which is the exact loop the ladder exists for. The
+///   reset is applied *before* the budget check, so a dsh that lived a full
+///   minute and then crashed is not judged against a budget it already paid.
+fn ladder_next(attempt: u32, uptime: Duration) -> LadderStep {
+    let attempt = if uptime >= config::HEALTHY_AFTER {
+        0
+    } else {
+        attempt
+    };
+    if attempt >= config::MAX_RESTARTS {
+        return LadderStep::GiveUp;
+    }
+    LadderStep::Retry {
+        wait: config::restart_backoff(attempt),
+        attempt: attempt + 1,
+    }
+}
+
 async fn supervise_dsh(
     window: &WebviewWindow,
     state: Arc<AppState>,
     config: Config,
     lifecycle_running: Arc<AtomicBool>,
-    cleanup_done: Arc<AtomicBool>,
+    cleanup_forced: Arc<AtomicBool>,
 ) {
     let mut attempt: u32 = 0;
+    // The error that ended the last attempt, kept so that giving up can show the
+    // user *why* rather than only how many times it was tried.
+    let mut last_failure: Option<String> = None;
+    // How long the dsh that just failed had been up. Zero for a failure to
+    // *start*, which is a different failure and does not get the benefit of the
+    // doubt a long-lived dsh earns.
+    let mut uptime: Duration = Duration::ZERO;
     loop {
-        // Before the first spawn, and only then: a dsh orphaned by a previous
-        // run holds the port this launch needs, and `starting_pid` cannot know
-        // about it because it never saw the process.
-        if attempt == 0 && !cleanup_done.load(Ordering::SeqCst) {
-            // Whichever reclaim runs last must be the only one that runs, so the
-            // flag is claimed *before* the work: two callers racing this would
-            // otherwise both see `false` and both kill. The reclaim is
-            // idempotent in effect but not in log output, and a second kill of an
-            // already-dying tree is a PID-reuse window we do not need to open.
-            if cleanup_done.swap(true, Ordering::SeqCst) {
-                tracing::debug!(target: "dsh_shell", "reclaim already done for this attempt");
-            } else {
-                orphan::reclaim_orphan(&config, orphan::ReclaimReason::AtStartup);
-            }
+        // Reclaim before **every** spawn, not just the first.
+        //
+        // The contract (`docs/dsh-shell-contract.md` §5.4) says so, and the
+        // reason is that waiting cannot fix an orphan: a leftover holding the port
+        // is not supervised by anything, so nothing is ever going to release it.
+        // Reclaiming only at start-up meant a respawn met the same leftover and
+        // failed the same way — three attempts, then an error page.
+        //
+        // The right to kill is not widened by doing this more often: the rule in
+        // `orphan::is_reclaimable_orphan` is unchanged, and it still refuses
+        // anything it cannot prove is ours. A dsh in a terminal has a live
+        // terminal above it; our own just-crashed child still has this app above
+        // it. Neither is mistaken for a leftover.
+        //
+        // `cleanup_forced` is the user's explicit "close leftovers and retry": it
+        // asks for the reclaim to run again even if one already ran this launch.
+        let forced = cleanup_forced.swap(false, Ordering::SeqCst);
+        if forced {
+            tracing::info!(target: "dsh_shell", "closing leftovers at the user's request");
         }
+        orphan::reclaim_orphan(
+            &config,
+            if attempt == 0 {
+                orphan::ReclaimReason::AtStartup
+            } else {
+                orphan::ReclaimReason::BeforeRespawn
+            },
+        );
+
         // Reclaimed or not, this loop is now the live one; a retry that arrives
         // afterwards must not start a second.
         lifecycle_running.store(false, Ordering::SeqCst);
         let started = std::time::Instant::now();
+
+        // The spawn. On the *first* attempt a failure is fatal — there is no
+        // ladder to climb yet, and the usual cause (the port belongs to something
+        // that is not ours) will not fix itself.
+        //
+        // On a *respawn* a failure is the next rung of the ladder, not the end of
+        // it. It used to be fatal here too, which is what turned one `EADDRINUSE`
+        // from a still-draining socket into the end of the ladder.
         let dsh = match launch_recording_pid(&state, config.clone()).await {
-            Ok(dsh) => dsh,
+            Ok(dsh) => Some(dsh),
             Err(err) => {
-                report_failure(window, &err);
-                return;
+                if attempt == 0 {
+                    tracing::error!(target: "dsh_shell", "dsh failed to start: {err}");
+                    report_failure(window, &err);
+                    return;
+                }
+                tracing::warn!(
+                    target: "dsh_shell",
+                    "respawn {attempt}/{} failed: {err}; backing off and trying again",
+                    config::MAX_RESTARTS
+                );
+                last_failure = Some(err.to_string());
+                // A dsh that never started has no uptime, and must not inherit
+                // the previous attempt's. Leaving the old value here would let a
+                // failed respawn be forgiven for the long life of the dsh before
+                // it — the budget would reset on a failure that deserves no
+                // mercy.
+                uptime = Duration::ZERO;
+                None
             }
         };
 
-        let ending = match point_at_dsh(window.clone(), state.clone(), dsh).await {
-            Some(ending) => ending,
-            // A URL we cannot parse is a failure to start, not a crash to retry.
-            None => return,
-        };
-        if ending == DshEnding::ShuttingDown || state.shutting_down.load(Ordering::SeqCst) {
-            tracing::info!(target: "dsh_shell", "dsh ended because the app is exiting");
-            return;
+        if let Some(dsh) = dsh {
+            let ending = match point_at_dsh(window.clone(), state.clone(), dsh).await {
+                Some(ending) => ending,
+                // A URL we cannot parse is a failure to start, not a crash to retry.
+                None => return,
+            };
+            if ending == DshEnding::ShuttingDown || state.shutting_down.load(Ordering::SeqCst) {
+                tracing::info!(target: "dsh_shell", "dsh ended because the app is exiting");
+                return;
+            }
+
+            if !config.auto_restart_on_crash {
+                tracing::info!(target: "dsh_shell", "auto_restart_on_crash is off; not restarting");
+                return;
+            }
+
+            // A dsh that lived long enough resets the budget: this is a new
+            // failure, not a continuation of the one that was already handled.
+            //
+            // The condition is *uptime*, not "the URL line arrived". Resetting on
+            // the URL forgave a dsh that announced its endpoint and died
+            // immediately, which is the exact loop the ladder exists for.
+            //
+            // The reset and the budget check are both in `ladder_next`, and the
+            // order there matters: a dsh that lived a full minute and then crashed
+            // is forgiven rather than judged against a budget it already paid.
+            last_failure = Some(ending.describe());
+            uptime = started.elapsed();
         }
 
-        if !config.auto_restart_on_crash {
-            tracing::info!(target: "dsh_shell", "auto_restart_on_crash is off; not restarting");
-            return;
+        // The budget, for both kinds of failure.
+        //
+        // A failed *respawn* reaches here too, and that is the point: it consumes
+        // a unit and continues into the next back-off rather than ending the
+        // ladder. A dsh that crashed reaches here through the same check.
+        match ladder_next(attempt, uptime) {
+            LadderStep::GiveUp => {
+                let reason =
+                    last_failure.unwrap_or_else(|| "dsh could not be started".to_string());
+                tracing::error!(
+                    target: "dsh_shell",
+                    "dsh failed {attempt} time(s) in a row ({reason}); giving up."
+                );
+                notify(
+                    window.app_handle(),
+                    "dsh 反复崩溃",
+                    format!("DSH Shell 已重启 dsh {attempt} 次，仍然失败。窗口保留，但页面已无法连接。"),
+                );
+                // Show the failure page, so the window does not sit on a dead page
+                // saying nothing about why. The contract requires the user to be
+                // told; a toast is not enough, because the window is what they are
+                // looking at.
+                report_failure(
+                    window,
+                    &ShellError::GaveUp {
+                        attempts: attempt,
+                        reason,
+                    },
+                );
+                return;
+            }
+            LadderStep::Retry { wait, attempt: used } => {
+                attempt = used;
+                tracing::warn!(
+                    target: "dsh_shell",
+                    "dsh failed ({}); restarting in {wait:?} (attempt {attempt}/{})",
+                    last_failure.as_deref().unwrap_or("crashed"),
+                    config::MAX_RESTARTS
+                );
+
+                // The port has to be free before the respawn, not after it.
+                // `launch` would fail on a port the dead dsh has not finished
+                // releasing, and the failure would be indistinguishable from the
+                // crash that caused it.
+                wait_for_port_release(&config).await;
+
+                tokio::time::sleep(wait).await;
+                tracing::info!(target: "dsh_shell", "restarting dsh after a failure");
+            }
         }
-        if attempt >= config::MAX_RESTARTS {
-            tracing::error!(
-                target: "dsh_shell",
-                "dsh crashed {attempt} time(s) in a row; giving up. Fix it, or set auto_restart_on_crash to false."
-            );
-            notify(
-                window.app_handle(),
-                "dsh 反复崩溃",
-                format!("DSH Shell 已重启 dsh {attempt} 次，仍然失败。窗口保留，但页面已无法连接。"),
-            );
-            return;
-        }
-
-        // A dsh that lived long enough resets the budget: this is a new failure,
-        // not a continuation of the one that was already handled.
-        if started.elapsed() >= config::HEALTHY_AFTER {
-            tracing::info!(
-                target: "dsh_shell",
-                "dsh ran for {:?}; restarting the budget",
-                started.elapsed()
-            );
-            attempt = 0;
-        }
-
-        let wait = config::restart_backoff(attempt);
-        attempt += 1;
-        tracing::warn!(
-            target: "dsh_shell",
-            "dsh crashed ({}); restarting in {wait:?} (attempt {attempt}/{})",
-            ending.describe(),
-            config::MAX_RESTARTS
-        );
-
-        // The port has to be free before the respawn, not after it. `launch`
-        // would fail on a port the dead dsh has not finished releasing, and the
-        // failure would be indistinguishable from the crash that caused it.
-        wait_for_port_release(&config).await;
-
-        tokio::time::sleep(wait).await;
-        tracing::info!(target: "dsh_shell", "restarting dsh after a crash");
     }
 }
 
@@ -937,23 +1068,24 @@ fn start_lifecycle(
         return false;
     }
     if cleanup {
-        // Asked for explicitly, so it runs whether or not the automatic one has:
-        // this button exists for the launch where the automatic reclaim declined,
-        // and it must not be a no-op because an earlier, successful reclaim ran.
-        state.cleanup_done.store(false, Ordering::SeqCst);
+        // Asked for explicitly, so the reclaim runs an extra round even if the
+        // automatic one already has: this button exists for the launch where the
+        // automatic reclaim declined, and it must not be a no-op because an
+        // earlier, successful reclaim ran.
+        state.cleanup_forced.store(true, Ordering::SeqCst);
     }
     let config = Config::load_or_default();
     let state = state.clone();
     let window = window.clone();
     let lifecycle_running = state.lifecycle_running.clone();
-    let cleanup_done = state.cleanup_done.clone();
+    let cleanup_forced = state.cleanup_forced.clone();
     tauri::async_runtime::spawn(async move {
         supervise_dsh(
             &window,
             state,
             config,
             lifecycle_running,
-            cleanup_done,
+            cleanup_forced,
         )
         .await;
     });
@@ -1285,8 +1417,103 @@ fn init_tracing() {
 }
 
 #[cfg(test)]
-mod tests {
+    mod tests {
     use super::*;
+
+    /// A crash loop spends exactly the budget and no more.
+    ///
+    /// The number of *respawns* is the budget, not the number of failures seen:
+    /// the first spawn is not a respawn and does not consume one.
+    #[test]
+    fn a_crash_loop_spends_exactly_the_budget() {
+        let mut attempt = 0u32;
+        let mut respawns = 0u32;
+        // A dsh that dies immediately has no uptime, so it is not forgiven.
+        loop {
+            match ladder_next(attempt, Duration::ZERO) {
+                LadderStep::GiveUp => break,
+                LadderStep::Retry { attempt: used, .. } => {
+                    attempt = used;
+                    respawns += 1;
+                    assert!(
+                        respawns <= config::MAX_RESTARTS,
+                        "the ladder must stop after {} respawns, not {}",
+                        config::MAX_RESTARTS,
+                        respawns
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            respawns, config::MAX_RESTARTS,
+            "the budget is the number of respawns allowed"
+        );
+    }
+
+    /// A dsh that survived long enough is forgiven, and the ladder starts over.
+    ///
+    /// The condition is uptime, and that is the point: a dsh that announces its
+    /// endpoint and dies immediately is not forgiven, because the URL line is not
+    /// evidence of a working process. macOS resets on the same condition.
+    #[test]
+    fn a_long_lived_dsh_restores_the_budget() {
+        // A spent budget with a long-lived dsh behind it.
+        match ladder_next(config::MAX_RESTARTS, config::HEALTHY_AFTER) {
+            LadderStep::Retry { attempt, .. } => {
+                assert_eq!(attempt, 1, "the ladder starts over from the first attempt")
+            }
+            LadderStep::GiveUp => panic!("a dsh that lived the full threshold is forgiven"),
+        }
+        // One second short of it is not.
+        assert_eq!(
+            ladder_next(config::MAX_RESTARTS, config::HEALTHY_AFTER - Duration::from_secs(1)),
+            LadderStep::GiveUp,
+            "a dsh that died just short of the threshold is not forgiven"
+        );
+    }
+
+    /// A failed *respawn* is the next rung of the ladder, not the end of it.
+    ///
+    /// This is the rule that was missing, and it is what turned one `EADDRINUSE`
+    /// from a still-draining socket into an error page. A respawn that could not
+    /// start has no uptime, so it earns no forgiveness, but it must still be
+    /// retried until the budget is spent.
+    #[test]
+    fn a_failed_respawn_consumes_budget_and_continues() {
+        for attempt in 0..config::MAX_RESTARTS {
+            match ladder_next(attempt, Duration::ZERO) {
+                LadderStep::Retry { attempt: used, .. } => {
+                    assert_eq!(
+                        used,
+                        attempt + 1,
+                        "attempt {attempt} must consume exactly one unit"
+                    );
+                }
+                LadderStep::GiveUp => panic!("attempt {attempt} must not end the ladder"),
+            }
+        }
+        // And only the last one does.
+        assert_eq!(
+            ladder_next(config::MAX_RESTARTS, Duration::ZERO),
+            LadderStep::GiveUp
+        );
+    }
+
+    /// The back-off grows with the attempt, so a port that is slow to drain gets
+    /// progressively more room.
+    #[test]
+    fn the_ladder_backs_off_further_each_time() {
+        let mut waits = Vec::new();
+        let mut attempt = 0u32;
+        while let LadderStep::Retry { wait, attempt: used } = ladder_next(attempt, Duration::ZERO) {
+            waits.push(wait);
+            attempt = used;
+        }
+        assert_eq!(waits.len(), config::MAX_RESTARTS as usize);
+        for pair in waits.windows(2) {
+            assert!(pair[1] > pair[0], "the wait must grow: {waits:?}");
+        }
+    }
 
     /// A double-click on "Retry" fires two invocations, and only one may start a
     /// lifecycle. Without this, both spawn a dsh, they race for the port the

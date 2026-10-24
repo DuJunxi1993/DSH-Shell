@@ -324,6 +324,46 @@ that never fires. The evidence in AGENTS.md rule 2 was written by hand, for
 exactly that reason. Neither defect is findable by asserting that the refusal
 path works — both were found by watching a real orphan survive, and by the port
 probe test that proves the probe can see a live server at all.
+### The restart ladder is three rules, and each was wrong once
+
+A dsh that dies has to be brought back, and the rules for that are surprisingly
+easy to get wrong in ways that all look like "the app is flaky" rather than "the
+rule is wrong". They are now stated in `docs/dsh-shell-contract.md` §5.4 and
+implemented on both sides.
+
+**A failed respawn is the next rung, not the end of the ladder.** This is the one
+that matters most. A respawn that could not start — because the port had not
+finished draining — used to end the ladder outright, so a single `EADDRINUSE` from
+a socket in `TIME_WAIT` was enough to turn a recoverable crash into an error
+page. A failed respawn now consumes a budget unit and continues into the next
+back-off. The *first* spawn failing is still fatal: there is no ladder to climb
+yet, and the usual cause — the port belongs to something that is not ours — will
+not fix itself.
+
+**The budget is reset by uptime, not by the URL line.** A dsh that announces its
+endpoint and dies immediately is exactly the loop the ladder exists for, so
+resetting the count when the URL arrives forgives it every time. Uptime is the
+evidence that counts: `HEALTHY_AFTER` (60s) on Windows, `healthyUptime` on
+macOS. The reset has to happen *before* the budget check, or a dsh that lived a
+full minute and then crashed is judged against a budget it already paid.
+
+**The reclaim runs before every spawn, not just at start-up.** Waiting cannot
+free an orphan. A leftover holding the port is supervised by nothing, so nothing
+is ever going to release it, and a respawn that skipped the reclaim met the same
+leftover and failed the same way — three attempts, then an error page.
+
+Two things that are easy to break while changing this, both found by writing the
+rules down rather than by seeing them fail:
+
+- **A dsh that never started has no uptime and must not inherit the previous
+  attempt's.** Carrying the old value forward let a failed respawn be forgiven
+  for the long life of the dsh before it, which quietly made the budget
+  unlimited in exactly the case it exists to bound.
+- **When the budget runs out, the window has to say so.** Windows toasted and
+  left the window sitting on a dead page — the "window that lies" failure mode
+  this repository is trying to remove. `ShellError::GaveUp` exists so the failure
+  page can carry the reason and the attempt count.
+
 ### Closing during startup is its own hole
 
 Independent of any crash, there is a window between "spawn returned a PID" and
