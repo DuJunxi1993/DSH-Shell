@@ -92,6 +92,11 @@ final class AppCoordinator: ObservableObject {
         // writing that back on the first zoom change, which would silently reset
         // a user who had chosen 70%.
         self.zoomPercent = ZoomLadder.snap(loaded.zoomPercent)
+        // dsh consumes ⌘=/⇧⌘=/⌘- for font size before the menu sees them; the
+        // bridge claims those chords and routes them here instead. See ZoomChord.
+        desktopBridge.onZoomStep = { [weak self] delta in
+            self?.stepZoom(delta)
+        }
     }
 
     func start() {
@@ -347,7 +352,7 @@ final class AppCoordinator: ObservableObject {
     /// `http(s)` only. Anything else is a way to make the OS launch something
     /// with this process's identity — a `file:` URL, a custom scheme.
     func openExternally(_ url: URL) {
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+        guard URLOrigin.isOpenable(url) else {
             Log.error("refused to open \(url.scheme ?? "<none>"):// externally")
             return
         }

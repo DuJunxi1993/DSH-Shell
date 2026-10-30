@@ -16,6 +16,17 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface DSHObjCWebUIDelegate : NSObject <WKUIDelegate>
+
+/// Called for `target="_blank"` / `window.open`, on the main thread.
+///
+/// The shell always returns `nil` from `createWebViewWith…` — it has exactly one
+/// webview and a second one would have no bridge state and no window — so this
+/// block is where the URL is actually dealt with. The coordinator applies the
+/// same origin policy as `decidePolicyFor`: dsh's own origin is refused (it
+/// would need a token the browser does not have), an external http(s) URL goes
+/// to the system browser.
+@property (nonatomic, copy, nullable) void (^newWindowHandler)(NSURL *url);
+
 @end
 
 NS_ASSUME_NONNULL_END

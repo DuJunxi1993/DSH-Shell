@@ -39,6 +39,17 @@ final class DshDesktopBridge: NSObject {
     /// Posted after a successful `shortcuts.edit`, so the UI can refresh.
     var onShortcutsChanged: ((ShortcutSnapshot) -> Void)?
 
+    /// Called when the user asks for page zoom with a chord dsh would otherwise
+    /// consume for its font-size shortcut.
+    ///
+    /// dsh registers `⌘=`, `⇧⌘=` and `⌘-` as **fixed** bindings
+    /// (`dsh-client-ui-theme` → `installFontSizeShortcuts`). Fixed rows are
+    /// excluded from `dispatchKeys`, so the filter below never saw a reason to
+    /// swallow them and the page always got them first. The shell wants its
+    /// menu's page zoom on those chords, so the monitor claims them before it
+    /// consults dsh at all. See `ZoomChord`.
+    var onZoomStep: ((Int) -> Void)?
+
     /// Set while the native key monitor is active, so it can be released.
     private var keyMonitor: Any?
 
@@ -364,9 +375,24 @@ final class DshDesktopBridge: NSObject {
             // every other app that happens to be open behind it.
             guard webView.window?.isKeyWindow == true else { return event }
 
-            guard let keys = self.dispatchKeys else { return event }
             guard let code = KeyCode.domCode(for: event.keyCode) else { return event }
             let modifiers = Self.modifiers(of: event)
+
+            // Page zoom first, and before `dispatchKeys`: dsh's font-size
+            // shortcuts are fixed bindings, which `dispatchKeys` deliberately
+            // leaves out, so the check below would let the page win the chord.
+            // A local monitor runs before the event reaches the webview, which
+            // is the only place the host can win it.
+            if let step = ZoomChord.step(code: code, modifiers: modifiers),
+               let onZoomStep {
+                onZoomStep(step)
+                // Repeats included: holding ⌘= should keep stepping, as it does
+                // in a browser. dsh's font-size handler ignores repeats, but it
+                // never sees this event.
+                return nil
+            }
+
+            guard let keys = self.dispatchKeys else { return event }
             let key = ShortcutModel.bindingKey(ShortcutBinding(code: code, modifiers: modifiers))
             guard keys.contains(key) else { return event }
 

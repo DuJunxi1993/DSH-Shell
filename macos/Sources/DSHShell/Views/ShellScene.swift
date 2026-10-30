@@ -61,6 +61,7 @@ struct ShellScene: View {
                            zoomPercent: coordinator.zoomPercent,
                            allowedOrigin: URLOrigin.of(url),
                            desktopBridge: coordinator.desktopBridge,
+                           onExternalURL: { coordinator.openExternally($0) },
                            onWindowResolved: { coordinator.attach(window: $0) })
                 .ignoresSafeArea(edges: [.top, .bottom])
         case .failed(let reason):

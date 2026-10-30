@@ -19,10 +19,10 @@ import DSHShellBridge
 struct WebSurfaceView: NSViewRepresentable {
     let url: URL
     weak var bridgeClient: WebBridgeClient?
-    /// Page zoom, 50–100 in 10% steps. Applied to the webview and remembered by
-    /// the coordinator; the webview's own ⌘+/- is deliberately left alone,
-    /// because WKWebView has no way to suppress it and a percentage that drifts
-    /// from the real zoom is worse than no percentage at all.
+    /// Page zoom, 50–200 in 10% steps. Applied to the webview and remembered by
+    /// the coordinator. The `⌘=`/`⌘-` chords are claimed by the host's key
+    /// monitor before dsh's font-size shortcuts can see them; see `ZoomChord`
+    /// and `DshDesktopBridge.installKeyMonitor`.
     var zoomPercent: Int = 100
     /// The origin the shell is allowed to show. Everything else is handed to the
     /// system browser — see the coordinator for why that matters.
@@ -33,6 +33,13 @@ struct WebSurfaceView: NSViewRepresentable {
     /// outlive every view update (SwiftUI recreates `self` freely), and it has to
     /// be released explicitly when the app quits so the key monitor stops.
     let desktopBridge: DshDesktopBridge?
+    /// Hands an external URL to the system browser.
+    ///
+    /// Called from the navigation delegate and from the ObjC UI delegate's
+    /// new-window handler, so a plain link and a `target="_blank"` link follow
+    /// the same path. The coordinator applies the origin rule first; this
+    /// closure only ever sees an external `http(s)` URL.
+    var onExternalURL: ((URL) -> Void)?
     /// Hands back the window this webview is actually in.
     ///
     /// Preferred over looking one up in `NSApp.windows`, which can only guess:
@@ -41,7 +48,7 @@ struct WebSurfaceView: NSViewRepresentable {
     /// window nobody was looking at.
     var onWindowResolved: ((NSWindow) -> Void)?
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate {
         var bridge: WebBridge?
         /// Held here rather than by the caller so it outlives the view update
         /// that created it; the page keeps calling into it for the webview's
@@ -71,15 +78,54 @@ struct WebSurfaceView: NSViewRepresentable {
         /// retained by SwiftUI, so that one was never at risk. This is the
         /// reason the whole `DSHShellBridge` ObjC framework exists.
         ///
-        /// This coordinator also conforms to `WKUIDelegate` so `createWebViewWith`
-        /// is implemented: without it, `target="_blank"` and `window.open` return
-        /// nil and a link clicked in dsh does nothing at all.
+        /// This is also where `target="_blank"` / `window.open` is handled: the
+        /// ObjC delegate implements `createWebViewWith…` and calls back into
+        /// this coordinator, which applies the same origin rule as
+        /// `decidePolicyFor`. Without it WebKit returns nil and a link clicked
+        /// in dsh does nothing at all.
         let uiDelegate = DSHObjCWebUIDelegate()
 
         var allowedOrigin: String = ""
         var onExternalURL: ((URL) -> Void)?
 
         let uiLogger = Logger(subsystem: "ai.deepseek.dsh-shell", category: "WebUIDialog")
+
+        /// Point the ObjC delegate's new-window block at this coordinator.
+        ///
+        /// The block is called by WebKit on the main thread, but its ObjC type
+        /// carries no actor annotation. Rather than assert isolation and risk a
+        /// trap if a future WebKit version calls it from somewhere else (this
+        /// codebase has already been bitten by one `assumeIsolated` on a
+        /// non-main queue), hop to the main actor explicitly. The one-run-loop
+        /// delay is invisible when the only work is opening a browser.
+        func installNewWindowHandler() {
+            uiDelegate.newWindowHandler = { [weak self] url in
+                Task { @MainActor [weak self] in
+                    self?.handleNewWindow(url)
+                }
+            }
+        }
+
+        /// Decide what happens to a `target="_blank"` / `window.open` URL.
+        ///
+        /// An internal URL is refused rather than loaded into this webview: dsh
+        /// would get a second page with no shared bridge state, which is the
+        /// multi-window this shell does not have. Windows refuses the same case
+        /// in `on_new_window`.
+        private func handleNewWindow(_ url: URL) {
+            switch NavigationPolicy.decideNewWindow(url, allowedOrigin: allowedOrigin) {
+            case .openExternally:
+                uiLogger.notice("nav.newWindow.external — \(url.absoluteString, privacy: .public)")
+                onExternalURL?(url)
+            case .allow:
+                // Unreachable by construction: decideNewWindow turns .allow
+                // into .deny. Kept exhaustive so a future policy change has to
+                // make a deliberate choice here.
+                uiLogger.notice("nav.newWindow.internal — refused \(url.absoluteString, privacy: .public)")
+            case .deny:
+                uiLogger.notice("nav.newWindow.denied — \(url.absoluteString, privacy: .public)")
+            }
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -120,7 +166,9 @@ struct WebSurfaceView: NSViewRepresentable {
         view.navigationDelegate = context.coordinator
         context.coordinator.uiLogger.notice("webView installed — uiDelegate=\(String(describing: view.uiDelegate), privacy: .public) navDelegate=\(String(describing: view.navigationDelegate), privacy: .public) url=\(url.absoluteString, privacy: .public)")
 
+        context.coordinator.onExternalURL = onExternalURL
         context.coordinator.allowedOrigin = URLOrigin.of(url)
+        context.coordinator.installNewWindowHandler()
         apply(zoomPercent, to: view, context: context)
 
         // The desktop contract goes in before `view.load`, so `data-platform` is
@@ -161,7 +209,9 @@ struct WebSurfaceView: NSViewRepresentable {
         if webView.navigationDelegate !== context.coordinator {
             webView.navigationDelegate = context.coordinator
         }
+        context.coordinator.onExternalURL = onExternalURL
         context.coordinator.allowedOrigin = URLOrigin.of(url)
+        context.coordinator.installNewWindowHandler()
         apply(zoomPercent, to: webView, context: context)
         // SwiftUI can hand us a different webview than the one the bridge was
         // attached to; a desktop contract injected into the old one is not
@@ -236,9 +286,10 @@ struct WebSurfaceView: NSViewRepresentable {
 // bar, keeping the dsh process, and offering no way back. So exactly one origin
 // may be shown, and everything else is handed to the system browser.
 //
-// `target="_blank"` / `window.open` lands here too, via `createWebViewWith`.
-// Without it the call returns nil and the link does nothing at all, which is a
-// different failure with the same cause.
+// `target="_blank"` / `window.open` follows the same rule through
+// `DSHObjCWebUIDelegate`'s `createWebViewWith…`, which calls `handleNewWindow`.
+// Without that selector the call returns nil and the link does nothing at all,
+// which is a different failure with the same cause.
 extension WebSurfaceView.Coordinator {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         uiLogger.notice("nav.didStart — url=\(webView.url?.absoluteString ?? "<none>", privacy: .public)")
@@ -261,36 +312,22 @@ extension WebSurfaceView.Coordinator {
             decisionHandler(.cancel)
             return
         }
-        if isInternal(target) {
+        switch NavigationPolicy.decide(target, allowedOrigin: allowedOrigin) {
+        case .allow:
             decisionHandler(.allow)
-            return
+        case .openExternally:
+            uiLogger.notice("nav.external — \(target.absoluteString, privacy: .public)")
+            onExternalURL?(target)
+            decisionHandler(.cancel)
+        case .deny:
+            uiLogger.notice("nav.denied — \(target.absoluteString, privacy: .public)")
+            decisionHandler(.cancel)
         }
-        uiLogger.notice("nav.external — \(target.absoluteString, privacy: .public)")
-        onExternalURL?(target)
-        decisionHandler(.cancel)
     }
 
-    /// `target="_blank"` and `window.open`. Always cancelled; an internal URL is
-    /// *not* loaded here either — it would open a second webview with its own
-    /// bridge and its own window, which is the multi-window this shell does not
-    /// have. An external URL still goes to the browser.
-    func webView(
-        _ webView: WKWebView,
-        createWebViewWith configuration: WKWebViewConfiguration,
-        for navigationAction: WKNavigationAction,
-        windowFeatures: WKWindowFeatures
-    ) -> WKWebView? {
-        if let url = navigationAction.request.url, !isInternal(url) {
-            uiLogger.notice("nav.newWindow.external — \(url.absoluteString, privacy: .public)")
-            onExternalURL?(url)
-        }
-        return nil
-    }
-
-    /// Only `http(s)` is ever handed to the operating system. Anything else is a
-    /// way to make the OS launch something with this process's identity — a
-    /// `file:` URL, a custom scheme, `javascript:`.
-    private func isInternal(_ url: URL) -> Bool {
-        URLOrigin.isInternal(url, allowedOrigin: allowedOrigin)
-    }
+    /// `target="_blank"` / `window.open` is handled by `DSHObjCWebUIDelegate`
+    /// (`createWebViewWith…`), which calls `handleNewWindow` above. It is not a
+    /// `WKUIDelegate` method here because the coordinator is never the
+    /// `uiDelegate` — the ObjC adapter is, so the JS dialog selectors stay
+    /// visible to the ObjC runtime.
 }

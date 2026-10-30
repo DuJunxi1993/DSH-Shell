@@ -80,4 +80,26 @@
     }
 }
 
+/// `target="_blank"` / `window.open`.
+///
+/// Returning nil is the whole point: the shell has one webview and a second one
+/// would have no bridge, no window and no dsh token. The URL is still worth
+/// handling — an external link has to reach the browser — so the block gets it
+/// and the coordinator applies the same origin rule as `decidePolicyFor`.
+- (nullable WKWebView *)webView:(WKWebView *)webView
+    createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+               forNavigationAction:(WKNavigationAction *)navigationAction
+                    windowFeatures:(WKWindowFeatures *)windowFeatures
+{
+    NSURL *url = navigationAction.request.URL;
+    os_log_t logger = os_log_create("ai.deepseek.dsh-shell", "ObjCWebUIDialog");
+    os_log_info(logger, "ObjC new-window called — url=%{public}@",
+        url.absoluteString ?: @"<none>");
+
+    if (url != nil && self.newWindowHandler != nil) {
+        self.newWindowHandler(url);
+    }
+    return nil;
+}
+
 @end

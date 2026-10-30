@@ -62,6 +62,41 @@ public enum ZoomLadder {
     }
 }
 
+/// Which page-zoom step a key chord asks for.
+///
+/// dsh's desktop runtime binds `⌘=`, `⇧⌘=` and `⌘-` to its own *font size*
+/// shortcuts (`dsh-client-ui-theme` → `installFontSizeShortcuts`) and consumes
+/// them in the page. Those are `fixed` bindings, so `dispatchKeys` — which only
+/// carries the editable rows — does not list them and the host's key monitor
+/// never sees a reason to swallow them. The result is that the menu's page-zoom
+/// shortcuts are unreachable: the page has already eaten the chord.
+///
+/// The host therefore recognises the same physical chords itself, before it
+/// asks dsh what to dispatch, and treats them as page zoom. The mapping lives
+/// here rather than inside the `NSEvent` monitor so it can be tested without a
+/// window: a wrong mapping either zooms on an unrelated chord or leaves the
+/// original bug in place.
+public enum ZoomChord {
+    /// The signed ladder delta this chord asks for, or `nil` if it is not a
+    /// page-zoom chord.
+    ///
+    /// Accepts `⌘` and `⌘⇧` only. `⌘⌥=` and `⌘⌃=` belong to other commands, and
+    /// an unmodified `=` is typing.
+    public static func step(code: String, modifiers: [ShortcutModifier]) -> Int? {
+        let meta = modifiers.contains(.meta)
+        let other = modifiers.contains { $0 != .meta && $0 != .shift }
+        guard meta, !other else { return nil }
+        switch code {
+        case "Equal":
+            return ZoomLadder.step
+        case "Minus":
+            return -ZoomLadder.step
+        default:
+            return nil
+        }
+    }
+}
+
 /// Comparing a URL against an origin, correctly.
 ///
 /// This is the macOS half of `windows/src-tauri/src/navigate.rs`. The rule it
@@ -118,5 +153,45 @@ public enum URLOrigin {
     public static func isOpenable(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
         return scheme == "http" || scheme == "https"
+    }
+}
+
+/// What to do with a URL the webview is about to navigate to.
+///
+/// There are two callbacks that need this answer — `decidePolicyFor` for a
+/// navigation in the one webview, and `createWebViewWith` for `target="_blank"`
+/// / `window.open` — and they must agree. Keeping the rule in one place also
+/// makes it testable without a `WKWebView`, which is why it is here rather than
+/// inline in the app target.
+///
+/// The new-window case deliberately turns `.allow` into a refusal: loading an
+/// internal URL there would start a second dsh page with no shared bridge state
+/// and a window the shell does not have. Windows refuses the same case in
+/// `on_new_window`.
+public enum NavigationPolicy: Equatable, Sendable {
+    /// Load it in the shell's single webview.
+    case allow
+    /// Hand it to the system browser.
+    case openExternally
+    /// Refuse it. `file:`, `data:`, `javascript:` and custom schemes end up here.
+    case deny
+
+    public static func decide(_ url: URL, allowedOrigin: String) -> NavigationPolicy {
+        if URLOrigin.isInternal(url, allowedOrigin: allowedOrigin) {
+            return .allow
+        }
+        return URLOrigin.isOpenable(url) ? .openExternally : .deny
+    }
+
+    /// The decision for a new-window navigation (`target="_blank"`,
+    /// `window.open`).
+    ///
+    /// A URL that would be allowed in the single webview is refused here
+    /// instead: there is no second webview to put it in, and loading it into the
+    /// current one would pretend the page got the window it asked for. External
+    /// URLs still go to the browser; everything else is refused as before.
+    public static func decideNewWindow(_ url: URL, allowedOrigin: String) -> NavigationPolicy {
+        let decision = decide(url, allowedOrigin: allowedOrigin)
+        return decision == .allow ? .deny : decision
     }
 }
