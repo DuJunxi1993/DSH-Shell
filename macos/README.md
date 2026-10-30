@@ -26,20 +26,21 @@ This first milestone delivers the **main panel only** — the WKWebView pointing
 | Preferences (binary path, listen host/port, trusted hosts, timeouts, auto-restart) | ✅ |
 | dsh **desktop host contract** — `data-platform=darwin` + `dshDesktopBoot` + `dshDesktop` | ✅ real dsh 0.2.0-rc.2: UI boots, 48px top clearance reserved, 4 drag regions, 0 page errors |
 | Native window drag from dsh's `[data-window-drag]` rows | ✅ WebKit has no `-webkit-app-region`, so `mousedown` is forwarded to `performWindowDragWithEvent:` |
-| Native shortcuts — only the chords dsh actually has bound | ✅ 17 chords across 28 commands; everything else stays with AppKit/WebKit, so ⌘C/⌘V/⌘X and typing still work |
+| Native shortcuts — the chords dsh has bound, plus page zoom's reserved chords | ✅ 17 chords across 28 commands; ⌘=/⌘- are claimed for page zoom before dsh's font-size shortcuts can see them. Everything else stays with AppKit/WebKit, so ⌘C/⌘V/⌘X and typing still work |
 | Device-local shortcut preferences, dsh's real document/edit shapes | ✅ `keybindings.json`, conflict-checked, corrupt files reported not overwritten |
-| One-command Release `.app` | ✅ `./scripts/build-app.sh`, ad-hoc signed, arm64 |
+| One-command Release `.app` | ✅ `./scripts/build-app.sh`, ad-hoc signed with a **stable designated requirement**, arm64 |
+| Screen Recording for dsh's screenshot tools | ✅ granted to dsh Shell (the responsible process for dsh's children), survives rebuilds, self-diagnosing — see "Screen Recording" below |
 | A launch that never leaves "Launching dsh web…" | ✅ was the pipe reader, not dsh — see below |
 | dsh's own stdout/stderr in the log, plus a diagnosis on timeout | ✅ previously the log held one line and nothing about dsh |
 | Page notifications from dsh plugins (`dsh-notification` etc.) | ✅ via a `Notification` shim — see "Notifications" below |
 | Launch smoke test in `build-app.sh` | ✅ catches both "crashes on launch" and "leaves its dsh behind", which `swift test` structurally cannot |
 | Leftovers from a forced quit are identified and closable | ✅ only provable ones — see "Leftover processes" |
-| Unit tests for `DSHShellCore` | ✅ 168 passing, 0 failing |
+| Unit tests for `DSHShellCore` | ✅ 203 passing, 0 failing |
 | Hermetic lifecycle tests against `stub-dsh` | ✅ 13, every one ends by asserting the port is bindable again |
 | Single instance — a second launch raises the window, never fights for the port | ✅ `flock`, checked before anything else |
 | Menu-bar status item: show/hide, zoom reset, exit | ✅ carries the connection state; restores the window through the SwiftUI scene, not by hunting for an `NSWindow` that a closed scene no longer owns |
 | External links go to the default browser; `target=_blank` handled | ✅ one origin allowed, `http(s)` only |
-| Page zoom 50–200% in 10% steps, persisted | ✅ ⌘+/⌘-, status-item submenu listing every rung |
+| Page zoom 50–200% in 10% steps, persisted | ✅ ⌘=/⇧⌘= and ⌘-, status-item submenu listing every rung |
 | Daily rotating file log + `crash.log`, dsh's own output included | ✅ `~/Library/Application Support/DSHShell/logs/`; the test suite logs elsewhere so stub output cannot be mistaken for evidence |
 | dsh desktop-contract self-check reported to the log | ✅ `platform`, `--dsh-frame-*`, `-webkit-app-region` |
 | `swift build` and `xcodebuild` both clean | ✅ 0 errors; both are run by `build-app.sh` because `swift test` alone never compiles the app target |
@@ -98,11 +99,30 @@ To run it:
 
 That last check is not ceremony. `swift build` produces a bare Mach-O executable with no bundle, so `bridge.js` and `dsh_desktop_bridge.js` are simply absent — and a missing `dsh_desktop_bridge.js` does not degrade, it **breaks**: dsh is never told it is on a desktop, so the desktop runtime is never declared and the failure looks like nothing at all. The script fails rather than handing you an app that cannot boot dsh.
 
-**Signing.** The app is ad-hoc signed (`CODE_SIGN_IDENTITY="-"`), so it runs on the machine that built it. There are no Developer ID identities here, so it is not distributable and Gatekeeper will quarantine a copy that arrives from anywhere else. For that case, once:
+**Signing.** The app is signed ad-hoc (`CODE_SIGN_IDENTITY="-"`) and then re-signed by the build script with a **designated requirement pinned to the bundle identifier** instead of the default `cdhash`.
+
+That second step is not cosmetic. macOS keys a TCC grant — Screen Recording above all — to the app's designated requirement. An ad-hoc signature's default requirement is `cdhash H"…"`, which is different for every build, so every rebuild silently becomes a *different app* to TCC: the grant stays attached to a binary that no longer exists, the toggle in System Settings still reads ON, and the next capture attempt prompts again. Pinning the requirement makes the grant survive rebuilds, renames and copies.
+
+`build-app.sh` prints the requirement and **fails** if it ever contains a `cdhash` again. To use a real certificate instead, put a code-signing identity named `DSHShell Local` in the login keychain (or set `DSH_SHELL_SIGN_IDENTITY`); the requirement then pins the certificate as well.
+
+There are no Developer ID identities here, so the app is not distributable and Gatekeeper will quarantine a copy that arrives from anywhere else. For that case, once:
 
 ```sh
 xattr -dr com.apple.quarantine /path/to/DSHShell.app
 ```
+
+**Screen Recording.** dsh's screenshot tools run as *children* of this app, so the permission macOS asks for belongs to **dsh Shell** — not to the `dsh` CLI, and not to the terminal that launched it. Two consequences are not discoverable without being told, so Preferences → Advanced shows both: the grant has to be made in System Settings (the alert only offers a link there), and a new grant is not live until the app is relaunched — hence the **Restart dsh Shell** button beside it.
+
+When that is not enough, the app can answer the question itself, without a debugger:
+
+```sh
+open -n /Applications/DSHShell.app --args --request-screen    # raise the prompt, then grant in Settings
+open -n /Applications/DSHShell.app --args --diagnose-screen   # read the verdict
+```
+
+The second command writes one paragraph to `~/Library/Application Support/DSHShell/logs/screen-capture.txt` and exits: the bundle identifier, the designated requirement (the line that says whether a grant can survive a rebuild), `CGPreflightScreenCaptureAccess()`, a ScreenCaptureKit window probe, and a real `screencapture` run reported as exit status and byte count. The PNG is deleted immediately — the image is the user's screen, and this is a diagnostic.
+
+`--diagnose-screen` must be launched through `open`, like a normal app: running `Contents/MacOS/DSHShell` from a shell makes *the shell* the responsible process, and the report will describe the shell's permissions rather than the app's.
 
 **Architecture.** arm64 only. `xcodebuild -destination 'platform=macOS'` matches both arm64 and x86_64 on Apple silicon and then fails inside Swift's prebuilt-module set, on something the project does not control; the script pins `arch=arm64`.
 
@@ -175,9 +195,11 @@ The ceiling was 100% and nothing was defending it. Measured against real dsh wit
 
 Past ~150% you are choosing to read dsh as a small window, not a bigger one — the CSS viewport narrows and dsh reflows. Nothing breaks: no errors, no horizontal overflow, clean boot. `windows/src-tauri/src/config.rs` carries the same ladder.
 
-Reachable three ways: ⌘+/⌘- and ⌘0 in the main menu bar, the **Zoom** submenu of the status item (every rung, check-marked), and the settings field. The submenu lives there rather than in the main menu bar because SwiftUI's main menu bar cannot host a nested menu — a `Menu` is a `View`, not `Commands`.
+Reachable three ways: ⌘=/⇧⌘= and ⌘- (plus ⌘0) in the main menu bar, the **Zoom** submenu of the status item (every rung, check-marked), and the settings field. The submenu lives there rather than in the main menu bar because SwiftUI's main menu bar cannot host a nested menu — a `Menu` is a `View`, not `Commands`.
 
-WebKit's own ⌘+ and ⌘-pinch still work and are not overridden: the shell only pushes a zoom when the preference changed, not on every view update. The previous unconditional write silently undid the page's own zoom on the next state change, which is what made ⌘+ look stuck.
+**The chords are contested, and the shell wins them.** dsh's desktop runtime installs `⌘=`, `⇧⌘=` and `⌘-` as *fixed* font-size shortcuts and consumes them in the page. Those bindings are excluded from `dispatchKeys` (the native-shortcut filter only covers editable rows), so without a host-side claim the page always got the chord first and the menu's zoom entries were unreachable. `DshDesktopBridge` now recognises the physical chords in its local key monitor *before* it asks dsh what to dispatch, steps the page zoom and swallows the event. Font size is still adjustable in dsh's Settings → Appearance; only its keyboard shortcut is superseded.
+
+WebKit's ⌘-pinch still works and is not overridden: the shell only pushes a zoom when the preference changed, not on every view update. The previous unconditional write silently undid the page's own zoom on the next state change, which is what made ⌘+ look stuck.
 
 ### Leftover processes
 

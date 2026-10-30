@@ -31,10 +31,12 @@
 # build inside Swift's prebuilt-module set rather than on anything the project
 # controls.
 #
-# Signing: ad-hoc. There are no signing identities on this machine
-# (`security find-identity -p codesigning` returns none), so the app is signed
-# locally and runs here, but Gatekeeper will quarantine it if it arrives from
-# anywhere else. See the README for the one-time step.
+# Signing: ad-hoc by default, with the designated requirement re-pinned to the
+# bundle identifier rather than a cdhash. A cdhash requirement changes on every
+# build, and macOS keys a Screen Recording grant to the requirement — so an
+# unmodified ad-hoc build loses its permission each time it is rebuilt. If a
+# code-signing identity named "DSHShell Local" exists in the keychain it is used
+# instead (override with DSH_SHELL_SIGN_IDENTITY).
 
 set -euo pipefail
 
@@ -137,6 +139,69 @@ if [[ ! -d "$APP" ]]; then
   echo "error: expected $APP but it is not there" >&2
   exit 5
 fi
+
+# --- signing -----------------------------------------------------------------
+#
+# Re-signing is not cosmetic. TCC keys a Screen Recording grant to the app's
+# *designated requirement*, and an ad-hoc signature's requirement is
+# `cdhash H"…"` — a value that is different for every build. So each rebuild
+# silently becomes a different app to TCC: the grant stays attached to a binary
+# that no longer exists, the toggle in System Settings still looks ON, and the
+# next capture attempt prompts again. That is the bug this step removes.
+#
+# Re-signing pins the requirement to the bundle identifier, which is stable
+# across rebuilds and copies. When a code-signing identity exists it is used
+# instead, and the requirement also pins the certificate.
+#
+# Inside-out order matters: the app's seal covers the frameworks' own hashes,
+# so the frameworks are signed first.
+echo "==> signing"
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
+ENTITLEMENTS="$ROOT/App/DSHShell/DSHShell.entitlements"
+
+SIGN_IDENTITY="${DSH_SHELL_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  if security find-identity -p codesigning -v 2>/dev/null | grep -q "DSHShell Local"; then
+    SIGN_IDENTITY="DSHShell Local"
+  else
+    SIGN_IDENTITY="-"
+  fi
+fi
+
+for framework in "$APP"/Contents/Frameworks/*.framework; do
+  [[ -d "$framework" ]] || continue
+  codesign --force --sign "$SIGN_IDENTITY" "$framework" >/dev/null 2>&1 \
+    || { echo "error: could not sign $framework" >&2; exit 6; }
+done
+
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  REQUIREMENT="identifier \"$BUNDLE_ID\""
+else
+  CERT_SHA1="$(security find-certificate -c "$SIGN_IDENTITY" -p \
+    | openssl x509 -inform pem -outform der \
+    | shasum -a 1 | cut -d' ' -f1 | tr 'a-f' 'A-F')"
+  REQUIREMENT="identifier \"$BUNDLE_ID\" and certificate leaf = H\"$CERT_SHA1\""
+fi
+
+codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" \
+  -r="designated => $REQUIREMENT" "$APP" >/dev/null 2>&1 \
+  || { echo "error: could not sign $APP" >&2; exit 6; }
+
+# A requirement that names a cdhash is the defect coming back. Fail loudly
+# rather than ship a build whose Screen Recording grant will not survive the
+# next compile.
+DESIGNATED="$(codesign -d -r- "$APP" 2>&1 | awk -F'=> ' '/designated/{print $2}')"
+echo "    identity:    $SIGN_IDENTITY"
+echo "    requirement: $DESIGNATED"
+if [[ -z "$DESIGNATED" || "$DESIGNATED" == *cdhash* ]]; then
+  echo "error: the designated requirement pins a cdhash, so a Screen Recording" >&2
+  echo "       grant will be discarded on the next rebuild. Signing identity was" >&2
+  echo "       '$SIGN_IDENTITY'." >&2
+  exit 7
+fi
+
+codesign --verify --deep --strict "$APP" >/dev/null 2>&1 \
+  || { echo "error: the re-signed app does not verify" >&2; exit 7; }
 
 echo
 echo "==> built $APP"

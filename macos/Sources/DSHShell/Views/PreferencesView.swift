@@ -1,9 +1,15 @@
 import SwiftUI
+import AppKit
+import CoreGraphics
 import DSHShellCore
 
 struct PreferencesView: View {
     @EnvironmentObject private var coordinator: AppCoordinator
     @State private var working: ShellSettings = .default
+    /// Read at appearance rather than only on demand: the answer is a plain
+    /// process-level check with no prompt attached, so showing stale "not
+    /// granted" from before the user visited System Settings would be a lie.
+    @State private var screenGranted = CGPreflightScreenCaptureAccess()
 
     var body: some View {
         // The Apply button is drawn here, in the layout, rather than declared
@@ -53,7 +59,16 @@ struct PreferencesView: View {
             .padding(.vertical, 12)
         }
         .frame(width: 600, height: 460)
-        .onAppear { working = coordinator.settings }
+        .onAppear {
+            working = coordinator.settings
+            screenGranted = CGPreflightScreenCaptureAccess()
+        }
+        // The user's grant happens in another app (System Settings), so the
+        // answer changes while this window is open. Re-reading on activation is
+        // the cheap way to stop showing a stale "Not granted".
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            screenGranted = CGPreflightScreenCaptureAccess()
+        }
     }
 
     private var generalTab: some View {
@@ -116,8 +131,66 @@ struct PreferencesView: View {
                 }
                 Toggle("Auto-restart on crash", isOn: $working.autoRestartOnCrash)
             }
+            screenRecordingSection
         }
         .formStyle(.grouped)
+    }
+
+    /// Screen Recording, where the user can actually see it.
+    ///
+    /// dsh's screenshot tools run as *children* of this app, so the permission
+    /// macOS asks for belongs to dsh Shell — not to the `dsh` CLI, and not to
+    /// whatever terminal started it. Two things follow, and neither is
+    /// discoverable without being told: the grant has to be made in System
+    /// Settings (the alert only offers a link there), and a new grant is not
+    /// live until the app is relaunched. Without this row the only feedback a
+    /// user ever gets is "the screenshot failed", again.
+    private var screenRecordingSection: some View {
+        Section("Screen Recording") {
+            LabeledContent("Status") {
+                HStack(spacing: 6) {
+                    Image(systemName: screenGranted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(screenGranted ? Color.green : Color.orange)
+                    Text(screenGranted ? "Granted" : "Not granted")
+                }
+            }
+            HStack {
+                Button("Request Access…") { requestScreenCapture() }
+                Button("Restart dsh Shell") { relaunch() }
+                Spacer()
+            }
+            Text(screenGranted
+                 ? "If a screenshot still fails, relaunch dsh Shell: macOS applies a new grant only to a newly started process."
+                 : "dsh's screenshot tools run inside this app, so the permission belongs to dsh Shell. Grant it in System Settings, then relaunch.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func requestScreenCapture() {
+        // Ask, then show the pane: the system alert on this macOS offers only
+        // "Open System Settings" and "Deny", so the toggle is where the grant
+        // actually happens.
+        _ = CGRequestScreenCaptureAccess()
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+        screenGranted = CGPreflightScreenCaptureAccess()
+    }
+
+    /// Quit and come back, because a Screen Recording grant is not live in the
+    /// process that was running when it was made.
+    ///
+    /// The relaunch goes through a short-lived shell: the single-instance guard
+    /// takes a lock, so a new instance started before this one has exited would
+    /// be turned away. One second is enough and costs nothing.
+    private func relaunch() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "sleep 1; /usr/bin/open -n \"\(Bundle.main.bundlePath)\""]
+        try? process.run()
+        NSApp.terminate(nil)
     }
 
     private var consoleTab: some View {

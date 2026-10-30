@@ -115,9 +115,17 @@ targets:
     entitlements:
       path: App/DSHShell/DSHShell.entitlements
       properties:
+        # Explicitly not sandboxed: the shell spawns `dsh web` as a child and
+        # must reach the loopback port it prints.
+        #
+        # `com.apple.security.inherit` used to be here and is gone on purpose.
+        # It is only meaningful on an embedded helper/XPC service, where it
+        # means "inherit the parent's sandbox"; on the main app it declares the
+        # app to be somebody's *child*, which is the opposite of what a TCC
+        # subject needs to be. Screen Recording is granted to the responsible
+        # process, and an app that says it inherits its identity from a parent
+        # is the worst possible candidate for owning a grant.
         com.apple.security.app-sandbox: false
-        com.apple.security.network.client: true
-        com.apple.security.inherit: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.deepseek.dsh-shell

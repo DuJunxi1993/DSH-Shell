@@ -6,6 +6,16 @@ import UserNotifications
 struct DSHShellApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    init() {
+        // Diagnostic modes run before a window, a run loop or the single
+        // instance guard exist: they must be able to answer "is this app
+        // allowed to capture the screen" even while a normal instance is
+        // already running. See `ScreenCaptureDiagnostics`.
+        if ScreenCaptureDiagnostics.handleCommandLineIfNeeded() {
+            exit(0)
+        }
+    }
+
     var body: some Scene {
         // `Window`, not `WindowGroup`. A `WindowGroup` scene exists precisely so the
         // app can have several instances of it, and `openWindow(id:)` takes that
