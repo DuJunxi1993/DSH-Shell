@@ -218,6 +218,20 @@ public struct PortOccupant: Identifiable, Equatable, Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        // Force a UTF-8 locale for the child.
+        //
+        // `ps` escapes any byte it cannot print in the current locale, so with
+        // no `LANG` set — which is the default for a process launched by
+        // launchd, and for anything run from an editor's build task — a path
+        // containing non-ASCII characters comes back as `M-hM-=M-/…`. The
+        // identity check compares that command line against the configured
+        // binary path, so the escape silently turned every orphan into
+        // "not our binary" and the shell refused to start over its own
+        // leftover. Found by `testStartsOverAnOrphanByReclaimingIt` failing
+        // only when the repository path was non-ASCII.
+        var environment = ProcessInfo.processInfo.environment
+        environment["LC_ALL"] = "en_US.UTF-8"
+        process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = Pipe()

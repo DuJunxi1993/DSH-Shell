@@ -275,8 +275,45 @@ if [[ -f "$SETTINGS" ]]; then
   PORT="$(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("preferredPort",3080))' "$SETTINGS" 2>/dev/null || echo "$PORT")"
 fi
 
-DSH_HOME="$SMOKE_HOME" "$APP/Contents/MacOS/DSHShell" >"$SMOKE_LOG" 2>&1 &
-SMOKE_APP_PID=$!
+# Launch it the way a user does: through LaunchServices.
+#
+# Running the executable straight from this script (`"$APP/Contents/MacOS/
+# DSHShell" &`) leaves the app alive but with no window — measured on macOS 27,
+# and true of the unmodified tree too, so it is not a regression this check
+# introduced. Without a window the scene never appears, `onAppear` never runs,
+# no dsh is spawned, and the two things this check exists to prove cannot be
+# observed at all. `open` also gives us --env and --stdout, so the smoke run
+# still gets its own DSH_HOME and its own log.
+SMOKE_BINARY="$APP/Contents/MacOS/DSHShell"
+
+# Never smoke-test over the user's own session. Quitting is keyed to the bundle
+# id, so a running instance — from /Applications, say — would be the one that
+# quit, and its dsh would then be the orphan this test reports.
+SMOKE_RUNNING="$(/usr/bin/pgrep -f "/DSHShell.app/Contents/MacOS/DSHShell" 2>/dev/null | head -1 || true)"
+if [[ -n "$SMOKE_RUNNING" ]]; then
+  echo "    --   skipped: dsh Shell is already running (pid $SMOKE_RUNNING)."
+  echo "         Quit it and re-run this script to exercise the launch/quit path."
+  exit 0
+fi
+
+DSH_HOME="$SMOKE_HOME" /usr/bin/open -n \
+  --env "DSH_HOME=$SMOKE_HOME" \
+  --stdout "$SMOKE_LOG" --stderr "$SMOKE_LOG" \
+  "$APP"
+
+# `open` reports no PID, so take the newest process running exactly this
+# binary. The pattern is the app's own path, not a name: an installed copy at a
+# different path cannot be adopted and killed by mistake.
+for _ in $(seq 1 20); do
+  SMOKE_APP_PID="$(/usr/bin/pgrep -f -- "$SMOKE_BINARY" 2>/dev/null | sort -n | tail -1 || true)"
+  [[ -n "$SMOKE_APP_PID" ]] && break
+  sleep 0.5
+done
+if [[ -z "$SMOKE_APP_PID" ]]; then
+  echo "error: could not find the app process after launching it" >&2
+  sed 's/^/         /' "$SMOKE_LOG" >&2
+  exit 7
+fi
 
 sleep 8
 if ! kill -0 "$SMOKE_APP_PID" 2>/dev/null; then
@@ -295,7 +332,10 @@ echo "    ok   stayed up"
 # it on the way out. The port is the symptom; parentage is the fact.
 SMOKE_CHILD_PID=""
 for _ in $(seq 1 40); do
-  SMOKE_CHILD_PID="$(/usr/bin/pgrep -P "$SMOKE_APP_PID" 2>/dev/null | head -1)"
+  # `|| true`: with `set -e` a failing command substitution aborts the script,
+  # and `pgrep` exits 1 whenever there is no child to find — which is the
+  # normal state for the first half second, and an expected one in attach mode.
+  SMOKE_CHILD_PID="$(/usr/bin/pgrep -P "$SMOKE_APP_PID" 2>/dev/null | head -1 || true)"
   [[ -n "$SMOKE_CHILD_PID" ]] && break
   sleep 0.5
 done
@@ -306,7 +346,7 @@ else
   # thing Preflight exists for), or it is in attach mode. Either way there is
   # nothing of ours to clean up, and claiming otherwise would mean killing
   # something that is not ours.
-  PRE="$(/usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)"
+  PRE="$(/usr/sbin/lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
   if [[ -n "$PRE" ]]; then
     echo "    --   the app spawned no dsh; port $PORT is held by pid $PRE (not ours — left alone)"
   else

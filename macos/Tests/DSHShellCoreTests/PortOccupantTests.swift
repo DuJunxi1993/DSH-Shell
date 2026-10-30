@@ -135,4 +135,17 @@ final class PortOccupantTests: XCTestCase {
             XCTFail("must not run anything for port 0"); return "1\n"
         }).isEmpty)
     }
+
+    /// `ps` escapes non-ASCII bytes into `M-hM-=M-/…` unless the child runs in a
+    /// UTF-8 locale, and the identity check compares that command line against
+    /// the configured path. A repository (or a dsh install) under a directory
+    /// with Chinese characters therefore looked like "somebody else's binary"
+    /// and its orphan was never reclaimed — the shell would refuse to start over
+    /// its own leftover. The environment is forced rather than inherited, so it
+    /// cannot depend on how the app itself was launched.
+    func testPsRunsInAUTF8LocaleSoNonASCIIPathsSurvive() {
+        let locale = PortOccupant.defaultRun("/usr/bin/printenv", ["LC_ALL"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(locale, "en_US.UTF-8")
+    }
 }
